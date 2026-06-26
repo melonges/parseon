@@ -27,7 +27,7 @@ pub async fn run(
     cache_cap: usize,
     cancel: CancellationToken,
 ) -> AppResult<()> {
-    let chain_label = chain.name.clone();
+    let chain_label = chain.chain_id.to_string();
     let provider = provider::build(&chain.rpc_url)?;
     let cache = BlockCache::new(cache_cap);
     let poll = Duration::from_millis(chain.poll_interval_ms.max(100) as u64);
@@ -41,7 +41,7 @@ pub async fn run(
             break;
         }
 
-        let monitors = registry.for_chain(chain.id).await;
+        let monitors = registry.for_chain(chain.chain_id).await;
         let active: Vec<_> = monitors
             .iter()
             .filter(|m| m.enabled && !m.completed)
@@ -142,7 +142,7 @@ pub async fn run(
             let pool_clone = pool.clone();
             if let Err(e) = decode_persist::process_block(
                 &pool_clone,
-                chain.id,
+                chain.chain_id,
                 &chain_label,
                 block_number,
                 &block_hash_hex,

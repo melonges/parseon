@@ -1,7 +1,5 @@
 CREATE TABLE IF NOT EXISTS chains (
-    id              SERIAL PRIMARY KEY,
-    name            TEXT NOT NULL,
-    chain_id        BIGINT NOT NULL UNIQUE,
+    chain_id        BIGINT PRIMARY KEY,
     rpc_url         TEXT NOT NULL,
     start_block     BIGINT NOT NULL DEFAULT 0,
     poll_interval_ms INT  NOT NULL DEFAULT 2000,

@@ -26,7 +26,6 @@ pub async fn create_chain(
     Json(body): Json<CreateChain>,
 ) -> AppResult<Json<crate::db::chain_repo::ChainRow>> {
     let input = ChainInput {
-        name: body.name,
         chain_id: body.chain_id,
         rpc_url: body.rpc_url,
         start_block: body.start_block,
@@ -47,26 +46,26 @@ pub async fn list_chains(
 
 pub async fn get_chain(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(chain_id): Path<i64>,
 ) -> AppResult<Json<crate::db::chain_repo::ChainRow>> {
-    let row = chain_repo::get(&state.pool, id).await?;
+    let row = chain_repo::get(&state.pool, chain_id).await?;
     Ok(Json(row))
 }
 
 pub async fn update_chain(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(chain_id): Path<i64>,
     Json(body): Json<UpdateChain>,
 ) -> AppResult<Json<crate::db::chain_repo::ChainRow>> {
-    let row = chain_repo::set_enabled(&state.pool, id, body.enabled.unwrap_or(true)).await?;
+    let row = chain_repo::set_enabled(&state.pool, chain_id, body.enabled.unwrap_or(true)).await?;
     Ok(Json(row))
 }
 
 pub async fn delete_chain(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(chain_id): Path<i64>,
 ) -> AppResult<axum::http::StatusCode> {
-    chain_repo::delete(&state.pool, id).await?;
+    chain_repo::delete(&state.pool, chain_id).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -80,7 +79,7 @@ pub async fn create_monitor(
     let start_block = match body.start_block {
         Some(s) => Some(s),
         None => Some(
-            chain_repo::get_by_chain_id(&state.pool, body.chain_id)
+            chain_repo::get(&state.pool, body.chain_id)
                 .await?
                 .start_block,
         ),

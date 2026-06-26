@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateChain {
-    pub name: String,
     pub chain_id: i64,
     pub rpc_url: String,
     #[serde(default)]

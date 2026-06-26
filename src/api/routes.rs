@@ -15,7 +15,7 @@ pub fn chain_routes() -> Router<AppState> {
             post(handlers::create_chain).get(handlers::list_chains),
         )
         .route(
-            "/chains/:id",
+            "/chains/{chain_id}",
             get(handlers::get_chain)
                 .patch(handlers::update_chain)
                 .delete(handlers::delete_chain),
@@ -29,7 +29,7 @@ pub fn monitor_routes() -> Router<AppState> {
             post(handlers::create_monitor).get(handlers::list_monitors),
         )
         .route(
-            "/monitors/:id",
+            "/monitors/{id}",
             get(handlers::get_monitor)
                 .patch(handlers::update_monitor)
                 .delete(handlers::delete_monitor),

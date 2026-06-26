@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS monitors (
-    id              SERIAL PRIMARY KEY,
-    chain_id        BIGINT NOT NULL REFERENCES chains(id) ON DELETE CASCADE,
+    id              BIGSERIAL PRIMARY KEY,
+    chain_id        BIGINT NOT NULL REFERENCES chains(chain_id) ON DELETE CASCADE,
     address         TEXT NOT NULL,
     name            TEXT NOT NULL,
     signature       TEXT NOT NULL,

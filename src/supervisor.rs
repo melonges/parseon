@@ -82,8 +82,8 @@ impl Supervisor {
         // Spawn coordinators for newly-enabled chains.
         let mut seen = std::collections::HashSet::new();
         for chain in &enabled {
-            seen.insert(chain.id);
-            let entry = tasks.entry(chain.id);
+            seen.insert(chain.chain_id);
+            let entry = tasks.entry(chain.chain_id);
             if let std::collections::hash_map::Entry::Occupied(_) = entry {
                 continue;
             }
@@ -101,7 +101,7 @@ impl Supervisor {
                 }
             });
             entry.or_insert((handle, token));
-            tracing::info!(chain_id = chain.id, "spawned coordinator");
+            tracing::info!(chain_id = chain.chain_id, "spawned coordinator");
         }
 
         // Cancel coordinators for chains no longer enabled or removed.
