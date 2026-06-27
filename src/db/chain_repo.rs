@@ -10,7 +10,6 @@ pub struct ChainRow {
     pub chain_id: i64,
     pub rpc_url: String,
     pub start_block: i64,
-    pub poll_interval_ms: i32,
     pub batch_size: i32,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
@@ -22,21 +21,19 @@ pub struct ChainInput {
     pub chain_id: i64,
     pub rpc_url: String,
     pub start_block: i64,
-    pub poll_interval_ms: i32,
     pub batch_size: i32,
     pub enabled: bool,
 }
 
 pub async fn create(pool: &PgPool, input: &ChainInput) -> AppResult<ChainRow> {
     let row = sqlx::query_as::<_, ChainRow>(
-        r#"INSERT INTO chains (chain_id, rpc_url, start_block, poll_interval_ms, batch_size, enabled)
-           VALUES ($1, $2, $3, $4, $5, $6)
+        r#"INSERT INTO chains (chain_id, rpc_url, start_block, batch_size, enabled)
+           VALUES ($1, $2, $3, $4, $5)
            RETURNING *"#,
     )
     .bind(input.chain_id)
     .bind(&input.rpc_url)
     .bind(input.start_block)
-    .bind(input.poll_interval_ms)
     .bind(input.batch_size)
     .bind(input.enabled)
     .fetch_one(pool)

@@ -16,9 +16,9 @@ pub struct Config {
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub rust_log: String,
 
-    /// Poll interval override applied when a chain has no explicit poll_interval_ms
-    #[arg(long, env = "DEFAULT_POLL_INTERVAL_MS", default_value_t = 2000)]
-    pub default_poll_interval_ms: u64,
+    /// Global poll interval used by every chain coordinator
+    #[arg(long, env = "POLL_INTERVAL_MS", default_value_t = 2000)]
+    pub poll_interval_ms: u64,
 
     /// Default batch size applied when a chain has no explicit batch_size
     #[arg(long, env = "DEFAULT_BATCH_SIZE", default_value_t = 10)]

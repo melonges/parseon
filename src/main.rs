@@ -44,6 +44,7 @@ async fn main() -> anyhow::Result<()> {
         pool.clone(),
         registry.clone(),
         config.block_cache_size,
+        config.poll_interval_ms,
         cancel.clone(),
     );
     let mut supervisor_handle = tokio::spawn(async move {

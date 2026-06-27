@@ -8,17 +8,12 @@ pub struct CreateChain {
     pub rpc_url: String,
     #[serde(default)]
     pub start_block: i64,
-    #[serde(default = "default_poll")]
-    pub poll_interval_ms: i32,
     #[serde(default = "default_batch")]
     pub batch_size: i32,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
 
-fn default_poll() -> i32 {
-    2000
-}
 fn default_batch() -> i32 {
     10
 }

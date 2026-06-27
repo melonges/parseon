@@ -29,7 +29,6 @@ pub async fn create_chain(
         chain_id: body.chain_id,
         rpc_url: body.rpc_url,
         start_block: body.start_block,
-        poll_interval_ms: body.poll_interval_ms,
         batch_size: body.batch_size,
         enabled: body.enabled,
     };

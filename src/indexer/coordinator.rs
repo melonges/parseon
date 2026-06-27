@@ -25,12 +25,13 @@ pub async fn run(
     pool: PgPool,
     registry: Registry,
     cache_cap: usize,
+    poll_interval_ms: u64,
     cancel: CancellationToken,
 ) -> AppResult<()> {
     let chain_label = chain.chain_id.to_string();
     let provider = provider::build(&chain.rpc_url)?;
     let cache = BlockCache::new(cache_cap);
-    let poll = Duration::from_millis(chain.poll_interval_ms.max(100) as u64);
+    let poll = Duration::from_millis(poll_interval_ms.max(100));
     let batch = chain.batch_size.max(1) as i64;
 
     tracing::info!(chain = %chain_label, chain_id = chain.chain_id, "coordinator started");

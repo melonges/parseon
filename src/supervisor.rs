@@ -24,6 +24,7 @@ pub struct Supervisor {
     pool: PgPool,
     registry: Registry,
     cache_cap: usize,
+    poll_interval_ms: u64,
     /// chain_id -> (handle, cancel token)
     tasks: Arc<RwLock<HashMap<i64, TaskEntry>>>,
     cancel: CancellationToken,
@@ -34,12 +35,14 @@ impl Supervisor {
         pool: PgPool,
         registry: Registry,
         cache_cap: usize,
+        poll_interval_ms: u64,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             pool,
             registry,
             cache_cap,
+            poll_interval_ms,
             tasks: Arc::new(RwLock::new(HashMap::new())),
             cancel,
         }
@@ -93,9 +96,10 @@ impl Supervisor {
                 let pool = self.pool.clone();
                 let registry = self.registry.clone();
                 let cap = self.cache_cap;
+                let poll = self.poll_interval_ms;
                 let token = token.clone();
                 async move {
-                    if let Err(e) = coordinator::run(chain, pool, registry, cap, token).await {
+                    if let Err(e) = coordinator::run(chain, pool, registry, cap, poll, token).await {
                         tracing::error!("coordinator: {e}");
                     }
                 }

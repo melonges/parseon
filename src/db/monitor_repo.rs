@@ -34,25 +34,10 @@ pub struct MonitorInput {
     pub end_block: Option<i64>,
 }
 
-/// Normalize an address to lowercase `0x`-prefixed form.
-pub fn normalize_address(addr: &str) -> Result<String, AppError> {
-    let a = addr.trim();
-    let lower = if let Some(rest) = a.strip_prefix("0x") {
-        format!("0x{}", rest.to_ascii_lowercase())
-    } else {
-        format!("0x{}", a.to_ascii_lowercase())
-    };
-    if lower.len() != 42 || !lower[2..].chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(AppError::BadRequest(format!("invalid address: {addr}")));
-    }
-    Ok(lower)
-}
-
 /// Create a monitor: parse the signature, insert the row, then create its
 /// dedicated params table.
 pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow> {
     let spec = parse_signature(&input.signature)?;
-    let address = normalize_address(&input.address)?;
 
     // Resolve start_block: explicit > chain.start_block (validated by caller).
     let start_block = input.start_block.unwrap_or(0);
@@ -67,7 +52,7 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow
            RETURNING *"#,
     )
     .bind(input.chain_id)
-    .bind(&address)
+    .bind(&input.address.to_ascii_lowercase())
     .bind(&spec.name)
     .bind(&spec.canonical_signature)
     .bind(&spec.selector)
