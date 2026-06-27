@@ -3,12 +3,19 @@ use std::time::Duration;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
 
-use crate::db::chain_repo::ChainRow;
 use crate::error::AppResult;
 use crate::indexer::decode_persist;
 use crate::metrics;
 use crate::rpc::{block_cache::BlockCache, fetch::fetch_block, provider};
 use crate::watcher::registry::Registry;
+
+/// Configuration for the single chain being indexed.
+#[derive(Debug, Clone)]
+pub struct ChainConfig {
+    pub chain_id: i64,
+    pub rpc_url: String,
+    pub batch_size: i32,
+}
 
 /// Run the per-chain coordinator loop until the cancellation token fires.
 ///
@@ -21,7 +28,7 @@ use crate::watcher::registry::Registry;
 ///   6. Advance each monitor's cursor; mark completed if end reached.
 ///   7. Evict cache entries below the minimum cursor.
 pub async fn run(
-    chain: ChainRow,
+    chain: ChainConfig,
     pool: PgPool,
     registry: Registry,
     cache_cap: usize,
@@ -42,7 +49,7 @@ pub async fn run(
             break;
         }
 
-        let monitors = registry.for_chain(chain.chain_id).await;
+        let monitors = registry.get_all().await;
         let active: Vec<_> = monitors
             .iter()
             .filter(|m| m.enabled && !m.completed)

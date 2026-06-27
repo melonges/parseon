@@ -1,6 +1,5 @@
 CREATE TABLE IF NOT EXISTS monitors (
     id              BIGSERIAL PRIMARY KEY,
-    chain_id        BIGINT NOT NULL REFERENCES chains(chain_id) ON DELETE CASCADE,
     address         TEXT NOT NULL,
     name            TEXT NOT NULL,
     signature       TEXT NOT NULL,
@@ -14,7 +13,7 @@ CREATE TABLE IF NOT EXISTS monitors (
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (chain_id, address, selector)
+    UNIQUE (address, selector)
 );
 
-CREATE INDEX IF NOT EXISTS monitors_chain_id_idx ON monitors (chain_id);
+CREATE INDEX IF NOT EXISTS monitors_address_idx ON monitors (address);

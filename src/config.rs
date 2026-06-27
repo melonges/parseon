@@ -20,13 +20,21 @@ pub struct Config {
     #[arg(long, env = "POLL_INTERVAL_MS", default_value_t = 2000)]
     pub poll_interval_ms: u64,
 
-    /// Default batch size applied when a chain has no explicit batch_size
+    /// Default batch size applied to each chain
     #[arg(long, env = "DEFAULT_BATCH_SIZE", default_value_t = 10)]
     pub default_batch_size: u64,
 
     /// Block cache capacity per chain coordinator
     #[arg(long, env = "BLOCK_CACHE_SIZE", default_value_t = 512)]
     pub block_cache_size: usize,
+
+    /// erpc base URL (e.g. http://erpc:4000/main/evm)
+    #[arg(long, env = "ERPC_URL")]
+    pub erpc_url: String,
+
+    /// Chain ID to index (e.g. 1 for Ethereum, 42161 for Arbitrum)
+    #[arg(long, env = "CHAIN_ID")]
+    pub chain_id: i64,
 }
 
 impl Config {

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use alloy::primitives::Address;
@@ -8,58 +7,35 @@ use crate::db::monitor_repo::{self, MonitorRow};
 use crate::error::AppResult;
 use crate::watcher::model::Monitor;
 
-/// In-memory registry of monitors, keyed by chain id, then by (address, selector).
+/// In-memory registry of monitors for the single indexed chain.
 ///
 /// The coordinator reads a snapshot each tick; API mutations trigger a reload.
 #[derive(Clone)]
 pub struct Registry {
-    inner: Arc<RwLock<HashMap<i64, Vec<Monitor>>>>,
+    inner: Arc<RwLock<Vec<Monitor>>>,
 }
 
 impl Registry {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(HashMap::new())),
+            inner: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    /// Reload the entire registry from the database.
     pub async fn reload(&self, pool: &sqlx::PgPool) -> AppResult<()> {
         let rows = monitor_repo::list(pool).await?;
-        let mut map: HashMap<i64, Vec<Monitor>> = HashMap::new();
-        for row in rows {
-            if let Ok(m) = row_to_monitor(&row) {
-                map.entry(m.chain_id).or_default().push(m);
-            }
-        }
+        let monitors: Vec<Monitor> = rows
+            .into_iter()
+            .filter_map(|row| row_to_monitor(&row).ok())
+            .collect();
         let mut guard = self.inner.write().await;
-        *guard = map;
-        tracing::info!(
-            monitors = guard.values().map(|v| v.len()).sum::<usize>(),
-            "registry reloaded"
-        );
+        *guard = monitors;
+        tracing::info!(monitors = guard.len(), "registry reloaded");
         Ok(())
     }
 
-    /// Snapshot of monitors for a chain.
-    pub async fn for_chain(&self, chain_id: i64) -> Vec<Monitor> {
-        self.inner
-            .read()
-            .await
-            .get(&chain_id)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Count of active monitors for a chain (enabled, not completed).
-    #[allow(dead_code)]
-    pub async fn active_count(&self, chain_id: i64) -> usize {
-        self.inner
-            .read()
-            .await
-            .get(&chain_id)
-            .map(|v| v.iter().filter(|m| m.enabled && !m.completed).count())
-            .unwrap_or(0)
+    pub async fn get_all(&self) -> Vec<Monitor> {
+        self.inner.read().await.clone()
     }
 }
 
@@ -75,7 +51,6 @@ fn row_to_monitor(row: &MonitorRow) -> Result<Monitor, anyhow::Error> {
 
     Ok(Monitor {
         id: row.id,
-        chain_id: row.chain_id,
         address,
         selector,
         name: row.name.clone(),

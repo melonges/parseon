@@ -7,7 +7,6 @@ use crate::abi::ParamSpec;
 #[derive(Debug, Clone, Serialize)]
 pub struct Monitor {
     pub id: i64,
-    pub chain_id: i64,
     pub address: Address,
     /// Raw selector bytes (4 bytes).
     pub selector: [u8; 4],

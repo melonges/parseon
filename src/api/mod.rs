@@ -28,7 +28,6 @@ pub fn router(
 ) -> axum::Router {
     axum::Router::new()
         .merge(routes::health_routes())
-        .merge(routes::chain_routes())
         .merge(routes::monitor_routes())
         .route(
             "/metrics",

@@ -8,20 +8,6 @@ pub fn health_routes() -> Router<AppState> {
     Router::new().route("/healthz", get(handlers::healthz))
 }
 
-pub fn chain_routes() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/chains",
-            post(handlers::create_chain).get(handlers::list_chains),
-        )
-        .route(
-            "/chains/{chain_id}",
-            get(handlers::get_chain)
-                .patch(handlers::update_chain)
-                .delete(handlers::delete_chain),
-        )
-}
-
 pub fn monitor_routes() -> Router<AppState> {
     Router::new()
         .route(

@@ -1,41 +1,16 @@
 use serde::{Deserialize, Serialize};
 
-// ----- Chains -----
-
-#[derive(Debug, Deserialize)]
-pub struct CreateChain {
-    pub chain_id: i64,
-    pub rpc_url: String,
-    #[serde(default)]
-    pub start_block: i64,
-    #[serde(default = "default_batch")]
-    pub batch_size: i32,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-fn default_batch() -> i32 {
-    10
-}
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateChain {
-    pub enabled: Option<bool>,
-}
-
 // ----- Monitors -----
 
 #[derive(Debug, Deserialize)]
 pub struct CreateMonitor {
-    pub chain_id: i64,
     pub address: String,
     /// Human-readable function signature, e.g.
     /// `function transfer(address to, uint256 value) returns (bool)`
     pub signature: String,
+    #[serde(default)]
     pub start_block: Option<i64>,
+    #[serde(default)]
     pub end_block: Option<i64>,
 }
 
@@ -50,6 +25,5 @@ pub struct UpdateMonitor {
 #[derive(Debug, Serialize)]
 pub struct Health {
     pub status: &'static str,
-    pub chains: usize,
     pub monitors: usize,
 }

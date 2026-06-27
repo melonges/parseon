@@ -9,7 +9,6 @@ use crate::error::{AppError, AppResult};
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct MonitorRow {
     pub id: i64,
-    pub chain_id: i64,
     pub address: String,
     pub name: String,
     pub signature: String,
@@ -27,31 +26,26 @@ pub struct MonitorRow {
 
 #[derive(Debug, Clone)]
 pub struct MonitorInput {
-    pub chain_id: i64,
     pub address: String,
     pub signature: String,
     pub start_block: Option<i64>,
     pub end_block: Option<i64>,
 }
 
-/// Create a monitor: parse the signature, insert the row, then create its
-/// dedicated params table.
 pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow> {
     let spec = parse_signature(&input.signature)?;
 
-    // Resolve start_block: explicit > chain.start_block (validated by caller).
     let start_block = input.start_block.unwrap_or(0);
 
     let param_schema = serde_json::to_value(&spec.params).map_err(anyhow::Error::from)?;
 
     let row = sqlx::query_as::<_, MonitorRow>(
         r#"INSERT INTO monitors
-             (chain_id, address, name, signature, selector, input_types,
+             (address, name, signature, selector, input_types,
               param_schema, start_block, end_block)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            RETURNING *"#,
     )
-    .bind(input.chain_id)
     .bind(&input.address.to_ascii_lowercase())
     .bind(&spec.name)
     .bind(&spec.canonical_signature)
@@ -80,16 +74,6 @@ pub async fn list(pool: &PgPool) -> AppResult<Vec<MonitorRow>> {
     Ok(rows)
 }
 
-#[allow(dead_code)]
-pub async fn list_for_chain(pool: &PgPool, chain_id: i64) -> AppResult<Vec<MonitorRow>> {
-    let rows =
-        sqlx::query_as::<_, MonitorRow>("SELECT * FROM monitors WHERE chain_id = $1 ORDER BY id")
-            .bind(chain_id)
-            .fetch_all(pool)
-            .await?;
-    Ok(rows)
-}
-
 pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRow> {
     let row = sqlx::query_as::<_, MonitorRow>("SELECT * FROM monitors WHERE id = $1")
         .bind(id)
@@ -99,7 +83,6 @@ pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRow> {
 }
 
 pub async fn delete(pool: &PgPool, id: i64) -> AppResult<()> {
-    // Drop the params table first, then the row (cascades to transactions).
     dyn_table::drop_params_table(pool, id).await?;
     let res = sqlx::query("DELETE FROM monitors WHERE id = $1")
         .bind(id)
@@ -111,12 +94,6 @@ pub async fn delete(pool: &PgPool, id: i64) -> AppResult<()> {
     Ok(())
 }
 
-/// Live-update the range/enabled state of a monitor.
-///
-/// - `start_block` lowered below the current cursor resets the cursor so the
-///   gap is re-indexed.
-/// - `end_block` extended beyond the cursor clears `completed`.
-/// - `end_block` shrunk below the cursor sets `completed = true`.
 pub async fn update(
     pool: &PgPool,
     id: i64,
@@ -130,7 +107,6 @@ pub async fn update(
     if let Some(new_start) = start_block
         && new_start < current.start_block
     {
-        // Widening backwards: reset cursor to re-index the gap.
         cursor = Some(new_start - 1);
     }
 
@@ -162,7 +138,6 @@ pub async fn update(
     Ok(row)
 }
 
-/// Persist the cursor position for a monitor.
 pub async fn set_cursor(pool: &PgPool, id: i64, cursor: i64, completed: bool) -> AppResult<()> {
     sqlx::query(
         "UPDATE monitors SET cursor = $1, completed = $2, updated_at = NOW() WHERE id = $3",

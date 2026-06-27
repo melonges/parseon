@@ -1,3 +1,20 @@
+# Per-chain deployment template for evm-indexer.
+# Each chain runs its own evm-indexer instance sharing the same erpc and postgres.
+#
+# For multi-chain deployment, copy this file and set different CHAIN_ID for each:
+#   CHAIN_ID=1 docker compose up -d    # Ethereum
+#   CHAIN_ID=42161 docker compose up -d # Arbitrum
+#
+# Alternatively, run multiple services in the same docker-compose:
+#   indexer-eth:
+#     &indexer-template
+#     environment:
+#       CHAIN_ID: 1
+#   indexer-arb:
+#     <<: *indexer-template
+#     environment:
+#       CHAIN_ID: 42161
+
 services:
   postgres:
     image: postgres:16
@@ -14,6 +31,22 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  erpc:
+    image: ghcr.io/erpc/erpc
+    ports:
+      - "4000:4000"
+      - "4001:4001"
+    volumes:
+      - ./erpc.yaml:/erpc.yaml
+    env_file:
+      - .env
+    command: ["--config", "/erpc.yaml"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   anvil:
     image: ghcr.io/foundry-rs/foundry:latest

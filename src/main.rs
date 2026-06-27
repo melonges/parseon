@@ -6,7 +6,6 @@ mod error;
 mod indexer;
 mod metrics;
 mod rpc;
-mod supervisor;
 mod watcher;
 
 use tokio_util::sync::CancellationToken;
@@ -23,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .try_init();
 
-    tracing::info!("starting evm-indexer");
+    tracing::info!(chain_id = config.chain_id, "starting evm-indexer");
 
     // Metrics.
     let metrics_handle = metrics::init();
@@ -36,20 +35,36 @@ async fn main() -> anyhow::Result<()> {
     let registry = watcher::registry::Registry::new();
     registry.reload(&pool).await?;
 
-    // Cancellation token shared by the supervisor and API.
+    // Cancellation token shared by coordinator and API.
     let cancel = CancellationToken::new();
 
-    // Supervisor: per-chain coordinators.
-    let supervisor = supervisor::Supervisor::new(
-        pool.clone(),
-        registry.clone(),
-        config.block_cache_size,
-        config.poll_interval_ms,
-        cancel.clone(),
-    );
-    let mut supervisor_handle = tokio::spawn(async move {
-        if let Err(e) = supervisor.run().await {
-            tracing::error!("supervisor: {e}");
+    // Build RPC URL: {erpc_url}/{chain_id}
+    let rpc_url = format!("{}/{}", config.erpc_url, config.chain_id);
+    let chain_config = indexer::coordinator::ChainConfig {
+        chain_id: config.chain_id,
+        rpc_url,
+        batch_size: config.default_batch_size as i32,
+    };
+
+    // Coordinator: single-chain indexing loop.
+    let coordinator_handle = tokio::spawn({
+        let chain = chain_config;
+        let pool = pool.clone();
+        let registry = registry.clone();
+        let cancel = cancel.clone();
+        async move {
+            if let Err(e) = indexer::coordinator::run(
+                chain,
+                pool,
+                registry,
+                config.block_cache_size,
+                config.poll_interval_ms,
+                cancel,
+            )
+            .await
+            {
+                tracing::error!("coordinator: {e}");
+            }
         }
     });
 
@@ -58,26 +73,25 @@ async fn main() -> anyhow::Result<()> {
     let app = api::router(state, metrics_handle);
     let listener = tokio::net::TcpListener::bind(&config.http_listen).await?;
     tracing::info!(listen = %config.http_listen, "http API listening");
-    let mut server_handle = tokio::spawn(async move {
+    let server_handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             tracing::error!("http server: {e}");
         }
     });
 
-    // Graceful shutdown on SIGINT, or if the supervisor/server task ends.
+    // Graceful shutdown on SIGINT, or if coordinator/server task ends.
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        _ = &mut supervisor_handle => {
-            tracing::warn!("supervisor task exited unexpectedly");
+        _ = coordinator_handle => {
+            tracing::warn!("coordinator task exited unexpectedly");
         }
-        _ = &mut server_handle => {
+        _ = server_handle => {
             tracing::warn!("http server task exited unexpectedly");
         }
     }
 
     tracing::info!("shutting down");
     cancel.cancel();
-    // Give in-flight work a moment to drain.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     tracing::info!("bye");
     Ok(())
