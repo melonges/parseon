@@ -3,7 +3,7 @@
 ## Build & test
 
 - `cargo test` — unit tests only (in `src/abi/parse.rs` and `src/abi/decode.rs`); fast, no services needed.
-- `cargo build --release` — release binary at `target/release/evm-indexer`.
+- `cargo build --release` — release binary at `target/release/parseon`.
 - No lint/format config exists (no clippy/rustfmt config, no CI). Verify with `cargo test`.
 
 ## Running the indexer
@@ -11,19 +11,19 @@
 1. `docker compose up -d` — starts `postgres:16`, `erpc` (port 4000), and `anvil` (port 8545, 1s block time).
 2. `cp .env.example .env` — `.env` is gitignored; loaded via `dotenvy` + clap env vars.
 3. Set `CHAIN_ID` in `.env` (e.g. `CHAIN_ID=1` for Ethereum, `CHAIN_ID=42161` for Arbitrum).
-4. `./target/release/evm-indexer` — runs HTTP API + single-chain indexing coordinator.
+4. `./target/release/parseon` — runs HTTP API + single-chain indexing coordinator.
 
 Default `HTTP_LISTEN=0.0.0.0:8080`. Override if port is taken (e.g. `HTTP_LISTEN=0.0.0.0:8081`).
 
 ### Per-chain deployment
 
-Each evm-indexer instance indexes a single chain. For multi-chain:
+Each Parseon instance indexes a single chain. For multi-chain:
 ```bash
 # Instance 1: Ethereum
-CHAIN_ID=1 ./target/release/evm-indexer
+CHAIN_ID=1 ./target/release/parseon
 
 # Instance 2: Arbitrum (different terminal)
-CHAIN_ID=42161 ./target/release/evm-indexer
+CHAIN_ID=42161 ./target/release/parseon
 ```
 
 All instances share the same erpc and postgres.
@@ -90,7 +90,7 @@ erpc/          fault-tolerant RPC proxy with caching, failover, retries (separat
 
 ## Key design decisions
 
-- **Single-chain per instance**: Each evm-indexer instance indexes one chain. `CHAIN_ID` env var selects the chain.
+- **Single-chain per instance**: Each Parseon instance indexes one chain. `CHAIN_ID` env var selects the chain.
 - **Single erpc endpoint**: All chains route through erpc at `{ERPC_URL}/{chain_id}`.
 - **The registry and coordinator key everything by blockchain `chain_id`**, not a database row id.
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
