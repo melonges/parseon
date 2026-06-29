@@ -1,71 +1,51 @@
+use alloy::dyn_abi::DynSolType;
 use serde::{Deserialize, Serialize};
 
+use super::parser::AbiError;
+
 /// SQL storage kind for a decoded Solidity parameter.
+///
+/// Only primitive Solidity types are supported; arrays and tuples are rejected
+/// at monitor-creation time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SqlKind {
-    Bigint,
     Numeric,
     Bool,
     Text,
     Bytea,
-    Jsonb,
 }
 
 impl SqlKind {
     /// DDL column type used when creating the params table.
     pub fn ddl_type(self) -> &'static str {
         match self {
-            SqlKind::Bigint => "BIGINT",
             SqlKind::Numeric => "NUMERIC",
             SqlKind::Bool => "BOOLEAN",
             SqlKind::Text => "TEXT",
             SqlKind::Bytea => "BYTEA",
-            SqlKind::Jsonb => "JSONB",
         }
     }
 }
 
-/// Map a (possibly composite) Solidity type string to a SQL storage kind.
-pub fn sol_type_to_sql_kind(sol: &str) -> SqlKind {
-    let s = sol.trim();
-    // Arrays and tuples collapse into JSONB.
-    if s.starts_with('(') || s.contains('[') {
-        return SqlKind::Jsonb;
-    }
-    // Strip a leading tuple-less base type.
-    let base = s.split('(').next().unwrap_or(s).trim();
-    match base {
-        "bool" => SqlKind::Bool,
-        "address" => SqlKind::Text,
-        "string" => SqlKind::Text,
-        "bytes" => SqlKind::Bytea,
-        b if b.starts_with("bytes") => SqlKind::Bytea,
-        u if u.starts_with("uint") => {
-            let bits = parse_bits(&u["uint".len()..]);
-            if bits <= 64 {
-                SqlKind::Bigint
-            } else {
-                SqlKind::Numeric
-            }
+/// Map a resolved `DynSolType` to a SQL storage kind.
+///
+/// Returns `Err` for composite types (arrays, tuples, custom structs) so the
+/// caller (parser) can reject the signature up-front.
+pub fn sol_type_to_sql_kind(ty: &DynSolType) -> Result<SqlKind, AbiError> {
+    match ty {
+        DynSolType::Bool => Ok(SqlKind::Bool),
+        DynSolType::Address | DynSolType::String => Ok(SqlKind::Text),
+        DynSolType::Bytes | DynSolType::FixedBytes(_) | DynSolType::Function => {
+            Ok(SqlKind::Bytea)
         }
-        i if i.starts_with("int") => {
-            let bits = parse_bits(&i["int".len()..]);
-            if bits <= 64 {
-                SqlKind::Bigint
-            } else {
-                SqlKind::Numeric
-            }
-        }
-        _ => SqlKind::Jsonb,
+        DynSolType::Uint(_) | DynSolType::Int(_) => Ok(SqlKind::Numeric),
+        DynSolType::Array(_)
+        | DynSolType::FixedArray(_, _)
+        | DynSolType::Tuple(_) => Err(AbiError::Type(format!(
+            "composite type not supported: {ty}"
+        ))),
     }
-}
-
-fn parse_bits(rest: &str) -> u32 {
-    if rest.is_empty() {
-        return 256;
-    }
-    rest.parse::<u32>().unwrap_or(256)
 }
 
 /// Sanitize a Solidity parameter name into a safe SQL column identifier.
