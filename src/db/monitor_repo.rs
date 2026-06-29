@@ -1,7 +1,8 @@
+use alloy::primitives::Address;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::{FromRow, PgPool};
 use sqlx::types::Json;
+use sqlx::{FromRow, PgConnection, PgPool};
 
 use crate::abi::{ParamSpec, parse_func_signature};
 use crate::db::dyn_table;
@@ -29,20 +30,21 @@ pub struct MonitorInput {
     pub address: String,
     pub name: Option<String>,
     pub signature: String,
-    pub start_block: Option<i64>,
+    pub start_block: i64,
     pub end_block: Option<i64>,
 }
 
 pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow> {
+    validate_range(input.start_block, input.end_block)?;
+    let normalized_address = validate_address(&input.address)?;
     let spec = parse_func_signature(&input.signature)?;
 
-    let name = input.name.clone().unwrap_or_else(|| {
-        format!(
-            "{}_{}",
-            input.address.to_ascii_lowercase(),
-            spec.selector
-        )
-    });
+    let name = input
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("{}_{}", normalized_address, spec.selector));
+
+    let mut tx = pool.begin().await?;
 
     let row = sqlx::query_as::<_, MonitorRow>(
         r#"INSERT INTO monitors
@@ -51,17 +53,18 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow
            VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING *"#,
     )
-    .bind(&input.address.to_ascii_lowercase())
+    .bind(&normalized_address)
     .bind(&name)
     .bind(&input.signature)
     .bind(&spec.selector)
     .bind(Json(spec.params.clone()))
     .bind(input.start_block)
     .bind(input.end_block)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
 
-    dyn_table::create_params_table(pool, row.id, &spec.params).await?;
+    dyn_table::create_params_table(&mut tx, row.id, &spec.params).await?;
+    tx.commit().await?;
     tracing::info!(
         monitor_id = row.id,
         table = dyn_table::params_table_name(row.id),
@@ -78,6 +81,13 @@ pub async fn list(pool: &PgPool) -> AppResult<Vec<MonitorRow>> {
     Ok(rows)
 }
 
+pub async fn count(pool: &PgPool) -> AppResult<usize> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM monitors")
+        .fetch_one(pool)
+        .await?;
+    usize::try_from(count).map_err(|e| AppError::Internal(e.into()))
+}
+
 pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRow> {
     let row = sqlx::query_as::<_, MonitorRow>("SELECT * FROM monitors WHERE id = $1")
         .bind(id)
@@ -87,14 +97,16 @@ pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRow> {
 }
 
 pub async fn delete(pool: &PgPool, id: i64) -> AppResult<()> {
-    dyn_table::drop_params_table(pool, id).await?;
+    let mut tx = pool.begin().await?;
     let res = sqlx::query("DELETE FROM monitors WHERE id = $1")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound(format!("monitor {id}")));
     }
+    dyn_table::drop_params_table(&mut tx, id).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -107,14 +119,18 @@ pub async fn update(
 ) -> AppResult<MonitorRow> {
     let current = get(pool, id).await?;
 
+    let new_start = start_block.unwrap_or(current.start_block);
+    let new_end = end_block.unwrap_or(current.end_block);
+    validate_range(new_start, new_end)?;
+
     let mut cursor = current.cursor;
-    if let Some(new_start) = start_block
-        && new_start < current.start_block
-    {
-        cursor = Some(new_start - 1);
+    if let Some(new_start) = start_block {
+        let before_start = new_start - 1;
+        if new_start < current.start_block || cursor.is_none_or(|c| c < before_start) {
+            cursor = Some(before_start);
+        }
     }
 
-    let new_end = end_block.unwrap_or(current.end_block);
     let completed = match new_end {
         Some(e) => cursor.is_some_and(|c| c >= e),
         None => false,
@@ -142,14 +158,62 @@ pub async fn update(
     Ok(row)
 }
 
-pub async fn set_cursor(pool: &PgPool, id: i64, cursor: i64, completed: bool) -> AppResult<()> {
+pub async fn set_cursor(
+    conn: &mut PgConnection,
+    id: i64,
+    cursor: i64,
+    completed: bool,
+) -> AppResult<()> {
     sqlx::query(
         "UPDATE monitors SET cursor = $1, completed = $2, updated_at = NOW() WHERE id = $3",
     )
     .bind(cursor)
     .bind(completed)
     .bind(id)
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
+}
+
+fn validate_range(start_block: i64, end_block: Option<i64>) -> AppResult<()> {
+    if start_block < 0 {
+        return Err(AppError::BadRequest(
+            "start_block must be non-negative".to_string(),
+        ));
+    }
+    if end_block.is_some_and(|end| end < start_block) {
+        return Err(AppError::BadRequest(
+            "end_block must be greater than or equal to start_block".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_address(value: &str) -> AppResult<String> {
+    let address: Address = value
+        .parse()
+        .map_err(|e| AppError::BadRequest(format!("invalid address: {e}")))?;
+    Ok(address.to_string().to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_address, validate_range};
+
+    #[test]
+    fn validates_and_normalizes_addresses() {
+        assert_eq!(
+            validate_address("0x000000000000000000000000000000000000000A").unwrap(),
+            "0x000000000000000000000000000000000000000a"
+        );
+        assert!(validate_address("not-an-address").is_err());
+    }
+
+    #[test]
+    fn validates_monitor_ranges() {
+        assert!(validate_range(0, None).is_ok());
+        assert!(validate_range(10, Some(10)).is_ok());
+        assert!(validate_range(-1, None).is_err());
+        assert!(validate_range(10, Some(9)).is_err());
+    }
 }

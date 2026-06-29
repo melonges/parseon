@@ -2,7 +2,7 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
-use crate::rpc::fetch::MatchedTx;
+use crate::rpc::fetch::BlockTx;
 use alloy::primitives::B256;
 
 /// A simple per-chain block cache keyed by block number.
@@ -17,7 +17,7 @@ pub struct BlockCache {
 #[derive(Clone)]
 pub struct CachedBlock {
     pub block_hash: B256,
-    pub txs: Vec<MatchedTx>,
+    pub txs: Vec<BlockTx>,
 }
 
 impl BlockCache {

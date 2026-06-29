@@ -8,41 +8,34 @@
 
 ## Running the indexer
 
-1. `docker compose up -d` — starts `postgres:16`, `erpc` (port 4000), and `anvil` (port 8545, 1s block time).
+1. `docker compose up -d` — starts `postgres:16` and the Rust indexer.
 2. `cp .env.example .env` — `.env` is gitignored; loaded via `dotenvy` + clap env vars.
-3. Set `CHAIN_ID` in `.env` (e.g. `CHAIN_ID=1` for Ethereum, `CHAIN_ID=42161` for Arbitrum).
+3. Set `RPC_URL` and `CHAIN_ID` in `.env` (the defaults target Base mainnet).
 4. `./target/release/parseon` — runs HTTP API + single-chain indexing coordinator.
 
 Default `HTTP_LISTEN=0.0.0.0:8080`. Override if port is taken (e.g. `HTTP_LISTEN=0.0.0.0:8081`).
+
+The indexer validates the RPC endpoint's chain ID at startup and only indexes
+blocks returned by the RPC `finalized` tag. Base's public endpoint is
+rate-limited; replace `RPC_URL` for sustained workloads.
 
 ### Per-chain deployment
 
 Each Parseon instance indexes a single chain. For multi-chain:
 ```bash
-# Instance 1: Ethereum
+# Instance 1: Base
+CHAIN_ID=8453 ./target/release/parseon
+
+# Instance 2: Ethereum
 CHAIN_ID=1 ./target/release/parseon
 
-# Instance 2: Arbitrum (different terminal)
+# Instance 3: Arbitrum (different terminal)
 CHAIN_ID=42161 ./target/release/parseon
 ```
 
-All instances share the same erpc and postgres.
-
-### erpc Configuration
-
-erpc is configured via `erpc.yaml` in the project root. Key settings:
-- **Providers**: Add API keys to `.env` (e.g. `ALCHEMY_API_KEY`) and reference them in `erpc.yaml`
-- **Networks**: Add/remove chain IDs in the `projects[].networks[]` section of `erpc.yaml`
-- **Caching**: Memory-based caching with finality-aware TTLs (finalized = permanent, realtime = 2s)
-- **Metrics**: Prometheus metrics available at `:4001/metrics`
-
-### Chain URL Format
-
-With erpc, chains are accessed via URLs like:
-- `http://erpc:4000/main/evm/1` (Ethereum mainnet)
-- `http://erpc:4000/main/evm/42161` (Arbitrum)
-
-The indexer's `ERPC_URL` should be set to `http://erpc:4000/main/evm` (base path), and the coordinator appends `/{chain_id}` automatically.
+Each instance needs its own direct `RPC_URL`. Instances may share PostgreSQL,
+but monitor ownership must not overlap because every instance polls the same
+`monitors` table.
 
 ## Critical gotchas
 
@@ -69,31 +62,25 @@ Postgres has no unsigned BIGINT. `chain_id` is `i64` in Rust (maps to `BIGINT`) 
 
 Path captures use `{param}`, not `:param` (the latter panics at startup with "Path segments must not start with `:`").
 
-### anvil docker command must be a single string
-
-The foundry image entrypoint is `/bin/sh -c`. Passing flags as separate array elements drops them (anvil binds `127.0.0.1` only). The command must be a single-element array: `["anvil --host 0.0.0.0 --port 8545 --block-time 1"]`.
-
 ## Architecture
 
 ```
-main.rs        config load → DB connect (+migrate) → registry reload → coordinator + HTTP API
-indexer/       coordinator: poll loop (fetch blocks → match monitors → decode calldata → persist)
-               decode_persist: ABI decode + insert tx + insert params into dynamic table
-watcher/       registry: in-memory monitors keyed by blockchain chain_id, reloaded on API mutations
-                model: Monitor struct with covers()/next_block() cursor logic
+main.rs        config load → DB connect (+migrate) → RPC chain validation → coordinator + HTTP API
+indexer/       coordinator: DB monitor load → finalized head → ordered block processing
+               decode_persist: atomic tx + params + cursor persistence per block
+watcher/       runtime Monitor conversion and covers()/next_block() cursor logic
 abi/           runtime function-signature parsing + calldata decoding (no codegen, no sol! macro)
 rpc/           alloy HTTP provider, block fetch with receipt filtering, LRU block cache
 db/            monitor_repo, tx_repo, dyn_table (per-monitor params tables)
-api/           axum REST: /monitors/{id}, /healthz, /metrics
-erpc/          fault-tolerant RPC proxy with caching, failover, retries (separate container)
+api/           axum REST: /monitors/{id}, /healthz
 ```
 
 ## Key design decisions
 
 - **Single-chain per instance**: Each Parseon instance indexes one chain. `CHAIN_ID` env var selects the chain.
-- **Single erpc endpoint**: All chains route through erpc at `{ERPC_URL}/{chain_id}`.
-- **The registry and coordinator key everything by blockchain `chain_id`**, not a database row id.
+- **Direct RPC endpoint**: `RPC_URL` must serve the configured `CHAIN_ID` and support the `finalized` block tag.
+- **Database-backed monitor state**: The coordinator reloads monitors each poll; no in-memory registry can retain stale cursors.
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
 - **Per-monitor dynamic tables**: each monitor gets a `params_{monitor_id}` table with columns derived from the function signature's param types. Created/dropped dynamically in `db/dyn_table.rs` using `AssertSqlSafe`.
 - **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`) and dynamic table naming.
-- **erpc provides**: fault-tolerant RPC with failover, re-org-aware permanent caching, rate limiting, circuit breakers, hedged requests.
+- **Atomic block persistence**: transaction metadata, decoded parameter rows, and all covering monitor cursors commit in one PostgreSQL transaction.

@@ -1,6 +1,7 @@
 use alloy::dyn_abi::{DynSolType, Specifier};
 use alloy::json_abi::Function;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use super::types::{SqlKind, sanitize_column, sol_type_to_sql_kind};
 
@@ -43,18 +44,31 @@ pub fn parse_func_signature(signature: &str) -> Result<MethodSpec, AbiError> {
     let func = Function::parse(signature)
         .map_err(|e| AbiError::Parse(format!("failed to parse signature: {e}")))?;
 
+    let mut columns = HashSet::new();
     let params = func
         .inputs
         .iter()
-        .map(|p| -> Result<ParamSpec, AbiError> {
+        .enumerate()
+        .map(|(index, p)| -> Result<ParamSpec, AbiError> {
             let ty = Specifier::<DynSolType>::resolve(p)
                 .map_err(|e| AbiError::Type(format!("param `{}`: {e}", p.name)))?;
             let sql_kind = sol_type_to_sql_kind(&ty)?;
+            let name = if p.name.is_empty() {
+                format!("arg_{index}")
+            } else {
+                p.name.clone()
+            };
+            let column = sanitize_column(&name);
+            if !columns.insert(column.clone()) {
+                return Err(AbiError::Parse(format!(
+                    "duplicate parameter name `{name}`"
+                )));
+            }
             Ok(ParamSpec {
-                name: p.name.clone(),
+                name,
                 sol_type: format!("{ty}"),
                 sql_kind,
-                column: sanitize_column(&p.name),
+                column,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -73,10 +87,9 @@ mod tests {
 
     #[test]
     fn parses_transfer() {
-        let spec = parse_func_signature(
-            "function transfer(address to, uint256 value) returns (bool)",
-        )
-        .unwrap();
+        let spec =
+            parse_func_signature("function transfer(address to, uint256 value) returns (bool)")
+                .unwrap();
         assert_eq!(spec.name, "transfer");
         assert_eq!(spec.canonical_signature, "transfer(address,uint256)");
         assert_eq!(spec.selector, "0xa9059cbb");
@@ -89,8 +102,8 @@ mod tests {
 
     #[test]
     fn parses_approve() {
-        let spec =
-            parse_func_signature("approve(address spender, uint256 amount) returns (bool)").unwrap();
+        let spec = parse_func_signature("approve(address spender, uint256 amount) returns (bool)")
+            .unwrap();
         assert_eq!(spec.canonical_signature, "approve(address,uint256)");
         assert_eq!(spec.selector, "0x095ea7b3");
     }
@@ -99,13 +112,19 @@ mod tests {
     fn parses_no_name_params() {
         let spec = parse_func_signature("transfer(address,uint256)").unwrap();
         assert_eq!(spec.canonical_signature, "transfer(address,uint256)");
-        assert_eq!(spec.params[0].column, "param_arg");
+        assert_eq!(spec.params[0].column, "param_arg_0");
+        assert_eq!(spec.params[1].column, "param_arg_1");
+    }
+
+    #[test]
+    fn rejects_duplicate_param_names() {
+        let err = parse_func_signature("transfer(address value,uint256 value)").unwrap_err();
+        assert!(err.to_string().contains("duplicate parameter name"));
     }
 
     #[test]
     fn rejects_array_param() {
-        let err = parse_func_signature("doThing(uint256[] ids, address[] users)")
-            .unwrap_err();
+        let err = parse_func_signature("doThing(uint256[] ids, address[] users)").unwrap_err();
         assert!(
             err.to_string().contains("composite type not supported"),
             "got: {err}"

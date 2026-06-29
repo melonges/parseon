@@ -12,8 +12,7 @@ pub struct CreateMonitor {
     /// Human-readable function signature, e.g.
     /// `function transfer(address to, uint256 value) returns (bool)`
     pub signature: String,
-    #[serde(default)]
-    pub start_block: Option<i64>,
+    pub start_block: i64,
     #[serde(default)]
     pub end_block: Option<i64>,
 }

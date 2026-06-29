@@ -2,7 +2,10 @@ use clap::Parser;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize, Parser)]
-#[command(name = "parseon", about = "Parseon — EVM indexer with runtime ABI decoding")]
+#[command(
+    name = "parseon",
+    about = "Parseon — EVM indexer with runtime ABI decoding"
+)]
 pub struct Config {
     /// PostgreSQL connection string
     #[arg(long, env = "DATABASE_URL")]
@@ -28,12 +31,12 @@ pub struct Config {
     #[arg(long, env = "BLOCK_CACHE_SIZE", default_value_t = 512)]
     pub block_cache_size: usize,
 
-    /// erpc base URL (e.g. http://erpc:4000/main/evm)
-    #[arg(long, env = "ERPC_URL")]
-    pub erpc_url: String,
+    /// Direct JSON-RPC endpoint for the indexed chain
+    #[arg(long, env = "RPC_URL", default_value = "https://mainnet.base.org")]
+    pub rpc_url: String,
 
-    /// Chain ID to index (e.g. 1 for Ethereum, 42161 for Arbitrum)
-    #[arg(long, env = "CHAIN_ID")]
+    /// Chain ID to index (e.g. 8453 for Base, 1 for Ethereum)
+    #[arg(long, env = "CHAIN_ID", default_value_t = 8453)]
     pub chain_id: i64,
 }
 

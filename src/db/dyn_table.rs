@@ -1,4 +1,4 @@
-use sqlx::{AssertSqlSafe, PgConnection, PgPool, QueryBuilder};
+use sqlx::{AssertSqlSafe, PgConnection, QueryBuilder, Transaction};
 
 use crate::abi::{ParamSpec, SqlValue};
 
@@ -13,7 +13,7 @@ pub fn params_table_name(monitor_id: i64) -> String {
 /// Identifiers (table name, column names) are produced internally from a
 /// numeric id and sanitized param names, so this DDL is injection-safe.
 pub async fn create_params_table(
-    pool: &PgPool,
+    tx: &mut Transaction<'_, sqlx::Postgres>,
     monitor_id: i64,
     params: &[ParamSpec],
 ) -> Result<(), sqlx::Error> {
@@ -31,16 +31,19 @@ pub async fn create_params_table(
     }
     ddl.push_str("\n);");
 
-    sqlx::query(AssertSqlSafe(ddl)).execute(pool).await?;
+    sqlx::query(AssertSqlSafe(ddl)).execute(&mut **tx).await?;
     Ok(())
 }
 
 /// Drop the per-monitor params table. `monitor_id` is an internal integer,
 /// so the table name is not user-controlled.
-pub async fn drop_params_table(pool: &PgPool, monitor_id: i64) -> Result<(), sqlx::Error> {
+pub async fn drop_params_table(
+    tx: &mut Transaction<'_, sqlx::Postgres>,
+    monitor_id: i64,
+) -> Result<(), sqlx::Error> {
     let table = params_table_name(monitor_id);
     let stmt = format!("DROP TABLE IF EXISTS \"{table}\" CASCADE");
-    sqlx::query(AssertSqlSafe(stmt)).execute(pool).await?;
+    sqlx::query(AssertSqlSafe(stmt)).execute(&mut **tx).await?;
     Ok(())
 }
 

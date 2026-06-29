@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-use std::time::Instant;
-
 use alloy::consensus::Transaction;
 use alloy::eips::BlockNumberOrTag;
 use alloy::network::primitives::BlockTransactionsKind;
@@ -9,7 +6,6 @@ use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 
 use crate::error::{AppError, AppResult};
-use crate::metrics;
 use crate::rpc::provider::HttpProvider;
 
 /// A transaction paired with its receipt, ready for decoding/persistence.
@@ -26,18 +22,22 @@ pub struct MatchedTx {
     pub status: bool,
 }
 
-/// Fetch a block's transactions + receipts and return matched txs that have
-/// both a known `to` address and a successful receipt.
-///
-/// Failed transactions (status=false) are skipped: their calldata is not
-/// meaningful for indexing.
+/// Transaction fields cached from a full block before monitor matching.
+#[derive(Clone)]
+pub struct BlockTx {
+    pub hash: B256,
+    pub from: Address,
+    pub to: Address,
+    pub input: Vec<u8>,
+    pub value: U256,
+}
+
+/// Fetch and cache the transaction fields needed for monitor matching.
 pub async fn fetch_block(
     provider: &HttpProvider,
     block_number: u64,
-    chain_label: &str,
-) -> AppResult<(B256, Vec<MatchedTx>)> {
-    let start = Instant::now();
-
+    _chain_label: &str,
+) -> AppResult<(B256, Vec<BlockTx>)> {
     let block = provider
         .get_block_by_number(BlockNumberOrTag::Number(block_number))
         .kind(BlockTransactionsKind::Full)
@@ -46,43 +46,45 @@ pub async fn fetch_block(
         .ok_or_else(|| AppError::NotFound(format!("block {block_number}")))?;
 
     let block_hash = block.header().hash;
-    let receipts = provider
-        .get_block_receipts(block_number.into())
-        .await
-        .map_err(AppError::Rpc)?
-        .unwrap_or_default();
-
-    let receipts_by_hash: HashMap<B256, &alloy::rpc::types::TransactionReceipt> = receipts
-        .iter()
-        .filter_map(|r| {
-            let h = r.transaction_hash();
-            (h != B256::ZERO).then_some((h, r))
-        })
-        .collect();
-
     let mut out = Vec::new();
     for tx in block.transactions().txns() {
         let Some(to) = tx.to() else { continue };
-        let hash = tx.tx_hash();
-        let Some(receipt) = receipts_by_hash.get(&hash) else {
-            continue;
-        };
-        if !receipt.status() {
-            continue;
-        }
-        out.push(MatchedTx {
-            hash,
+        out.push(BlockTx {
+            hash: tx.tx_hash(),
             from: tx.from(),
             to,
             input: tx.input().to_vec(),
             value: tx.value(),
+        });
+    }
+
+    Ok((block_hash, out))
+}
+
+/// Fetch receipts only for transactions that matched a monitor. Base's public
+/// RPC does not expose `eth_getBlockReceipts`, so this avoids one receipt call
+/// per unrelated transaction in the block.
+pub async fn fetch_receipts(provider: &HttpProvider, txs: &[BlockTx]) -> AppResult<Vec<MatchedTx>> {
+    let mut out = Vec::with_capacity(txs.len());
+    for tx in txs {
+        let receipt = provider
+            .get_transaction_receipt(tx.hash)
+            .await
+            .map_err(AppError::Rpc)?
+            .ok_or_else(|| AppError::NotFound(format!("receipt for {}", tx.hash)))?;
+        if !receipt.status() {
+            continue;
+        }
+        out.push(MatchedTx {
+            hash: tx.hash,
+            from: tx.from,
+            to: tx.to,
+            input: tx.input.clone(),
+            value: tx.value,
             gas_used: receipt.gas_used(),
             gas_price: receipt.effective_gas_price(),
             status: true,
         });
     }
-
-    metrics::block_fetch_seconds(chain_label).record(start.elapsed().as_secs_f64());
-    metrics::blocks_fetched(chain_label);
-    Ok((block_hash, out))
+    Ok(out)
 }

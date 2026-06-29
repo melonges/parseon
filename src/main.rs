@@ -4,7 +4,6 @@ mod config;
 mod db;
 mod error;
 mod indexer;
-mod metrics;
 mod rpc;
 mod watcher;
 
@@ -24,25 +23,26 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(chain_id = config.chain_id, "starting parseon");
 
-    // Metrics.
-    let metrics_handle = metrics::init();
-    metrics::describe();
-
     // Database.
     let pool = db::pool::connect(&config.database_url).await?;
 
-    // Watcher registry.
-    let registry = watcher::registry::Registry::new();
-    registry.reload(&pool).await?;
+    // Fail fast if the direct RPC endpoint points at a different chain.
+    let rpc_provider = rpc::provider::build(&config.rpc_url)?;
+    let rpc_chain_id = rpc::provider::chain_id(&rpc_provider).await?;
+    let configured_chain_id = u64::try_from(config.chain_id)
+        .map_err(|_| anyhow::anyhow!("CHAIN_ID must be non-negative"))?;
+    anyhow::ensure!(
+        rpc_chain_id == configured_chain_id,
+        "RPC chain ID {rpc_chain_id} does not match configured CHAIN_ID {configured_chain_id}"
+    );
+    tracing::info!(chain_id = rpc_chain_id, "RPC chain ID validated");
 
     // Cancellation token shared by coordinator and API.
     let cancel = CancellationToken::new();
 
-    // Build RPC URL: {erpc_url}/{chain_id}
-    let rpc_url = format!("{}/{}", config.erpc_url, config.chain_id);
     let chain_config = indexer::coordinator::ChainConfig {
         chain_id: config.chain_id,
-        rpc_url,
+        rpc_url: config.rpc_url.clone(),
         batch_size: config.default_batch_size as i32,
     };
 
@@ -50,13 +50,11 @@ async fn main() -> anyhow::Result<()> {
     let coordinator_handle = tokio::spawn({
         let chain = chain_config;
         let pool = pool.clone();
-        let registry = registry.clone();
         let cancel = cancel.clone();
         async move {
             if let Err(e) = indexer::coordinator::run(
                 chain,
                 pool,
-                registry,
                 config.block_cache_size,
                 config.poll_interval_ms,
                 cancel,
@@ -69,8 +67,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // HTTP API.
-    let state = api::AppState::new(pool.clone(), registry.clone());
-    let app = api::router(state, metrics_handle);
+    let state = api::AppState::new(pool.clone());
+    let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(&config.http_listen).await?;
     tracing::info!(listen = %config.http_listen, "http API listening");
     let server_handle = tokio::spawn(async move {
