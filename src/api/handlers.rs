@@ -24,6 +24,7 @@ pub async fn create_monitor(
 ) -> AppResult<Json<crate::db::monitor_repo::MonitorRow>> {
     let input = MonitorInput {
         address: body.address,
+        name: body.name,
         signature: body.signature,
         start_block: body.start_block,
         end_block: body.end_block,

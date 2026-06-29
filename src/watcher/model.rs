@@ -50,7 +50,7 @@ impl Monitor {
     /// Parse a 0x-prefixed selector string into 4 bytes.
     pub fn parse_selector(s: &str) -> [u8; 4] {
         let h = s.strip_prefix("0x").unwrap_or(s);
-        let bytes = crate::abi::parse::hex_decode(h);
+        let bytes = alloy::hex::decode(h).unwrap_or_default();
         let mut out = [0u8; 4];
         let n = bytes.len().min(4);
         out[..n].copy_from_slice(&bytes[..n]);

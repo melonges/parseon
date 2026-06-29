@@ -45,9 +45,19 @@ fn row_to_monitor(row: &MonitorRow) -> Result<Monitor, anyhow::Error> {
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid monitor address {}: {e}", row.address))?;
     let selector = Monitor::parse_selector(&row.selector);
-
-    let params: Vec<crate::abi::ParamSpec> = serde_json::from_value(row.param_schema.clone())
-        .map_err(|e| anyhow::anyhow!("invalid param_schema for monitor {}: {e}", row.id))?;
+    let params: Vec<crate::abi::ParamSpec> = row.param_schema.0.clone();
+    let input_types = if params.is_empty() {
+        String::from("()")
+    } else {
+        format!(
+            "({})",
+            params
+                .iter()
+                .map(|p| p.sol_type.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
 
     Ok(Monitor {
         id: row.id,
@@ -55,7 +65,7 @@ fn row_to_monitor(row: &MonitorRow) -> Result<Monitor, anyhow::Error> {
         selector,
         name: row.name.clone(),
         canonical_signature: row.signature.clone(),
-        input_types: row.input_types.clone(),
+        input_types,
         params,
         start_block: row.start_block,
         end_block: row.end_block,
