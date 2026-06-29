@@ -1,5 +1,5 @@
-# Per-chain deployment template for evm-indexer.
-# Each chain runs its own evm-indexer instance sharing the same erpc and postgres.
+# Per-chain deployment template for Parseon.
+# Each chain runs its own Parseon instance sharing the same erpc and postgres.
 #
 # For multi-chain deployment, copy this file and set different CHAIN_ID for each:
 #   CHAIN_ID=1 docker compose up -d    # Ethereum
@@ -21,7 +21,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: evm_indexer
+      POSTGRES_DB: parseon
     ports:
       - "5432:5432"
     volumes:
@@ -41,12 +41,7 @@ services:
       - ./erpc.yaml:/erpc.yaml
     env_file:
       - .env
-    command: ["--config", "/erpc.yaml"]
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    command: ["/erpc-server", "--config", "/erpc.yaml"]
 
   anvil:
     image: ghcr.io/foundry-rs/foundry:latest
@@ -54,5 +49,53 @@ services:
     ports:
       - "8545:8545"
 
+  indexer:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/parseon
+      ERPC_URL: http://erpc:4000/main/evm
+    depends_on:
+      postgres:
+        condition: service_healthy
+      erpc:
+        condition: service_started
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   pgdata:
+  promdata:
+  grafana_data:
