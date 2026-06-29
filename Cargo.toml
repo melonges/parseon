@@ -1,5 +1,5 @@
 [package]
-name = "evm-indexer"
+name = "parseon"
 version = "0.1.0"
 edition = "2024"
 
@@ -23,6 +23,7 @@ sqlx = { version = "0.9", features = [
     "migrate",
     "chrono",
     "json",
+    "bigdecimal",
 ] }
 chrono = { version = "0.4", features = ["serde"] }
 axum = "0.8"
