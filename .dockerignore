@@ -1,0 +1,13 @@
+# Build context — keep this small to speed up `docker build`.
+target/
+.git/
+.gitignore
+.env
+.env.example
+.dockerignore
+Dockerfile
+docker-compose.yml
+erpc.yaml
+prometheus.yml
+grafana/
+*.md
