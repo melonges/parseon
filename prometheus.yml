@@ -1,0 +1,21 @@
+# Prometheus scrape configuration for the Parseon stack.
+# Targets are reached over the docker compose network (service names).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: parseon
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["indexer:8080"]
+        labels:
+          service: indexer
+
+  - job_name: erpc
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["erpc:4001"]
+        labels:
+          service: erpc
