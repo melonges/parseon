@@ -104,21 +104,30 @@ projects:
             successThresholdCount: 8
 
     upstreams:
-      - id: alchemy-main
-        endpoint: ${ALCHEMY_API_KEY}
-        rateLimitBudget: global
-
       - id: public-eth
         endpoint: https://ethereum-rpc.publicnode.com
         evm:
           chainId: 1
-        tags: ["tier:fallback"]
 
       - id: public-arb
-        endpoint: https://arbitrum-one.publicRPC.com
+        endpoint: https://arbitrum-one.publicnode.com
         evm:
           chainId: 42161
-        tags: ["tier:fallback"]
+
+      - id: public-op
+        endpoint: https://optimism-rpc.publicnode.com
+        evm:
+          chainId: 10
+
+      - id: public-base
+        endpoint: https://base-rpc.publicnode.com
+        evm:
+          chainId: 8453
+
+      - id: public-polygon
+        endpoint: https://polygon-bor-rpc.publicnode.com
+        evm:
+          chainId: 137
 
 rateLimiters:
   budgets:
