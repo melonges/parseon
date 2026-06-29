@@ -1,8 +1,11 @@
-use alloy::primitives::U256;
-use sqlx::PgPool;
+use alloy::hex;
+use sqlx::types::BigDecimal;
+use std::str::FromStr;
 use std::time::Instant;
 
-use crate::abi::{decode_calldata, parse::hex_encode};
+use sqlx::PgPool;
+
+use crate::abi::decode_calldata;
 use crate::db::{dyn_table, monitor_repo, tx_repo, tx_repo::TxInput};
 use crate::error::AppResult;
 use crate::metrics;
@@ -28,7 +31,7 @@ pub async fn process_block(
 
     for tx in txs {
         let selector_bytes = tx.input.get(..4).unwrap_or(&[]);
-        let selector_hex = format!("0x{}", hex_encode(selector_bytes));
+        let selector_hex = format!("0x{}", hex::encode(selector_bytes));
 
         let Some(monitor) = monitors
             .iter()
@@ -63,8 +66,10 @@ pub async fn process_block(
             from_addr: &tx.from.to_string(),
             to_addr: &tx.to.to_string(),
             value: uint_to_decimal(tx.value),
-            gas_used: tx.gas_used.to_string(),
-            gas_price: tx.gas_price.to_string(),
+            gas_used: BigDecimal::from_str(&tx.gas_used.to_string())
+                .expect("u64 fits BigDecimal"),
+            gas_price: BigDecimal::from_str(&tx.gas_price.to_string())
+                .expect("u128 fits BigDecimal"),
             status: 1,
             input_raw: tx.input.clone(),
             selector: &selector_hex,
@@ -105,7 +110,8 @@ pub async fn advance_cursor(pool: &PgPool, monitor: &Monitor, block_number: i64)
     Ok(())
 }
 
-/// Convert a U256 to a decimal string (no scientific notation).
-fn uint_to_decimal(v: U256) -> String {
-    v.to_string()
+/// Convert a U256 to a BigDecimal via its decimal string form (no scientific
+/// notation), preserving full 256-bit precision for `NUMERIC` storage.
+fn uint_to_decimal(v: alloy::primitives::U256) -> BigDecimal {
+    BigDecimal::from_str(&v.to_string()).expect("U256 decimal fits BigDecimal")
 }

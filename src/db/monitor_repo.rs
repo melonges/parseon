@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::{FromRow, PgPool};
+use sqlx::types::Json;
 
-use crate::abi::parse_signature;
+use crate::abi::{ParamSpec, parse_func_signature};
 use crate::db::dyn_table;
 use crate::error::{AppError, AppResult};
 
@@ -13,8 +14,7 @@ pub struct MonitorRow {
     pub name: String,
     pub signature: String,
     pub selector: String,
-    pub input_types: String,
-    pub param_schema: serde_json::Value,
+    pub param_schema: Json<Vec<ParamSpec>>,
     pub start_block: i64,
     pub end_block: Option<i64>,
     pub cursor: Option<i64>,
@@ -27,32 +27,36 @@ pub struct MonitorRow {
 #[derive(Debug, Clone)]
 pub struct MonitorInput {
     pub address: String,
+    pub name: Option<String>,
     pub signature: String,
     pub start_block: Option<i64>,
     pub end_block: Option<i64>,
 }
 
 pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow> {
-    let spec = parse_signature(&input.signature)?;
+    let spec = parse_func_signature(&input.signature)?;
 
-    let start_block = input.start_block.unwrap_or(0);
-
-    let param_schema = serde_json::to_value(&spec.params).map_err(anyhow::Error::from)?;
+    let name = input.name.clone().unwrap_or_else(|| {
+        format!(
+            "{}_{}",
+            input.address.to_ascii_lowercase(),
+            spec.selector
+        )
+    });
 
     let row = sqlx::query_as::<_, MonitorRow>(
         r#"INSERT INTO monitors
-             (address, name, signature, selector, input_types,
+             (address, name, signature, selector,
               param_schema, start_block, end_block)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING *"#,
     )
     .bind(&input.address.to_ascii_lowercase())
-    .bind(&spec.name)
-    .bind(&spec.canonical_signature)
+    .bind(&name)
+    .bind(&input.signature)
     .bind(&spec.selector)
-    .bind(&spec.input_types)
-    .bind(&param_schema)
-    .bind(start_block)
+    .bind(Json(spec.params.clone()))
+    .bind(input.start_block)
     .bind(input.end_block)
     .fetch_one(pool)
     .await?;

@@ -1,0 +1,1 @@
+ALTER TABLE monitors DROP COLUMN IF EXISTS input_types;

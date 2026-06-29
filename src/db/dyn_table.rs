@@ -1,6 +1,6 @@
 use sqlx::{AssertSqlSafe, PgConnection, PgPool, QueryBuilder};
 
-use crate::abi::{ParamSpec, SqlKind};
+use crate::abi::{ParamSpec, SqlValue};
 
 /// Return the params table name for a monitor id.
 pub fn params_table_name(monitor_id: i64) -> String {
@@ -46,14 +46,15 @@ pub async fn drop_params_table(pool: &PgPool, monitor_id: i64) -> Result<(), sql
 
 /// Insert a decoded transaction's params into the monitor's params table.
 ///
-/// All decoded values are bound as parameters and cast to the column's SQL
-/// type within the statement. `None` becomes SQL NULL.
+/// Each value is bound via sqlx's native `Encode<Postgres>` matching its
+/// `SqlValue` variant — no per-column `::cast` is needed because the params
+/// table columns already carry the corresponding SqlKind DDL type.
 pub async fn insert_params(
     conn: &mut PgConnection,
     monitor_id: i64,
     params: &[ParamSpec],
     tx_hash: &str,
-    values: &[Option<String>],
+    values: &[SqlValue],
 ) -> Result<(), sqlx::Error> {
     let table = params_table_name(monitor_id);
 
@@ -64,28 +65,14 @@ pub async fn insert_params(
     }
     qb.push(") VALUES (");
     qb.push_bind(tx_hash.to_string());
-    for (p, val) in params.iter().zip(values.iter()) {
+    for val in values.iter() {
         qb.push(", ");
-        match p.sql_kind {
-            SqlKind::Text => {
-                qb.push_bind(val.clone());
-            }
-            SqlKind::Numeric => {
-                qb.push_bind(val.clone()).push("::numeric");
-            }
-            SqlKind::Bigint => {
-                qb.push_bind(val.clone()).push("::bigint");
-            }
-            SqlKind::Bool => {
-                qb.push_bind(val.clone()).push("::boolean");
-            }
-            SqlKind::Bytea => {
-                qb.push("decode(").push_bind(val.clone()).push(", 'hex')");
-            }
-            SqlKind::Jsonb => {
-                qb.push_bind(val.clone()).push("::jsonb");
-            }
-        }
+        match val {
+            SqlValue::Numeric(v) => qb.push_bind(v.clone()),
+            SqlValue::Bool(v) => qb.push_bind(*v),
+            SqlValue::Text(v) => qb.push_bind(v.clone()),
+            SqlValue::Bytea(v) => qb.push_bind(v.clone()),
+        };
     }
     qb.push(") ON CONFLICT (tx_hash) DO NOTHING");
 
