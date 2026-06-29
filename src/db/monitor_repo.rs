@@ -63,12 +63,12 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow
     .fetch_one(&mut *tx)
     .await?;
 
-    dyn_table::create_params_table(&mut tx, row.id, &spec.params).await?;
+    dyn_table::create_result_table(&mut tx, &row.address, &row.selector, &spec.params).await?;
     tx.commit().await?;
     tracing::info!(
         monitor_id = row.id,
-        table = dyn_table::params_table_name(row.id),
-        "created params table for monitor"
+        table = dyn_table::result_table_name(&row.address, &row.selector)?,
+        "created result table for monitor"
     );
 
     Ok(row)
@@ -98,14 +98,19 @@ pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRow> {
 
 pub async fn delete(pool: &PgPool, id: i64) -> AppResult<()> {
     let mut tx = pool.begin().await?;
+    let current =
+        sqlx::query_as::<_, MonitorRow>("SELECT * FROM monitors WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("monitor {id}")))?;
+
+    dyn_table::drop_result_table(&mut tx, &current.address, &current.selector).await?;
     let res = sqlx::query("DELETE FROM monitors WHERE id = $1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    if res.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("monitor {id}")));
-    }
-    dyn_table::drop_params_table(&mut tx, id).await?;
+    debug_assert_eq!(res.rows_affected(), 1);
     tx.commit().await?;
     Ok(())
 }
@@ -117,18 +122,35 @@ pub async fn update(
     end_block: Option<Option<i64>>,
     enabled: Option<bool>,
 ) -> AppResult<MonitorRow> {
-    let current = get(pool, id).await?;
+    let mut tx = pool.begin().await?;
+    let current =
+        sqlx::query_as::<_, MonitorRow>("SELECT * FROM monitors WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("monitor {id}")))?;
 
     let new_start = start_block.unwrap_or(current.start_block);
     let new_end = end_block.unwrap_or(current.end_block);
     validate_range(new_start, new_end)?;
 
-    let mut cursor = current.cursor;
-    if let Some(new_start) = start_block {
-        let before_start = new_start - 1;
-        if new_start < current.start_block || cursor.is_none_or(|c| c < before_start) {
-            cursor = Some(before_start);
-        }
+    let requires_reindex = new_start != current.start_block
+        || new_end.is_some_and(|end| current.cursor.is_some_and(|cursor| cursor > end));
+
+    let cursor = if requires_reindex {
+        dyn_table::truncate_result_table(&mut tx, &current.address, &current.selector).await?;
+        Some(new_start - 1)
+    } else {
+        current.cursor
+    };
+
+    if requires_reindex {
+        tracing::info!(
+            monitor_id = id,
+            table = dyn_table::result_table_name(&current.address, &current.selector)?,
+            cursor,
+            "truncated result table and reset monitor cursor"
+        );
     }
 
     let completed = match new_end {
@@ -153,8 +175,9 @@ pub async fn update(
     .bind(cursor)
     .bind(completed)
     .bind(id)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(row)
 }
 

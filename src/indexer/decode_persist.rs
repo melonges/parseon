@@ -26,6 +26,15 @@ pub async fn process_block(
     let mut decoded_count = 0usize;
     let mut db_tx = pool.begin().await?;
 
+    // Serialize block persistence with monitor updates/deletion. Those paths
+    // lock the monitor row before truncating or dropping its result table.
+    let mut monitor_ids = monitors.iter().map(|m| m.id).collect::<Vec<_>>();
+    monitor_ids.sort_unstable();
+    sqlx::query("SELECT id FROM monitors WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+        .bind(&monitor_ids)
+        .fetch_all(&mut *db_tx)
+        .await?;
+
     for tx in txs {
         let selector_bytes = tx.input.get(..4).unwrap_or(&[]);
         let selector_hex = format!("0x{}", hex::encode(selector_bytes));
@@ -72,9 +81,9 @@ pub async fn process_block(
         tx_repo::insert_tx(&mut db_tx, &tx_input).await?;
         dyn_table::insert_params(
             &mut db_tx,
-            monitor.id,
+            &monitor.address.to_string(),
+            &selector_hex,
             &monitor.params,
-            &tx.hash.to_string(),
             &params,
         )
         .await?;

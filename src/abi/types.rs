@@ -36,32 +36,10 @@ pub fn sol_type_to_sql_kind(ty: &DynSolType) -> Result<SqlKind, AbiError> {
     match ty {
         DynSolType::Bool => Ok(SqlKind::Bool),
         DynSolType::Address | DynSolType::String => Ok(SqlKind::Text),
-        DynSolType::Bytes | DynSolType::FixedBytes(_) | DynSolType::Function => {
-            Ok(SqlKind::Bytea)
-        }
+        DynSolType::Bytes | DynSolType::FixedBytes(_) | DynSolType::Function => Ok(SqlKind::Bytea),
         DynSolType::Uint(_) | DynSolType::Int(_) => Ok(SqlKind::Numeric),
-        DynSolType::Array(_)
-        | DynSolType::FixedArray(_, _)
-        | DynSolType::Tuple(_) => Err(AbiError::Type(format!(
-            "composite type not supported: {ty}"
-        ))),
+        DynSolType::Array(_) | DynSolType::FixedArray(_, _) | DynSolType::Tuple(_) => Err(
+            AbiError::Type(format!("composite type not supported: {ty}")),
+        ),
     }
-}
-
-/// Sanitize a Solidity parameter name into a safe SQL column identifier.
-/// Resulting columns are prefixed with `param_` to avoid collisions with
-/// reserved names (e.g. `tx_hash`).
-pub fn sanitize_column(name: &str) -> String {
-    let mut out = String::from("param_");
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' {
-            out.push(c);
-        } else {
-            out.push('_');
-        }
-    }
-    if out == "param_" {
-        out.push_str("arg");
-    }
-    out
 }

@@ -1,31 +1,48 @@
 use sqlx::{AssertSqlSafe, PgConnection, QueryBuilder, Transaction};
 
 use crate::abi::{ParamSpec, SqlValue};
+use crate::error::{AppError, AppResult};
 
-/// Return the params table name for a monitor id.
-pub fn params_table_name(monitor_id: i64) -> String {
-    format!("params_{monitor_id}")
+/// Return the result table name for a normalized address and selector.
+pub fn result_table_name(address: &str, selector: &str) -> AppResult<String> {
+    let address = address.strip_prefix("0x").unwrap_or(address);
+    let selector = selector.strip_prefix("0x").unwrap_or(selector);
+    if address.len() != 40 || !address.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "invalid normalized monitor address"
+        )));
+    }
+    if selector.len() != 8 || !selector.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "invalid normalized monitor selector"
+        )));
+    }
+    Ok(format!(
+        "{}_{}",
+        address.to_ascii_lowercase(),
+        selector.to_ascii_lowercase()
+    ))
 }
 
-/// Create the per-monitor params table with typed columns derived from the
+/// Create the per-monitor result table with typed columns derived from the
 /// method's parameter schema.
 ///
-/// Identifiers (table name, column names) are produced internally from a
-/// numeric id and sanitized param names, so this DDL is injection-safe.
-pub async fn create_params_table(
+/// Solidity parameter names are identifiers by grammar and are always quoted.
+pub async fn create_result_table(
     tx: &mut Transaction<'_, sqlx::Postgres>,
-    monitor_id: i64,
+    address: &str,
+    selector: &str,
     params: &[ParamSpec],
-) -> Result<(), sqlx::Error> {
-    let table = params_table_name(monitor_id);
-    let mut ddl = format!(
-        "CREATE TABLE IF NOT EXISTS \"{table}\" (\n    \
-         tx_hash TEXT NOT NULL PRIMARY KEY REFERENCES transactions(tx_hash) ON DELETE CASCADE"
-    );
-    for p in params {
+) -> AppResult<()> {
+    let table = result_table_name(address, selector)?;
+    let mut ddl = format!("CREATE TABLE IF NOT EXISTS \"{table}\" (\n");
+    for (index, p) in params.iter().enumerate() {
+        if index > 0 {
+            ddl.push_str(",\n");
+        }
         ddl.push_str(&format!(
-            ",\n    \"{}\" {}",
-            p.column,
+            "    {} {}",
+            quote_identifier(&p.column),
             p.sql_kind.ddl_type()
         ));
     }
@@ -35,41 +52,57 @@ pub async fn create_params_table(
     Ok(())
 }
 
-/// Drop the per-monitor params table. `monitor_id` is an internal integer,
-/// so the table name is not user-controlled.
-pub async fn drop_params_table(
+/// Drop the per-monitor result table.
+pub async fn drop_result_table(
     tx: &mut Transaction<'_, sqlx::Postgres>,
-    monitor_id: i64,
-) -> Result<(), sqlx::Error> {
-    let table = params_table_name(monitor_id);
+    address: &str,
+    selector: &str,
+) -> AppResult<()> {
+    let table = result_table_name(address, selector)?;
     let stmt = format!("DROP TABLE IF EXISTS \"{table}\" CASCADE");
     sqlx::query(AssertSqlSafe(stmt)).execute(&mut **tx).await?;
     Ok(())
 }
 
-/// Insert a decoded transaction's params into the monitor's params table.
+/// Remove all decoded results before resetting a monitor for reindexing.
+pub async fn truncate_result_table(
+    tx: &mut Transaction<'_, sqlx::Postgres>,
+    address: &str,
+    selector: &str,
+) -> AppResult<()> {
+    let table = result_table_name(address, selector)?;
+    let stmt = format!("TRUNCATE TABLE \"{table}\"");
+    sqlx::query(AssertSqlSafe(stmt)).execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Insert a decoded transaction's params into the monitor's result table.
 ///
 /// Each value is bound via sqlx's native `Encode<Postgres>` matching its
 /// `SqlValue` variant — no per-column `::cast` is needed because the params
 /// table columns already carry the corresponding SqlKind DDL type.
 pub async fn insert_params(
     conn: &mut PgConnection,
-    monitor_id: i64,
+    address: &str,
+    selector: &str,
     params: &[ParamSpec],
-    tx_hash: &str,
     values: &[SqlValue],
-) -> Result<(), sqlx::Error> {
-    let table = params_table_name(monitor_id);
+) -> AppResult<()> {
+    let table = result_table_name(address, selector)?;
 
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("INSERT INTO \"");
-    qb.push(table).push("\" (tx_hash");
-    for p in params {
-        qb.push(", \"").push(&p.column).push("\"");
+    qb.push(table).push("\" (");
+    for (index, p) in params.iter().enumerate() {
+        if index > 0 {
+            qb.push(", ");
+        }
+        qb.push(quote_identifier(&p.column));
     }
     qb.push(") VALUES (");
-    qb.push_bind(tx_hash.to_string());
-    for val in values.iter() {
-        qb.push(", ");
+    for (index, val) in values.iter().enumerate() {
+        if index > 0 {
+            qb.push(", ");
+        }
         match val {
             SqlValue::Numeric(v) => qb.push_bind(v.clone()),
             SqlValue::Bool(v) => qb.push_bind(*v),
@@ -77,8 +110,31 @@ pub async fn insert_params(
             SqlValue::Bytea(v) => qb.push_bind(v.clone()),
         };
     }
-    qb.push(") ON CONFLICT (tx_hash) DO NOTHING");
+    qb.push(")");
 
     qb.build().execute(conn).await?;
     Ok(())
+}
+
+fn quote_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::result_table_name;
+
+    #[test]
+    fn names_tables_from_address_and_selector() {
+        assert_eq!(
+            result_table_name("0xF36FED68017F6E84D2EB1D4BD35AB56AE0CD914A", "0x6E553F65").unwrap(),
+            "f36fed68017f6e84d2eb1d4bd35ab56ae0cd914a_6e553f65"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_table_components() {
+        assert!(result_table_name("not-an-address", "0x6e553f65").is_err());
+        assert!(result_table_name("0xf36fed68017f6e84d2eb1d4bd35ab56ae0cd914a", "bad").is_err());
+    }
 }

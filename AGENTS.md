@@ -71,7 +71,7 @@ indexer/       coordinator: DB monitor load → finalized head → ordered block
 watcher/       runtime Monitor conversion and covers()/next_block() cursor logic
 abi/           runtime function-signature parsing + calldata decoding (no codegen, no sol! macro)
 rpc/           alloy HTTP provider, block fetch with receipt filtering, LRU block cache
-db/            monitor_repo, tx_repo, dyn_table (per-monitor params tables)
+db/            monitor_repo, tx_repo, dyn_table (per-monitor result tables)
 api/           axum REST: /monitors/{id}, /healthz
 ```
 
@@ -81,6 +81,6 @@ api/           axum REST: /monitors/{id}, /healthz
 - **Direct RPC endpoint**: `RPC_URL` must serve the configured `CHAIN_ID` and support the `finalized` block tag.
 - **Database-backed monitor state**: The coordinator reloads monitors each poll; no in-memory registry can retain stale cursors.
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
-- **Per-monitor dynamic tables**: each monitor gets a `params_{monitor_id}` table with columns derived from the function signature's param types. Created/dropped dynamically in `db/dyn_table.rs` using `AssertSqlSafe`.
-- **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`) and dynamic table naming.
+- **Per-monitor dynamic tables**: each monitor gets an `<address_without_0x>_<selector_without_0x>` table containing only decoded ABI parameter columns. Created/dropped dynamically in `db/dyn_table.rs` using `AssertSqlSafe`.
+- **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`); result tables are keyed by address and selector.
 - **Atomic block persistence**: transaction metadata, decoded parameter rows, and all covering monitor cursors commit in one PostgreSQL transaction.

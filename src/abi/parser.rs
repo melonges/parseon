@@ -3,7 +3,7 @@ use alloy::json_abi::Function;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use super::types::{SqlKind, sanitize_column, sol_type_to_sql_kind};
+use super::types::{SqlKind, sol_type_to_sql_kind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamSpec {
@@ -58,20 +58,25 @@ pub fn parse_func_signature(signature: &str) -> Result<MethodSpec, AbiError> {
             } else {
                 p.name.clone()
             };
-            let column = sanitize_column(&name);
-            if !columns.insert(column.clone()) {
+            if !columns.insert(name.clone()) {
                 return Err(AbiError::Parse(format!(
                     "duplicate parameter name `{name}`"
                 )));
             }
             Ok(ParamSpec {
-                name,
+                name: name.clone(),
                 sol_type: format!("{ty}"),
                 sql_kind,
-                column,
+                column: name,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    if params.is_empty() {
+        return Err(AbiError::Parse(
+            "functions with no inputs are not supported".to_string(),
+        ));
+    }
 
     Ok(MethodSpec {
         name: func.name.clone(),
@@ -94,8 +99,8 @@ mod tests {
         assert_eq!(spec.canonical_signature, "transfer(address,uint256)");
         assert_eq!(spec.selector, "0xa9059cbb");
         assert_eq!(spec.params.len(), 2);
-        assert_eq!(spec.params[0].column, "param_to");
-        assert_eq!(spec.params[1].column, "param_value");
+        assert_eq!(spec.params[0].column, "to");
+        assert_eq!(spec.params[1].column, "value");
         assert_eq!(spec.params[0].sol_type, "address");
         assert_eq!(spec.params[1].sol_type, "uint256");
     }
@@ -112,14 +117,33 @@ mod tests {
     fn parses_no_name_params() {
         let spec = parse_func_signature("transfer(address,uint256)").unwrap();
         assert_eq!(spec.canonical_signature, "transfer(address,uint256)");
-        assert_eq!(spec.params[0].column, "param_arg_0");
-        assert_eq!(spec.params[1].column, "param_arg_1");
+        assert_eq!(spec.params[0].column, "arg_0");
+        assert_eq!(spec.params[1].column, "arg_1");
     }
 
     #[test]
     fn rejects_duplicate_param_names() {
         let err = parse_func_signature("transfer(address value,uint256 value)").unwrap_err();
         assert!(err.to_string().contains("duplicate parameter name"));
+    }
+
+    #[test]
+    fn preserves_exact_named_columns() {
+        let spec = parse_func_signature("deposit(uint256 assets,address receiver)").unwrap();
+        assert_eq!(spec.params[0].column, "assets");
+        assert_eq!(spec.params[1].column, "receiver");
+    }
+
+    #[test]
+    fn rejects_generated_and_explicit_duplicate_names() {
+        let err = parse_func_signature("transfer(address,uint256 arg_0)").unwrap_err();
+        assert!(err.to_string().contains("duplicate parameter name"));
+    }
+
+    #[test]
+    fn rejects_zero_input_functions() {
+        let err = parse_func_signature("totalSupply()").unwrap_err();
+        assert!(err.to_string().contains("no inputs"));
     }
 
     #[test]
