@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .try_init();
 
-    tracing::info!(chain_id = config.chain_id, "starting evm-indexer");
+    tracing::info!(chain_id = config.chain_id, "starting parseon");
 
     // Metrics.
     let metrics_handle = metrics::init();

@@ -2,7 +2,7 @@ use clap::Parser;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize, Parser)]
-#[command(name = "evm-indexer", about = "EVM indexer with runtime ABI decoding")]
+#[command(name = "parseon", about = "Parseon — EVM indexer with runtime ABI decoding")]
 pub struct Config {
     /// PostgreSQL connection string
     #[arg(long, env = "DATABASE_URL")]
@@ -12,7 +12,7 @@ pub struct Config {
     #[arg(long, env = "HTTP_LISTEN", default_value = "0.0.0.0:8080")]
     pub http_listen: String,
 
-    /// Log filter directive (e.g. `info,evm_indexer=debug`)
+    /// Log filter directive (e.g. `info,parseon=debug`)
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub rust_log: String,
 
