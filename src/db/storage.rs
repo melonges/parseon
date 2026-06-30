@@ -5,11 +5,12 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use sqlx::types::BigDecimal;
 
+use crate::core::abi::parse_selector;
+use crate::core::filter::Filter;
+use crate::core::monitor::Monitor;
+use crate::core::ports::{BlockCommit, Storage};
 use crate::core::{Cursor, Target};
 use crate::error::AppResult;
-use crate::filter::Filter;
-use crate::monitor::Monitor;
-use crate::storage::{BlockCommit, Storage};
 
 use super::dyn_table::{ResultInput, ResultRecord, SearchParams};
 use super::{dyn_table, monitor_repo};
@@ -77,14 +78,14 @@ impl PostgresStorage {
             id: row.id,
             target: Target {
                 address: row.address.parse()?,
-                selector: Monitor::parse_selector(&row.selector)?,
+                selector: parse_selector(&row.selector)?,
                 signature: row.signature.clone(),
                 inputs: row
                     .param_schema
                     .0
                     .iter()
-                    .map(|param| param.as_abi())
-                    .collect(),
+                    .map(|param| param.to_abi())
+                    .collect::<Result<Vec<_>, _>>()?,
             },
             start_block: row.start_block,
             end_block: row.end_block,

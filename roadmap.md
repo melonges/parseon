@@ -11,17 +11,11 @@ Parseon should keep a simple repository shape while the domain model is still mo
 ```text
 src/
   api/          HTTP API, OpenAPI / Swagger, future management surface
-  abi/          function signature parsing and calldata decoding
-  cache/        cache traits and in-memory implementation
+  cache/        in-memory BlockCache adapter
   config/       CLI/env config loading
-  core/         domain models: Chain, Monitor, Target, Cursor, DecodedCall
+  core/         domain, ABI, monitors, filters, scheduling, indexing, worker, ports
   db/           PostgreSQL storage implementation
-  filter/       monitor Filter DSL and evaluator
-  indexer/      indexing pipeline and persistence orchestration
-  monitor/      monitor model and matching helpers
-  rpc/          BlockSource trait and JSON-RPC implementation
-  scheduler/    block range planning and batching
-  worker/       chain worker runtime
+  rpc/          JSON-RPC BlockSource adapter
 ```
 
 The core logic should stay independent from a specific database, block source, cache backend, or API surface. Adapters should customize how Parseon reads chain data, stores decoded results, and caches fetched blocks without changing the indexing logic itself.
@@ -74,13 +68,13 @@ Prepare the architecture before adding more moving parts, without slowing develo
 Status: implemented in v0.2.0.
 
 - Keep Parseon as one binary crate.
-- Reorganize toward clear internal modules: `core`, `monitor`, `filter`, `cache`, `rpc`, `scheduler`, and `worker`.
+- Consolidate domain and indexing behavior under `core`, with cache, RPC, PostgreSQL, and HTTP implementations outside it.
 - Introduce domain models for `Chain`, `Monitor`, `Target`, `Cursor`, and `DecodedCall`.
 - Introduce a `Storage` trait.
 - Introduce a `BlockSource` trait.
 - Introduce a `BlockCache` trait.
 - Keep PostgreSQL, JSON-RPC, and in-memory cache as first official implementations.
-- Keep behavior compatible with the current MVP.
+- Allow breaking internal and API schema changes while the project is in early development.
 - Defer separate crates until boundaries prove stable.
 
 ## v0.3 — Reorg handling and finality guarantees

@@ -5,9 +5,10 @@ use alloy::providers::{Provider, RootProvider};
 use alloy::transports::http::reqwest::Client;
 use async_trait::async_trait;
 
+use crate::core::ports::BlockSource;
 use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock};
 use crate::error::{AppError, AppResult};
-use crate::rpc::{BlockSource, fetch};
+use crate::rpc::fetch;
 
 /// HTTP RPC provider for an EVM chain (default Ethereum network).
 pub type HttpProvider = RootProvider<AnyNetwork>;

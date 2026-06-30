@@ -1,6 +1,6 @@
-use crate::abi::decode_calldata;
-use crate::core::{DecodedCall, ExecutedTransaction, SourceBlock};
-use crate::monitor::Monitor;
+use super::abi::decode_calldata;
+use super::monitor::Monitor;
+use super::{DecodedCall, ExecutedTransaction, SourceBlock};
 
 pub fn decode_calls(
     block: &SourceBlock,
@@ -19,18 +19,8 @@ pub fn decode_calls(
         else {
             continue;
         };
-        let input_types = format!(
-            "({})",
-            monitor
-                .target
-                .inputs
-                .iter()
-                .map(|input| input.sol_type.as_str())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
         let calldata = transaction.transaction.input.get(4..).unwrap_or_default();
-        let params = match decode_calldata(&input_types, calldata) {
+        let params = match decode_calldata(&monitor.target.inputs, calldata) {
             Ok(params) => params,
             Err(error) => {
                 tracing::warn!(
@@ -58,13 +48,15 @@ pub fn decode_calls(
 
 #[cfg(test)]
 mod tests {
+    use alloy::dyn_abi::DynSolType;
     use alloy::primitives::{Address, B256, U256, address};
     use alloy::sol_types::SolCall;
 
     use super::*;
-    use crate::abi::AbiParam;
+    use crate::core::abi::AbiParam;
+    use crate::core::filter::Filter;
+    use crate::core::monitor::Monitor;
     use crate::core::{BlockTransaction, Cursor, DecodedValue, Target};
-    use crate::filter::Filter;
 
     alloy::sol! {
         function transfer(address to, uint256 value) external returns (bool);
@@ -91,14 +83,8 @@ mod tests {
                 selector: transferCall::SELECTOR,
                 signature: "transfer(address,uint256)".into(),
                 inputs: vec![
-                    AbiParam {
-                        name: "to".into(),
-                        sol_type: "address".into(),
-                    },
-                    AbiParam {
-                        name: "value".into(),
-                        sol_type: "uint256".into(),
-                    },
+                    AbiParam::new("to", DynSolType::Address).unwrap(),
+                    AbiParam::new("value", DynSolType::Uint(256)).unwrap(),
                 ],
             },
             start_block: 1,

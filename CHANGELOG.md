@@ -16,7 +16,10 @@ All notable changes to Parseon are documented in this file.
 - Replaced the legacy watcher/coordinator structure with monitor, scheduler, indexer, and worker modules.
 - Moved SQL value conversion and atomic block persistence behind `PostgresStorage`.
 - Separated API response types from PostgreSQL records while preserving the existing HTTP and OpenAPI surface.
+- Consolidated ABI parsing, monitor logic, scheduling, indexing, worker orchestration, and adapter ports under `core`.
+- Replaced SQL-aware ABI parameter metadata with typed Solidity parameters; PostgreSQL now derives physical column names and types locally.
 
-### Compatibility
+### Breaking
 
-- Existing environment variables, database migrations, monitor result tables, REST routes, and finalized-only indexing behavior remain unchanged.
+- Monitor `param_schema` values now contain only `name` and canonical `sol_type`; `sql_kind` and physical `column` fields were removed.
+- Existing development monitor data must be reset before running this version.

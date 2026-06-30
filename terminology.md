@@ -47,7 +47,7 @@ POST /monitors/{id}/reindex
 
 Avoid using `Watcher` for public API, database entities, or new core models. `Watcher` sounds like a running process and collides with `Worker`.
 
-Existing code may still contain `watcher/` during the MVP phase. New architecture work should move toward `monitor/` or `parseon-core::monitor`.
+Monitor behavior lives in `core::monitor`; runtime execution belongs to `core::worker`.
 
 ## Target
 

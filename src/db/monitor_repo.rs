@@ -1,11 +1,32 @@
 use alloy::primitives::Address;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 use sqlx::{FromRow, PgConnection, PgPool};
 
-use crate::abi::{ParamSpec, parse_func_signature};
+use crate::core::abi::{AbiParam, parse_abi_type, parse_func_signature};
 use crate::db::dyn_table;
 use crate::error::{AppError, AppResult};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StoredParam {
+    pub name: String,
+    pub sol_type: String,
+}
+
+impl StoredParam {
+    pub fn from_abi(param: &AbiParam) -> Self {
+        Self {
+            name: param.name.clone(),
+            sol_type: param.sol_type(),
+        }
+    }
+
+    pub fn to_abi(&self) -> Result<AbiParam, crate::core::abi::AbiError> {
+        AbiParam::new(self.name.clone(), parse_abi_type(&self.sol_type)?)
+    }
+}
 
 #[derive(Debug, Clone, FromRow)]
 pub struct MonitorRecord {
@@ -13,7 +34,7 @@ pub struct MonitorRecord {
     pub address: String,
     pub signature: String,
     pub selector: String,
-    pub param_schema: Json<Vec<ParamSpec>>,
+    pub param_schema: Json<Vec<StoredParam>>,
     pub start_block: i64,
     pub end_block: Option<i64>,
     pub cursor: Option<i64>,
@@ -34,8 +55,13 @@ pub struct MonitorInput {
 pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRecord> {
     validate_range(input.start_block, input.end_block)?;
     let normalized_address = validate_address(&input.address)?;
-    let mut spec = parse_func_signature(&input.signature)?;
-    dyn_table::dedupe_param_columns(&mut spec.params);
+    let spec = parse_func_signature(&input.signature)?;
+    let params = spec
+        .params
+        .iter()
+        .map(StoredParam::from_abi)
+        .collect::<Vec<_>>();
+    let selector = format!("0x{}", alloy::hex::encode(spec.selector));
 
     let mut tx = pool.begin().await?;
 
@@ -48,14 +74,14 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRec
     )
     .bind(&normalized_address)
     .bind(&input.signature)
-    .bind(&spec.selector)
-    .bind(Json(spec.params.clone()))
+    .bind(&selector)
+    .bind(Json(params.clone()))
     .bind(input.start_block)
     .bind(input.end_block)
     .fetch_one(&mut *tx)
     .await?;
 
-    dyn_table::create_result_table(&mut tx, &row.address, &row.selector, &spec.params).await?;
+    dyn_table::create_result_table(&mut tx, &row.address, &row.selector, &params).await?;
     tx.commit().await?;
     tracing::info!(
         monitor_id = row.id,
@@ -213,7 +239,7 @@ fn validate_address(value: &str) -> AppResult<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_address, validate_range};
+    use super::{StoredParam, validate_address, validate_range};
 
     #[test]
     fn validates_and_normalizes_addresses() {
@@ -230,5 +256,26 @@ mod tests {
         assert!(validate_range(10, Some(10)).is_ok());
         assert!(validate_range(-1, None).is_err());
         assert!(validate_range(10, Some(9)).is_err());
+    }
+
+    #[test]
+    fn persists_only_semantic_abi_fields() {
+        let param = StoredParam {
+            name: "value".into(),
+            sol_type: "uint256".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&param).unwrap(),
+            serde_json::json!({"name": "value", "sol_type": "uint256"})
+        );
+        assert_eq!(param.to_abi().unwrap().sol_type(), "uint256");
+        assert!(
+            serde_json::from_value::<StoredParam>(serde_json::json!({
+                "name": "value",
+                "sol_type": "uint256",
+                "sql_kind": "numeric"
+            }))
+            .is_err()
+        );
     }
 }

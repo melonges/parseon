@@ -87,16 +87,9 @@ Some implementation files may still use library-specific provider terminology in
 
 ```
 main.rs        config load → DB connect (+migrate) → source chain validation → worker + HTTP API
-core/          storage-neutral Chain, Target, Cursor, DecodedCall, and source data models
-monitor/       runtime Monitor model and matching/range helpers
-filter/        Filter model; v0.2 supports the behavior-preserving All variant
-cache/         BlockCache trait and chain-aware in-memory LRU implementation
-storage/       Storage trait and atomic BlockCommit contract
-worker/        monitor reload → finalized head → scheduled ordered block processing
-indexer/       transaction matching and calldata decoding into DecodedCall values
-scheduler/     pure block-range planning and deduplication
-abi/           runtime function-signature parsing + calldata decoding (no codegen, no sol! macro)
-rpc/           BlockSource trait and Alloy JSON-RPC implementation
+core/          domain models, ABI, monitors, filters, scheduler, indexer, worker, and adapter ports
+cache/         chain-aware in-memory implementation of the core BlockCache port
+rpc/           Alloy JSON-RPC implementation of the core BlockSource port
 db/            PostgresStorage, monitor_repo, dyn_table (per-monitor result tables)
 api/           axum REST + OpenAPI/Swagger UI: /monitors/{id}, /healthz, /swagger-ui/
 ```
@@ -118,6 +111,6 @@ sinks          optional webhooks, Kafka, files, ClickHouse
 - **Direct RPC endpoint**: `RPC_URL` must serve the configured `CHAIN_ID` and support the `finalized` block tag.
 - **Database-backed monitor state**: The worker reloads monitors each poll; no in-memory registry can retain stale cursors.
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
-- **Per-monitor dynamic tables**: each monitor gets an `<address_without_0x>_<selector_without_0x>` table containing only decoded ABI parameter columns. Created/dropped dynamically in `db/dyn_table.rs` using `AssertSqlSafe`.
+- **Per-monitor dynamic tables**: each monitor gets an `<address_without_0x>_<selector_without_0x>` table containing transaction metadata and decoded ABI parameter columns. PostgreSQL column names and types are derived inside `db/dyn_table.rs`; they are not part of the core ABI model.
 - **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`); result tables are keyed by address and selector.
 - **Atomic block persistence**: transaction metadata, decoded parameter rows, and all covering monitor cursors commit in one PostgreSQL transaction.

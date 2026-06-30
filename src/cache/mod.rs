@@ -3,13 +3,8 @@ use std::sync::Mutex;
 
 use lru::LruCache;
 
+use crate::core::ports::BlockCache;
 use crate::core::{Chain, SourceBlock};
-
-pub trait BlockCache: Send + Sync {
-    fn get(&self, chain: Chain, block_number: i64) -> Option<SourceBlock>;
-    fn put(&self, chain: Chain, block: SourceBlock);
-    fn evict_before(&self, chain: Chain, block_number: i64);
-}
 
 pub struct MemoryBlockCache {
     inner: Mutex<LruCache<(i64, i64), SourceBlock>>,

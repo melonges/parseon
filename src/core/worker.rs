@@ -3,12 +3,9 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::cache::BlockCache;
-use crate::core::Chain;
-use crate::indexer::pipeline;
-use crate::rpc::BlockSource;
-use crate::scheduler;
-use crate::storage::{BlockCommit, Storage};
+use super::indexer;
+use super::ports::{BlockCache, BlockCommit, BlockSource, Storage};
+use super::{Chain, scheduler};
 
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
@@ -104,7 +101,7 @@ pub async fn run_once(
             .cloned()
             .collect::<Vec<_>>();
         let executed = source.fetch_receipts(&candidates).await?;
-        let calls = pipeline::decode_calls(&block, &covering, executed);
+        let calls = indexer::decode_calls(&block, &covering, executed);
         decoded += storage
             .commit_block(BlockCommit {
                 block_number,
@@ -125,16 +122,17 @@ pub async fn run_once(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Mutex;
 
     use alloy::primitives::{Address, B256};
     use async_trait::async_trait;
 
     use super::*;
-    use crate::cache::MemoryBlockCache;
+    use crate::core::filter::Filter;
+    use crate::core::monitor::Monitor;
+    use crate::core::ports::{BlockCache, BlockCommit, BlockSource, Storage};
     use crate::core::{BlockTransaction, Cursor, ExecutedTransaction, SourceBlock, Target};
-    use crate::filter::Filter;
-    use crate::monitor::Monitor;
 
     struct FakeStorage {
         monitor: Monitor,
@@ -155,6 +153,35 @@ mod tests {
     }
 
     struct FakeSource;
+
+    #[derive(Default)]
+    struct FakeCache {
+        blocks: Mutex<HashMap<(i64, i64), SourceBlock>>,
+    }
+
+    impl BlockCache for FakeCache {
+        fn get(&self, chain: Chain, block_number: i64) -> Option<SourceBlock> {
+            self.blocks
+                .lock()
+                .unwrap()
+                .get(&(chain.id, block_number))
+                .cloned()
+        }
+
+        fn put(&self, chain: Chain, block: SourceBlock) {
+            self.blocks
+                .lock()
+                .unwrap()
+                .insert((chain.id, block.number), block);
+        }
+
+        fn evict_before(&self, chain: Chain, block_number: i64) {
+            self.blocks
+                .lock()
+                .unwrap()
+                .retain(|(chain_id, number), _| *chain_id != chain.id || *number >= block_number);
+        }
+    }
 
     #[async_trait]
     impl BlockSource for FakeSource {
@@ -211,7 +238,7 @@ mod tests {
             &config,
             &storage,
             &FakeSource,
-            &MemoryBlockCache::new(4),
+            &FakeCache::default(),
             &CancellationToken::new(),
         )
         .await

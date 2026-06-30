@@ -1,11 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::types::Json;
 use utoipa::ToSchema;
 
-use crate::abi::ParamSpec;
 use crate::db::dyn_table::ResultRecord;
-use crate::db::monitor_repo::MonitorRecord;
+use crate::db::monitor_repo::{MonitorRecord, StoredParam};
 
 // ----- Monitors -----
 
@@ -29,13 +27,27 @@ pub struct UpdateMonitor {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+pub struct AbiParamSchema {
+    pub name: String,
+    pub sol_type: String,
+}
+
+impl From<StoredParam> for AbiParamSchema {
+    fn from(param: StoredParam) -> Self {
+        Self {
+            name: param.name,
+            sol_type: param.sol_type,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct MonitorRow {
     pub id: i64,
     pub address: String,
     pub signature: String,
     pub selector: String,
-    #[schema(value_type = Vec<ParamSpec>)]
-    pub param_schema: Json<Vec<ParamSpec>>,
+    pub param_schema: Vec<AbiParamSchema>,
     pub start_block: i64,
     pub end_block: Option<i64>,
     pub cursor: Option<i64>,
@@ -52,7 +64,7 @@ impl From<MonitorRecord> for MonitorRow {
             address: record.address,
             signature: record.signature,
             selector: record.selector,
-            param_schema: record.param_schema,
+            param_schema: record.param_schema.0.into_iter().map(Into::into).collect(),
             start_block: record.start_block,
             end_block: record.end_block,
             cursor: record.cursor,

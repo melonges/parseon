@@ -1,7 +1,7 @@
 use alloy::primitives::Address;
 
-use crate::core::{Cursor, Target};
-use crate::filter::Filter;
+use super::filter::Filter;
+use super::{Cursor, Target};
 
 #[derive(Debug, Clone)]
 pub struct Monitor {
@@ -30,22 +30,15 @@ impl Monitor {
     pub fn matches(&self, address: Address, selector: &[u8]) -> bool {
         self.target.address == address && self.target.selector == selector
     }
-
-    pub fn parse_selector(value: &str) -> anyhow::Result<[u8; 4]> {
-        let value = value.strip_prefix("0x").unwrap_or(value);
-        let bytes = alloy::hex::decode(value)
-            .map_err(|error| anyhow::anyhow!("invalid selector {value}: {error}"))?;
-        bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("selector must contain exactly 4 bytes: {value}"))
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloy::dyn_abi::DynSolType;
     use alloy::primitives::Address;
 
     use super::*;
+    use crate::core::abi::AbiParam;
 
     fn monitor() -> Monitor {
         Monitor {
@@ -54,7 +47,7 @@ mod tests {
                 address: Address::ZERO,
                 selector: [1, 2, 3, 4],
                 signature: "f(uint256)".into(),
-                inputs: Vec::new(),
+                inputs: vec![AbiParam::new("value", DynSolType::Uint(256)).unwrap()],
             },
             start_block: 10,
             end_block: Some(12),

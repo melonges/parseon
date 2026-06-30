@@ -1,24 +1,17 @@
-mod abi;
 mod api;
 mod cache;
 mod config;
 mod core;
 mod db;
 mod error;
-mod filter;
-mod indexer;
-mod monitor;
 mod rpc;
-mod scheduler;
-mod storage;
-mod worker;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::rpc::BlockSource;
+use crate::core::ports::BlockSource;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -51,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     // Cancellation token shared by worker and API.
     let cancel = CancellationToken::new();
 
-    let worker_config = worker::WorkerConfig {
+    let worker_config = core::worker::WorkerConfig {
         chain,
         batch_size: i64::try_from(config.default_batch_size).unwrap_or(i64::MAX),
         poll_interval: Duration::from_millis(config.poll_interval_ms.max(100)),
@@ -67,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
         let block_cache = block_cache.clone();
         let cancel = cancel.clone();
         async move {
-            worker::run(worker_config, storage, block_source, block_cache, cancel).await;
+            core::worker::run(worker_config, storage, block_source, block_cache, cancel).await;
         }
     });
 

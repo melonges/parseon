@@ -1,4 +1,4 @@
-use crate::monitor::Monitor;
+use super::monitor::Monitor;
 
 pub fn plan_blocks(monitors: &[&Monitor], finalized_head: i64, batch_size: i64) -> Vec<i64> {
     let mut wanted = Vec::new();
@@ -25,8 +25,9 @@ mod tests {
     use alloy::primitives::Address;
 
     use super::*;
+    use crate::core::filter::Filter;
+    use crate::core::monitor::Monitor;
     use crate::core::{Cursor, Target};
-    use crate::filter::Filter;
 
     fn monitor(id: i64, start: i64, cursor: Option<i64>, end: Option<i64>) -> Monitor {
         Monitor {

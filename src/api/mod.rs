@@ -104,17 +104,21 @@ mod tests {
 
         let schemas = document["components"]["schemas"].as_object().unwrap();
         for schema in [
+            "AbiParamSchema",
             "CreateMonitor",
             "ErrorResponse",
             "Health",
             "MonitorResult",
             "MonitorRow",
-            "ParamSpec",
-            "SqlKind",
             "UpdateMonitor",
         ] {
             assert!(schemas.contains_key(schema), "missing schema {schema}");
         }
+        let abi_param_properties = schemas["AbiParamSchema"]["properties"].as_object().unwrap();
+        assert_eq!(abi_param_properties.len(), 2);
+        assert!(abi_param_properties.contains_key("name"));
+        assert!(abi_param_properties.contains_key("sol_type"));
+        assert!(!schemas.contains_key("SqlKind"));
     }
 
     #[tokio::test]
