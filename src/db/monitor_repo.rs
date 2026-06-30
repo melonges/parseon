@@ -8,13 +8,14 @@ use crate::abi::{ParamSpec, parse_func_signature};
 use crate::db::dyn_table;
 use crate::error::{AppError, AppResult};
 
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Debug, Clone, FromRow, Serialize, utoipa::ToSchema)]
 pub struct MonitorRow {
     pub id: i64,
     pub address: String,
     pub name: String,
     pub signature: String,
     pub selector: String,
+    #[schema(value_type = Vec<ParamSpec>)]
     pub param_schema: Json<Vec<ParamSpec>>,
     pub start_block: i64,
     pub end_block: Option<i64>,

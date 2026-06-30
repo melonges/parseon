@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use super::types::{SqlKind, sol_type_to_sql_kind};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ParamSpec {
     pub name: String,
     pub sol_type: String,

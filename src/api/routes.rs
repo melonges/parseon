@@ -1,23 +1,19 @@
-use axum::Router;
-use axum::routing::{get, post};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::api::AppState;
 use crate::api::handlers;
 
-pub fn health_routes() -> Router<AppState> {
-    Router::new().route("/healthz", get(handlers::healthz))
+pub fn health_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new().routes(routes!(handlers::healthz))
 }
 
-pub fn monitor_routes() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/monitors",
-            post(handlers::create_monitor).get(handlers::list_monitors),
-        )
-        .route(
-            "/monitors/{id}",
-            get(handlers::get_monitor)
-                .patch(handlers::update_monitor)
-                .delete(handlers::delete_monitor),
-        )
+pub fn monitor_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(handlers::create_monitor, handlers::list_monitors))
+        .routes(routes!(
+            handlers::get_monitor,
+            handlers::update_monitor,
+            handlers::delete_monitor
+        ))
 }

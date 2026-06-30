@@ -7,7 +7,7 @@ use super::parser::AbiError;
 ///
 /// Only primitive Solidity types are supported; arrays and tuples are rejected
 /// at monitor-creation time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SqlKind {
     Numeric,

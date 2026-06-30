@@ -1,7 +1,8 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde_json::json;
+
+use crate::api::dto::ErrorResponse;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -49,7 +50,9 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status();
-        let body = Json(json!({ "error": self.to_string() }));
+        let body = Json(ErrorResponse {
+            error: self.to_string(),
+        });
         (status, body).into_response()
     }
 }
