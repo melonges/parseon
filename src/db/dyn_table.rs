@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::postgres::PgRow;
 use sqlx::types::BigDecimal;
-use sqlx::{AssertSqlSafe, PgConnection, PgPool, QueryBuilder, Row, Transaction};
+use sqlx::{PgConnection, PgPool, QueryBuilder, Row, Transaction};
 
 use crate::abi::{ParamSpec, SqlKind, SqlValue};
 use crate::error::{AppError, AppResult};
@@ -107,36 +107,39 @@ pub async fn create_result_table(
     params: &[ParamSpec],
 ) -> AppResult<()> {
     let table = result_table_name(address, selector)?;
+    let table_ident = Identifier::new(table.as_str())?;
 
-    let mut ddl = format!("CREATE TABLE IF NOT EXISTS \"{table}\" (\n");
-    for (index, (name, ty)) in STANDARD_COLUMNS.iter().enumerate() {
-        if index > 0 {
-            ddl.push_str(",\n");
+    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("CREATE TABLE IF NOT EXISTS ");
+    qb.push(table_ident.clone()).push(" (");
+    {
+        // `separated(", ")` prepends the separator before every push except
+        // the first; `push_unseparated` keeps a "name type" pair together.
+        let mut cols = qb.separated(", ");
+        for (name, ty) in STANDARD_COLUMNS {
+            cols.push(*name).push_unseparated(" ").push_unseparated(*ty);
         }
-        ddl.push_str(&format!("    {name} {ty}"));
+        for p in params {
+            cols.push(Identifier::new(p.column.as_str())?)
+                .push_unseparated(" ")
+                .push_unseparated(p.sql_kind.ddl_type());
+        }
     }
-    for p in params {
-        ddl.push_str(",\n    ");
-        ddl.push_str(&format!(
-            "{} {}",
-            quote_identifier(&p.column),
-            p.sql_kind.ddl_type()
-        ));
-    }
-    ddl.push_str("\n);");
-    sqlx::query(AssertSqlSafe(ddl)).execute(&mut **tx).await?;
+    qb.push(")");
+    qb.build().execute(&mut **tx).await?;
 
     // Search-supporting indexes. Executed as separate single statements.
-    sqlx::query(AssertSqlSafe(format!(
-        "CREATE INDEX IF NOT EXISTS \"{table}_block_idx\" ON \"{table}\" (block_number)"
-    )))
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query(AssertSqlSafe(format!(
-        "CREATE INDEX IF NOT EXISTS \"{table}_from_idx\" ON \"{table}\" (from_addr)"
-    )))
-    .execute(&mut **tx)
-    .await?;
+    for (suffix, column) in [("block_idx", "block_number"), ("from_idx", "from_addr")] {
+        QueryBuilder::new("CREATE INDEX IF NOT EXISTS ")
+            .push(Identifier::new(format!("{table}_{suffix}"))?)
+            .push(" ON ")
+            .push(table_ident.clone())
+            .push(" (")
+            .push(column)
+            .push(")")
+            .build()
+            .execute(&mut **tx)
+            .await?;
+    }
     Ok(())
 }
 
@@ -146,9 +149,13 @@ pub async fn drop_result_table(
     address: &str,
     selector: &str,
 ) -> AppResult<()> {
-    let table = result_table_name(address, selector)?;
-    let stmt = format!("DROP TABLE IF EXISTS \"{table}\" CASCADE");
-    sqlx::query(AssertSqlSafe(stmt)).execute(&mut **tx).await?;
+    let table = Identifier::new(result_table_name(address, selector)?)?;
+    QueryBuilder::new("DROP TABLE IF EXISTS ")
+        .push(table)
+        .push(" CASCADE")
+        .build()
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
@@ -158,9 +165,12 @@ pub async fn truncate_result_table(
     address: &str,
     selector: &str,
 ) -> AppResult<()> {
-    let table = result_table_name(address, selector)?;
-    let stmt = format!("TRUNCATE TABLE \"{table}\"");
-    sqlx::query(AssertSqlSafe(stmt)).execute(&mut **tx).await?;
+    let table = Identifier::new(result_table_name(address, selector)?)?;
+    QueryBuilder::new("TRUNCATE TABLE ")
+        .push(table)
+        .build()
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
@@ -188,13 +198,13 @@ pub async fn insert_result(
     params: &[ParamSpec],
     input: &ResultInput,
 ) -> AppResult<()> {
-    let table = result_table_name(address, selector)?;
+    let table = Identifier::new(result_table_name(address, selector)?)?;
 
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("INSERT INTO \"");
+    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("INSERT INTO ");
     qb.push(table)
-        .push("\"(tx_hash, block_number, block_hash, from_addr, to_addr, value, gas_used, gas_price, status, input_raw");
+        .push(" (tx_hash, block_number, block_hash, from_addr, to_addr, value, gas_used, gas_price, status, input_raw");
     for p in params {
-        qb.push(", ").push(quote_identifier(&p.column));
+        qb.push(", ").push(Identifier::new(p.column.as_str())?);
     }
     qb.push(") VALUES (")
         .push_bind(input.tx_hash.as_str())
@@ -270,15 +280,15 @@ pub async fn query_results(
     params: &[ParamSpec],
     search: &SearchParams,
 ) -> AppResult<Vec<MonitorResult>> {
-    let table = result_table_name(address, selector)?;
+    let table = Identifier::new(result_table_name(address, selector)?)?;
 
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
         "SELECT tx_hash, block_number, block_hash, from_addr, to_addr, value, gas_used, gas_price, status, created_at",
     );
     for p in params {
-        qb.push(", ").push(quote_identifier(&p.column));
+        qb.push(", ").push(Identifier::new(p.column.as_str())?);
     }
-    qb.push(" FROM \"").push(table).push("\"");
+    qb.push(" FROM ").push(table);
 
     let mut has_cond = false;
     if let Some(ref from) = search.from_addr {
@@ -340,13 +350,48 @@ fn read_param(row: &PgRow, column: &str, kind: SqlKind) -> AppResult<serde_json:
     })
 }
 
-fn quote_identifier(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
+/// A validated SQL identifier rendered as a double-quoted Postgres identifier
+/// with any embedded `"` doubled.
+///
+/// Table and column names cannot be bound as query parameters, so they are
+/// validated up front and emitted as literal SQL through [`Display`] when
+/// pushed into a [`QueryBuilder`]. The validator is intentionally permissive:
+/// it rejects only empty strings and NUL bytes (both rejected by Postgres even
+/// inside quoted identifiers). Spelling constraints live elsewhere — table
+/// names come from [`result_table_name`] (strict 40+8 lowercase hex), column
+/// names from parsed Solidity identifiers — so this type guarantees safe
+/// quoting, not that a name is a legal *unquoted* identifier.
+#[derive(Debug, Clone)]
+struct Identifier(String);
+
+impl Identifier {
+    fn new(raw: impl Into<String>) -> AppResult<Self> {
+        let raw = raw.into();
+        if raw.is_empty() {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "SQL identifier must be non-empty"
+            )));
+        }
+        if raw.contains('\0') {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "SQL identifier must not contain NUL bytes"
+            )));
+        }
+        Ok(Self(raw))
+    }
+}
+
+impl std::fmt::Display for Identifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Always quote and double any embedded quotes, matching the previous
+        // `quote_identifier` output byte-for-byte.
+        write!(f, "\"{}\"", self.0.replace('"', "\"\""))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{dedupe_param_columns, result_table_name};
+    use super::{Identifier, dedupe_param_columns, result_table_name};
     use crate::abi::ParamSpec;
 
     fn spec(name: &str, sql_kind: crate::abi::SqlKind) -> ParamSpec {
@@ -396,5 +441,31 @@ mod tests {
         dedupe_param_columns(&mut params);
         assert_eq!(params[0].column, "value_param_1");
         assert_eq!(params[1].column, "value_param");
+    }
+
+    #[test]
+    fn identifier_renders_simple() {
+        assert_eq!(Identifier::new("value").unwrap().to_string(), "\"value\"");
+    }
+
+    #[test]
+    fn identifier_doubles_embedded_quotes() {
+        assert_eq!(Identifier::new("a\"b").unwrap().to_string(), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn identifier_quotes_reserved_keyword() {
+        // Unquoted, `order` would parse as a keyword; quoting makes it an identifier.
+        assert_eq!(Identifier::new("order").unwrap().to_string(), "\"order\"");
+    }
+
+    #[test]
+    fn identifier_rejects_empty() {
+        assert!(Identifier::new("").is_err());
+    }
+
+    #[test]
+    fn identifier_rejects_nul() {
+        assert!(Identifier::new("a\0b").is_err());
     }
 }
