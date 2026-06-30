@@ -28,3 +28,5 @@ Define a monitor with a contract address and Solidity function signature. Parseo
 Parseon is being built to make focused onchain indexing simple: describe the calls you care about, run one service, and own the resulting data.
 
 The project is moving quickly. Issues, ideas, and early contributions are welcome.
+
+See the [roadmap](./roadmap.md) for planned milestones, the [terminology guide](./terminology.md) for domain language, and the [changelog](./CHANGELOG.md) for completed work.
