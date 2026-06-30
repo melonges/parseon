@@ -51,17 +51,48 @@ Postgres has no unsigned BIGINT. `chain_id` is `i64` in Rust (maps to `BIGINT`) 
 
 Path captures use `{param}`, not `:param` (the latter panics at startup with "Path segments must not start with `:`").
 
+## Terminology
+
+Follow `terminology.md` for new code, API names, docs, and roadmap updates.
+
+Preferred project vocabulary:
+
+- Use **Monitor**, not **Watcher**, for the user-defined indexing rule.
+- Use **Target** for the chain/address/selector/signature matched by a monitor.
+- Use **Filter** for optional post-decode conditions.
+- Use **Cursor** for per-monitor indexing progress.
+- Use **BlockSource**, not generic **Provider**, for core chain-data abstractions.
+- Use **Storage** for primary persisted state and queryable decoded results.
+- Use **Cache** for temporary block/receipt caching.
+- Use **Worker** for a runtime indexing task, usually one per chain.
+- Use **DecodedCall** in core, **ResultRecord** in storage, and **MonitorResult** in API responses.
+- Use **Adapter**, not **Plugin**, until there is a real need for runtime-loaded extensions.
+- Use **Sink** for optional output destinations such as Kafka, webhooks, files, or ClickHouse.
+
+Existing MVP code may still contain older names such as `watcher/` or `rpc::provider`. Do not expand those names into new architecture unless a rename is intentionally out of scope. New abstractions should use the terminology above.
+
 ## Architecture
 
 ```
 main.rs        config load → DB connect (+migrate) → RPC chain validation → coordinator + HTTP API
 indexer/       coordinator: DB monitor load → finalized head → ordered block processing
                decode_persist: atomic tx + params + cursor persistence per block
-watcher/       runtime Monitor conversion and covers()/next_block() cursor logic
+watcher/       legacy module name; runtime Monitor conversion and covers()/next_block() cursor logic
 abi/           runtime function-signature parsing + calldata decoding (no codegen, no sol! macro)
 rpc/           alloy HTTP provider, block fetch with receipt filtering, LRU block cache
 db/            monitor_repo, tx_repo, dyn_table (per-monitor result tables)
 api/           axum REST + OpenAPI/Swagger UI: /monitors/{id}, /healthz, /swagger-ui/
+```
+
+Future architecture should move toward:
+
+```
+parseon-core   monitor targets, filters, decoded calls, scheduler, workers, reorg/finality logic
+block-source   JSON-RPC / eRPC / Etherscan source adapters
+storage        PostgreSQL first, MongoDB later
+cache          memory first, Redis later
+server         HTTP/OpenAPI now, GraphQL and management frontend later
+sinks          optional webhooks, Kafka, files, ClickHouse
 ```
 
 ## Key design decisions
