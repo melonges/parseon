@@ -1,25 +1,12 @@
 use alloy::dyn_abi::{DynSolType, DynSolValue};
-use sqlx::types::BigDecimal;
 use std::str::FromStr;
 
 use super::parser::AbiError;
-
-/// Rust-native SQL bind target. The abi layer owns all Solidity-to-Rust
-/// conversion; the db layer binds variants directly via sqlx `Encode<Postgres>`
-/// with no per-column `::cast`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum SqlValue {
-    Numeric(BigDecimal),
-    Bool(bool),
-    Text(String),
-    Bytea(Vec<u8>),
-}
+use crate::core::DecodedValue;
 
 /// Decode calldata (after the 4-byte selector) into native Rust values
-/// suitable for direct sqlx binding.
-///
-/// Returns one `SqlValue` per parameter in declaration order.
-pub fn decode_calldata(input_types: &str, data: &[u8]) -> Result<Vec<SqlValue>, AbiError> {
+/// without imposing a storage representation.
+pub fn decode_calldata(input_types: &str, data: &[u8]) -> Result<Vec<DecodedValue>, AbiError> {
     let ty = DynSolType::from_str(input_types).map_err(|e| AbiError::Type(e.to_string()))?;
     let decoded = ty
         .abi_decode_params(data)
@@ -28,29 +15,19 @@ pub fn decode_calldata(input_types: &str, data: &[u8]) -> Result<Vec<SqlValue>, 
         DynSolValue::Tuple(v) | DynSolValue::Array(v) => v,
         single => vec![single],
     };
-    values.into_iter().map(value_to_sql).collect()
+    values.into_iter().map(decode_value).collect()
 }
 
-/// Convert a decoded `DynSolValue` into the Rust-native `SqlValue`.
-///
-/// Integers always become `Numeric(BigDecimal)` (arbitrary-precision), so any
-/// Solidity bit width is supported without overflow guards. Composite variants
-/// (`Array`/`FixedArray`/`Tuple`) are unreachable here: the parser rejects
-/// composite params at monitor-creation time.
-pub fn value_to_sql(v: DynSolValue) -> Result<SqlValue, AbiError> {
+pub fn decode_value(v: DynSolValue) -> Result<DecodedValue, AbiError> {
     match v {
-        DynSolValue::Bool(b) => Ok(SqlValue::Bool(b)),
-        DynSolValue::Address(a) => Ok(SqlValue::Text(format!("{a:?}"))),
-        DynSolValue::String(s) => Ok(SqlValue::Text(s)),
-        DynSolValue::Bytes(b) => Ok(SqlValue::Bytea(b.to_vec())),
-        DynSolValue::FixedBytes(word, size) => Ok(SqlValue::Bytea(word[..size].to_vec())),
-        DynSolValue::Function(f) => Ok(SqlValue::Bytea(f.as_slice().to_vec())),
-        DynSolValue::Uint(u, _) => BigDecimal::from_str(&u.to_string())
-            .map(SqlValue::Numeric)
-            .map_err(|e| AbiError::Decode(format!("uint->BigDecimal: {e}"))),
-        DynSolValue::Int(i, _) => BigDecimal::from_str(&i.to_string())
-            .map(SqlValue::Numeric)
-            .map_err(|e| AbiError::Decode(format!("int->BigDecimal: {e}"))),
+        DynSolValue::Bool(b) => Ok(DecodedValue::Bool(b)),
+        DynSolValue::Address(a) => Ok(DecodedValue::Address(a)),
+        DynSolValue::String(s) => Ok(DecodedValue::String(s)),
+        DynSolValue::Bytes(b) => Ok(DecodedValue::Bytes(b.to_vec())),
+        DynSolValue::FixedBytes(word, size) => Ok(DecodedValue::Bytes(word[..size].to_vec())),
+        DynSolValue::Function(f) => Ok(DecodedValue::Bytes(f.as_slice().to_vec())),
+        DynSolValue::Uint(u, _) => Ok(DecodedValue::Uint(u)),
+        DynSolValue::Int(i, _) => Ok(DecodedValue::Int(i)),
         DynSolValue::Array(_) | DynSolValue::FixedArray(_) | DynSolValue::Tuple(_) => Err(
             AbiError::Decode("composite types not supported at decode time".into()),
         ),
@@ -60,7 +37,7 @@ pub fn value_to_sql(v: DynSolValue) -> Result<SqlValue, AbiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, U256};
+    use alloy::primitives::{U256, address};
     use alloy::sol_types::SolCall;
 
     alloy::sol! {
@@ -82,13 +59,11 @@ mod tests {
         let values = decode_calldata("(address,uint256)", args).unwrap();
         assert_eq!(values.len(), 2);
         match &values[0] {
-            SqlValue::Text(s) => assert_eq!(s, "0xd8da6bf26964af9d7eed66e0db1c02b9c4a5b0e9"),
+            DecodedValue::Address(address) => assert_eq!(address, &call.to),
             v => panic!("address: {v:?}"),
         }
         match &values[1] {
-            SqlValue::Numeric(n) => {
-                assert_eq!(n.to_string(), "1000000000000")
-            }
+            DecodedValue::Uint(n) => assert_eq!(n, &call.value),
             v => panic!("uint256: {v:?}"),
         }
     }
@@ -99,7 +74,7 @@ mod tests {
         let data = call.abi_encode();
         let values = decode_calldata("(uint64)", &data[4..]).unwrap();
         match &values[0] {
-            SqlValue::Numeric(n) => assert_eq!(n.to_string(), u64::MAX.to_string()),
+            DecodedValue::Uint(n) => assert_eq!(n.to_string(), u64::MAX.to_string()),
             v => panic!("uint64: {v:?}"),
         }
     }
@@ -113,7 +88,7 @@ mod tests {
         let data = call.abi_encode();
         let values = decode_calldata("(bytes32)", &data[4..]).unwrap();
         match &values[0] {
-            SqlValue::Bytea(b) => assert_eq!(b.as_slice(), &word[..]),
+            DecodedValue::Bytes(b) => assert_eq!(b.as_slice(), &word[..]),
             v => panic!("bytes32: {v:?}"),
         }
     }
@@ -124,7 +99,7 @@ mod tests {
         let data = call.abi_encode();
         let values = decode_calldata("(bool)", &data[4..]).unwrap();
         match &values[0] {
-            SqlValue::Bool(true) => {}
+            DecodedValue::Bool(true) => {}
             v => panic!("bool: {v:?}"),
         }
     }

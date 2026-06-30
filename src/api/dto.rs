@@ -1,5 +1,11 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::types::Json;
 use utoipa::ToSchema;
+
+use crate::abi::ParamSpec;
+use crate::db::dyn_table::ResultRecord;
+use crate::db::monitor_repo::MonitorRecord;
 
 // ----- Monitors -----
 
@@ -20,6 +26,42 @@ pub struct UpdateMonitor {
     /// `null` clears end_block (open-ended/live); a number sets a finite end.
     pub end_block: Option<Option<i64>>,
     pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MonitorRow {
+    pub id: i64,
+    pub address: String,
+    pub signature: String,
+    pub selector: String,
+    #[schema(value_type = Vec<ParamSpec>)]
+    pub param_schema: Json<Vec<ParamSpec>>,
+    pub start_block: i64,
+    pub end_block: Option<i64>,
+    pub cursor: Option<i64>,
+    pub completed: bool,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<MonitorRecord> for MonitorRow {
+    fn from(record: MonitorRecord) -> Self {
+        Self {
+            id: record.id,
+            address: record.address,
+            signature: record.signature,
+            selector: record.selector,
+            param_schema: record.param_schema,
+            start_block: record.start_block,
+            end_block: record.end_block,
+            cursor: record.cursor,
+            completed: record.completed,
+            enabled: record.enabled,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -47,6 +89,40 @@ pub struct ResultsQuery {
     pub from_addr: Option<String>,
     /// Filter by transaction status (1 = success, 0 = reverted).
     pub status: Option<i16>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MonitorResult {
+    pub tx_hash: String,
+    pub block_number: i64,
+    pub block_hash: String,
+    pub from_addr: String,
+    pub to_addr: String,
+    pub value: String,
+    pub gas_used: String,
+    pub gas_price: String,
+    pub status: i16,
+    pub created_at: DateTime<Utc>,
+    #[schema(value_type = Object)]
+    pub params: serde_json::Value,
+}
+
+impl From<ResultRecord> for MonitorResult {
+    fn from(record: ResultRecord) -> Self {
+        Self {
+            tx_hash: record.tx_hash,
+            block_number: record.block_number,
+            block_hash: record.block_hash,
+            from_addr: record.from_addr,
+            to_addr: record.to_addr,
+            value: record.value,
+            gas_used: record.gas_used,
+            gas_price: record.gas_price,
+            status: record.status,
+            created_at: record.created_at,
+            params: record.params,
+        }
+    }
 }
 
 fn default_limit() -> i64 {

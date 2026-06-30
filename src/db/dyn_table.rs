@@ -1,11 +1,12 @@
 use alloy::hex;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use sqlx::postgres::PgRow;
 use sqlx::types::BigDecimal;
 use sqlx::{PgConnection, PgPool, QueryBuilder, Row, Transaction};
+use std::str::FromStr;
 
-use crate::abi::{ParamSpec, SqlKind, SqlValue};
+use crate::abi::{ParamSpec, SqlKind};
+use crate::core::DecodedValue;
 use crate::error::{AppError, AppResult};
 
 /// Standard transaction-metadata columns every result table carries alongside
@@ -186,7 +187,7 @@ pub struct ResultInput {
     pub gas_price: BigDecimal,
     pub status: i16,
     pub input_raw: Vec<u8>,
-    pub params: Vec<SqlValue>,
+    pub params: Vec<DecodedValue>,
 }
 
 /// Insert a matched transaction's metadata and decoded params into the
@@ -229,10 +230,20 @@ pub async fn insert_result(
     for val in &input.params {
         qb.push(", ");
         match val {
-            SqlValue::Numeric(v) => qb.push_bind(v),
-            SqlValue::Bool(v) => qb.push_bind(*v),
-            SqlValue::Text(v) => qb.push_bind(v.as_str()),
-            SqlValue::Bytea(v) => qb.push_bind(v),
+            DecodedValue::Uint(v) => {
+                qb.push_bind(BigDecimal::from_str(&v.to_string()).map_err(|error| {
+                    AppError::Internal(anyhow::anyhow!("uint to numeric: {error}"))
+                })?)
+            }
+            DecodedValue::Int(v) => {
+                qb.push_bind(BigDecimal::from_str(&v.to_string()).map_err(|error| {
+                    AppError::Internal(anyhow::anyhow!("int to numeric: {error}"))
+                })?)
+            }
+            DecodedValue::Bool(v) => qb.push_bind(*v),
+            DecodedValue::Address(v) => qb.push_bind(v.to_string()),
+            DecodedValue::String(v) => qb.push_bind(v.as_str()),
+            DecodedValue::Bytes(v) => qb.push_bind(v),
         };
     }
     qb.push(") ON CONFLICT (tx_hash) DO NOTHING");
@@ -250,8 +261,8 @@ pub struct SearchParams {
 }
 
 /// A single decoded transaction result returned by the search endpoint.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MonitorResult {
+#[derive(Debug)]
+pub struct ResultRecord {
     pub tx_hash: String,
     pub block_number: i64,
     pub block_hash: String,
@@ -265,7 +276,6 @@ pub struct MonitorResult {
     pub status: i16,
     pub created_at: DateTime<Utc>,
     /// Decoded ABI parameters keyed by their Solidity name.
-    #[schema(value_type = Object)]
     pub params: serde_json::Value,
 }
 
@@ -279,7 +289,7 @@ pub async fn query_results(
     selector: &str,
     params: &[ParamSpec],
     search: &SearchParams,
-) -> AppResult<Vec<MonitorResult>> {
+) -> AppResult<Vec<ResultRecord>> {
     let table = Identifier::new(result_table_name(address, selector)?)?;
 
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
@@ -317,7 +327,7 @@ pub async fn query_results(
         for p in params {
             param_map.insert(p.name.clone(), read_param(&row, &p.column, p.sql_kind)?);
         }
-        results.push(MonitorResult {
+        results.push(ResultRecord {
             tx_hash: row.try_get("tx_hash")?,
             block_number: row.try_get("block_number")?,
             block_hash: row.try_get("block_hash")?,

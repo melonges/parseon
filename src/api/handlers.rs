@@ -3,10 +3,11 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 
 use crate::api::AppState;
-use crate::api::dto::{CreateMonitor, ErrorResponse, Health, ResultsQuery, UpdateMonitor};
-use crate::db::dyn_table::{self, MonitorResult, SearchParams};
-use crate::db::monitor_repo::MonitorRow;
-use crate::db::monitor_repo::{self, MonitorInput};
+use crate::api::dto::{
+    CreateMonitor, ErrorResponse, Health, MonitorResult, MonitorRow, ResultsQuery, UpdateMonitor,
+};
+use crate::db::dyn_table::SearchParams;
+use crate::db::monitor_repo::MonitorInput;
 use crate::error::{AppError, AppResult};
 
 // ----- Health -----
@@ -21,7 +22,7 @@ use crate::error::{AppError, AppResult};
     )
 )]
 pub async fn healthz(State(state): State<AppState>) -> AppResult<Json<Health>> {
-    let monitors = monitor_repo::count(&state.pool).await?;
+    let monitors = state.storage.monitor_count().await?;
     Ok(Json(Health {
         status: "ok",
         monitors,
@@ -45,7 +46,7 @@ pub async fn healthz(State(state): State<AppState>) -> AppResult<Json<Health>> {
 pub async fn create_monitor(
     State(state): State<AppState>,
     body: Result<Json<CreateMonitor>, JsonRejection>,
-) -> AppResult<Json<crate::db::monitor_repo::MonitorRow>> {
+) -> AppResult<Json<MonitorRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
     let input = MonitorInput {
         address: body.address,
@@ -53,8 +54,8 @@ pub async fn create_monitor(
         start_block: body.start_block,
         end_block: body.end_block,
     };
-    let row = monitor_repo::create(&state.pool, &input).await?;
-    Ok(Json(row))
+    let row = state.storage.create_monitor(&input).await?;
+    Ok(Json(row.into()))
 }
 
 #[utoipa::path(
@@ -66,11 +67,9 @@ pub async fn create_monitor(
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn list_monitors(
-    State(state): State<AppState>,
-) -> AppResult<Json<Vec<crate::db::monitor_repo::MonitorRow>>> {
-    let rows = monitor_repo::list(&state.pool).await?;
-    Ok(Json(rows))
+pub async fn list_monitors(State(state): State<AppState>) -> AppResult<Json<Vec<MonitorRow>>> {
+    let rows = state.storage.list_monitor_records().await?;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
 #[utoipa::path(
@@ -87,9 +86,9 @@ pub async fn list_monitors(
 pub async fn get_monitor(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> AppResult<Json<crate::db::monitor_repo::MonitorRow>> {
-    let row = monitor_repo::get(&state.pool, id).await?;
-    Ok(Json(row))
+) -> AppResult<Json<MonitorRow>> {
+    let row = state.storage.get_monitor(id).await?;
+    Ok(Json(row.into()))
 }
 
 #[utoipa::path(
@@ -109,17 +108,13 @@ pub async fn update_monitor(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     body: Result<Json<UpdateMonitor>, JsonRejection>,
-) -> AppResult<Json<crate::db::monitor_repo::MonitorRow>> {
+) -> AppResult<Json<MonitorRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let row = monitor_repo::update(
-        &state.pool,
-        id,
-        body.start_block,
-        body.end_block,
-        body.enabled,
-    )
-    .await?;
-    Ok(Json(row))
+    let row = state
+        .storage
+        .update_monitor(id, body.start_block, body.end_block, body.enabled)
+        .await?;
+    Ok(Json(row.into()))
 }
 
 #[utoipa::path(
@@ -137,7 +132,7 @@ pub async fn delete_monitor(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<axum::http::StatusCode> {
-    monitor_repo::delete(&state.pool, id).await?;
+    state.storage.delete_monitor(id).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -170,22 +165,15 @@ pub async fn list_monitor_results(
         Some(ref addr) => Some(normalize_addr(addr)?),
         None => None,
     };
-    let monitor = monitor_repo::get(&state.pool, id).await?;
+    let monitor = state.storage.get_monitor(id).await?;
     let search = SearchParams {
         from_addr,
         status: query.status,
         limit: query.limit.clamp(1, 200),
         offset: query.offset.max(0),
     };
-    let rows = dyn_table::query_results(
-        &state.pool,
-        &monitor.address,
-        &monitor.selector,
-        &monitor.param_schema.0,
-        &search,
-    )
-    .await?;
-    Ok(Json(rows))
+    let rows = state.storage.query_results(&monitor, &search).await?;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
 /// Validate and normalize an address filter to lowercase hex.

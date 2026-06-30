@@ -1,6 +1,5 @@
 use alloy::primitives::Address;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use sqlx::types::Json;
 use sqlx::{FromRow, PgConnection, PgPool};
 
@@ -8,13 +7,12 @@ use crate::abi::{ParamSpec, parse_func_signature};
 use crate::db::dyn_table;
 use crate::error::{AppError, AppResult};
 
-#[derive(Debug, Clone, FromRow, Serialize, utoipa::ToSchema)]
-pub struct MonitorRow {
+#[derive(Debug, Clone, FromRow)]
+pub struct MonitorRecord {
     pub id: i64,
     pub address: String,
     pub signature: String,
     pub selector: String,
-    #[schema(value_type = Vec<ParamSpec>)]
     pub param_schema: Json<Vec<ParamSpec>>,
     pub start_block: i64,
     pub end_block: Option<i64>,
@@ -33,7 +31,7 @@ pub struct MonitorInput {
     pub end_block: Option<i64>,
 }
 
-pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow> {
+pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRecord> {
     validate_range(input.start_block, input.end_block)?;
     let normalized_address = validate_address(&input.address)?;
     let mut spec = parse_func_signature(&input.signature)?;
@@ -41,7 +39,7 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow
 
     let mut tx = pool.begin().await?;
 
-    let row = sqlx::query_as::<_, MonitorRow>(
+    let row = sqlx::query_as::<_, MonitorRecord>(
         r#"INSERT INTO monitors
              (address, signature, selector,
               param_schema, start_block, end_block)
@@ -68,8 +66,8 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow
     Ok(row)
 }
 
-pub async fn list(pool: &PgPool) -> AppResult<Vec<MonitorRow>> {
-    let rows = sqlx::query_as::<_, MonitorRow>("SELECT * FROM monitors ORDER BY id")
+pub async fn list(pool: &PgPool) -> AppResult<Vec<MonitorRecord>> {
+    let rows = sqlx::query_as::<_, MonitorRecord>("SELECT * FROM monitors ORDER BY id")
         .fetch_all(pool)
         .await?;
     Ok(rows)
@@ -82,8 +80,8 @@ pub async fn count(pool: &PgPool) -> AppResult<usize> {
     usize::try_from(count).map_err(|e| AppError::Internal(e.into()))
 }
 
-pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRow> {
-    let row = sqlx::query_as::<_, MonitorRow>("SELECT * FROM monitors WHERE id = $1")
+pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRecord> {
+    let row = sqlx::query_as::<_, MonitorRecord>("SELECT * FROM monitors WHERE id = $1")
         .bind(id)
         .fetch_one(pool)
         .await?;
@@ -93,7 +91,7 @@ pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRow> {
 pub async fn delete(pool: &PgPool, id: i64) -> AppResult<()> {
     let mut tx = pool.begin().await?;
     let current =
-        sqlx::query_as::<_, MonitorRow>("SELECT * FROM monitors WHERE id = $1 FOR UPDATE")
+        sqlx::query_as::<_, MonitorRecord>("SELECT * FROM monitors WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?
@@ -115,10 +113,10 @@ pub async fn update(
     start_block: Option<i64>,
     end_block: Option<Option<i64>>,
     enabled: Option<bool>,
-) -> AppResult<MonitorRow> {
+) -> AppResult<MonitorRecord> {
     let mut tx = pool.begin().await?;
     let current =
-        sqlx::query_as::<_, MonitorRow>("SELECT * FROM monitors WHERE id = $1 FOR UPDATE")
+        sqlx::query_as::<_, MonitorRecord>("SELECT * FROM monitors WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?
@@ -152,7 +150,7 @@ pub async fn update(
         None => false,
     };
 
-    let row = sqlx::query_as::<_, MonitorRow>(
+    let row = sqlx::query_as::<_, MonitorRecord>(
         r#"UPDATE monitors
              SET start_block = COALESCE($1, start_block),
                  end_block   = $2,

@@ -3,7 +3,6 @@ pub mod handlers;
 pub mod openapi;
 pub mod routes;
 
-use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
@@ -11,16 +10,17 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::openapi::ApiDoc;
+use crate::db::storage::PostgresStorage;
 
 /// Shared state passed to all handlers.
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: PgPool,
+    pub storage: PostgresStorage,
 }
 
 impl AppState {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(storage: PostgresStorage) -> Self {
+        Self { storage }
     }
 }
 
@@ -47,12 +47,13 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{AppState, router};
+    use crate::db::storage::PostgresStorage;
 
     fn test_router() -> axum::Router {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://postgres:postgres@localhost/parseon")
             .expect("test database URL should be valid");
-        router(AppState::new(pool))
+        router(AppState::new(PostgresStorage::new(pool)))
     }
 
     #[tokio::test]
@@ -84,7 +85,11 @@ mod tests {
             ("/monitors/{id}", "get", &["200", "404", "500"][..]),
             ("/monitors/{id}", "patch", &["200", "400", "404", "500"][..]),
             ("/monitors/{id}", "delete", &["204", "404", "500"][..]),
-            ("/monitors/{id}/results", "get", &["200", "400", "404", "500"][..]),
+            (
+                "/monitors/{id}/results",
+                "get",
+                &["200", "400", "404", "500"][..],
+            ),
         ];
 
         for (path, method, expected_statuses) in expected_operations {

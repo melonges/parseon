@@ -3,7 +3,13 @@ use alloy::json_abi::Function;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use super::types::{sol_type_to_sql_kind, SqlKind};
+use super::types::{SqlKind, sol_type_to_sql_kind};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AbiParam {
+    pub name: String,
+    pub sol_type: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ParamSpec {
@@ -11,6 +17,15 @@ pub struct ParamSpec {
     pub sol_type: String,
     pub sql_kind: SqlKind,
     pub column: String,
+}
+
+impl ParamSpec {
+    pub fn as_abi(&self) -> AbiParam {
+        AbiParam {
+            name: self.name.clone(),
+            sol_type: self.sol_type.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

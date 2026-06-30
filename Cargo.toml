@@ -1,6 +1,6 @@
 [package]
 name = "parseon"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -37,6 +37,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror = "2.0"
 anyhow = "1.0"
+async-trait = "0.1"
 clap = { version = "4.6", features = ["derive", "env"] }
 dotenvy = "0.15"
 lru = "0.18"

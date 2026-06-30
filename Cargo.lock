@@ -3015,10 +3015,11 @@ dependencies = [
 
 [[package]]
 name = "parseon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alloy",
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "clap",

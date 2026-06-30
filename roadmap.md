@@ -58,7 +58,7 @@ Runtime-loaded plugins are intentionally out of scope for early versions. Compil
 
 ## v0.1 — Single-chain MVP
 
-Current development baseline.
+Initial development baseline.
 
 - Single-chain EVM indexing.
 - Monitor CRUD API.
@@ -70,6 +70,8 @@ Current development baseline.
 ## v0.2 — Internal boundaries and adapter traits
 
 Prepare the architecture before adding more moving parts, without slowing development with premature workspace crates.
+
+Status: implemented in v0.2.0.
 
 - Keep Parseon as one binary crate.
 - Reorganize toward clear internal modules: `core`, `monitor`, `filter`, `cache`, `rpc`, `scheduler`, and `worker`.
@@ -176,11 +178,9 @@ Make Parseon reliable to operate as infrastructure.
 
 ## Current priorities
 
-1. Keep one binary crate and improve internal module boundaries.
-2. Introduce clean domain models and adapter traits.
-3. Implement finality and reorg guarantees.
-4. Add multi-chain workers.
-5. Optimize parallel indexing.
-6. Build richer APIs for management and querying.
-7. Add Redis, eRPC, Etherscan, MongoDB, and sink adapters only after the core traits are stable.
-8. Reevaluate separate crates near v0.9, not before the domain model settles.
+1. Implement finality and reorg guarantees.
+2. Add multi-chain workers.
+3. Optimize parallel indexing.
+4. Build richer APIs for management and querying.
+5. Add Redis, eRPC, Etherscan, MongoDB, and sink adapters only after the core traits are stable.
+6. Reevaluate separate crates near v0.9, not before the domain model settles.
