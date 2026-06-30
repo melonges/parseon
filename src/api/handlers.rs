@@ -48,7 +48,6 @@ pub async fn create_monitor(
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
     let input = MonitorInput {
         address: body.address,
-        name: body.name,
         signature: body.signature,
         start_block: body.start_block,
         end_block: body.end_block,

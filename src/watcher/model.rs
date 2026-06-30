@@ -11,7 +11,6 @@ pub struct Monitor {
     pub address: Address,
     /// Raw selector bytes (4 bytes).
     pub selector: [u8; 4],
-    pub name: String,
     pub canonical_signature: String,
     /// Canonical tuple string like `(address,uint256)`.
     pub input_types: String,
@@ -85,7 +84,6 @@ impl TryFrom<&MonitorRow> for Monitor {
             id: row.id,
             address,
             selector: Self::parse_selector(&row.selector)?,
-            name: row.name.clone(),
             canonical_signature: row.signature.clone(),
             input_types,
             params,
@@ -109,7 +107,6 @@ mod tests {
         MonitorRow {
             id: 1,
             address: address.to_string(),
-            name: "transfer".to_string(),
             signature: "transfer(address,uint256)".to_string(),
             selector: selector.to_string(),
             param_schema: Json(Vec::new()),

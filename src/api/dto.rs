@@ -6,10 +6,6 @@ use utoipa::ToSchema;
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateMonitor {
     pub address: String,
-    /// Optional human-readable label. Defaults to `{address}_{selector}` when
-    /// omitted.
-    #[serde(default)]
-    pub name: Option<String>,
     /// Human-readable function signature, e.g.
     /// `function transfer(address to, uint256 value) returns (bool)`
     pub signature: String,

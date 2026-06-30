@@ -12,7 +12,6 @@ use crate::error::{AppError, AppResult};
 pub struct MonitorRow {
     pub id: i64,
     pub address: String,
-    pub name: String,
     pub signature: String,
     pub selector: String,
     #[schema(value_type = Vec<ParamSpec>)]
@@ -29,7 +28,6 @@ pub struct MonitorRow {
 #[derive(Debug, Clone)]
 pub struct MonitorInput {
     pub address: String,
-    pub name: Option<String>,
     pub signature: String,
     pub start_block: i64,
     pub end_block: Option<i64>,
@@ -40,22 +38,16 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow
     let normalized_address = validate_address(&input.address)?;
     let spec = parse_func_signature(&input.signature)?;
 
-    let name = input
-        .name
-        .clone()
-        .unwrap_or_else(|| format!("{}_{}", normalized_address, spec.selector));
-
     let mut tx = pool.begin().await?;
 
     let row = sqlx::query_as::<_, MonitorRow>(
         r#"INSERT INTO monitors
-             (address, name, signature, selector,
+             (address, signature, selector,
               param_schema, start_block, end_block)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING *"#,
     )
     .bind(&normalized_address)
-    .bind(&name)
     .bind(&input.signature)
     .bind(&spec.selector)
     .bind(Json(spec.params.clone()))
