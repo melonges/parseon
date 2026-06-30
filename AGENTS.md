@@ -13,6 +13,12 @@
 - Keep the description imperative, lowercase, and concise; use `!` only for intentional breaking changes.
 - Prefer one coherent change per commit. Common types are `feat`, `fix`, `refactor`, `docs`, `test`, `build`, and `chore`.
 
+## Development stage
+
+- Parseon is in an early stage of development. Breaking changes are allowed when they improve the design.
+- Do not preserve legacy APIs, compatibility layers, deprecated paths, or transitional code unless explicitly requested.
+- Update all affected code, tests, docs, examples, and migrations together so the repository represents only the current design.
+
 ## Running Parseon
 
 1. `docker compose up -d` — starts PostgreSQL 16 on `localhost:5432`.
