@@ -333,9 +333,9 @@ pub async fn query_results(
             block_hash: row.try_get("block_hash")?,
             from_addr: row.try_get("from_addr")?,
             to_addr: row.try_get("to_addr")?,
-            value: row.try_get::<BigDecimal, _>("value")?.to_string(),
-            gas_used: row.try_get::<BigDecimal, _>("gas_used")?.to_string(),
-            gas_price: row.try_get::<BigDecimal, _>("gas_price")?.to_string(),
+            value: row.try_get::<BigDecimal, _>("value")?.to_plain_string(),
+            gas_used: row.try_get::<BigDecimal, _>("gas_used")?.to_plain_string(),
+            gas_price: row.try_get::<BigDecimal, _>("gas_price")?.to_plain_string(),
             status: row.try_get("status")?,
             created_at: row.try_get("created_at")?,
             params: serde_json::Value::Object(param_map),
@@ -348,7 +348,7 @@ pub async fn query_results(
 fn read_param(row: &PgRow, column: &str, kind: SqlKind) -> AppResult<serde_json::Value> {
     Ok(match kind {
         SqlKind::Numeric => match row.try_get::<Option<BigDecimal>, _>(column)? {
-            Some(d) => serde_json::Value::String(d.to_string()),
+            Some(d) => serde_json::Value::String(d.to_plain_string()),
             None => serde_json::Value::Null,
         },
         SqlKind::Bool => serde_json::json!(row.try_get::<Option<bool>, _>(column)?),
@@ -401,6 +401,10 @@ impl std::fmt::Display for Identifier {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use sqlx::types::BigDecimal;
+
     use super::{Identifier, dedupe_param_columns, result_table_name};
     use crate::abi::ParamSpec;
 
@@ -425,6 +429,13 @@ mod tests {
     fn rejects_invalid_table_components() {
         assert!(result_table_name("not-an-address", "0x6e553f65").is_err());
         assert!(result_table_name("0xf36fed68017f6e84d2eb1d4bd35ab56ae0cd914a", "bad").is_err());
+    }
+
+    #[test]
+    fn renders_numeric_values_without_scientific_notation() {
+        let value = BigDecimal::from_str("5e+16").unwrap();
+
+        assert_eq!(value.to_plain_string(), "50000000000000000");
     }
 
     #[test]
