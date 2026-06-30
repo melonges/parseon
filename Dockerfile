@@ -12,6 +12,15 @@ FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
+# ---- development: cached debug dependencies + hot reload ----
+FROM chef AS development
+RUN apk add --no-cache watchexec
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --recipe-path recipe.json
+COPY . .
+EXPOSE 8080
+CMD ["watchexec", "--restart", "--stop-signal", "SIGINT", "--exts", "rs,toml,lock,sql", "--", "cargo", "run"]
+
 # ---- builder: pre-build deps, then the real binary ----
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json

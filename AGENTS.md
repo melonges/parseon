@@ -2,42 +2,31 @@
 
 ## Build & test
 
-- `cargo test` — unit tests only (in `src/abi/parse.rs` and `src/abi/decode.rs`); fast, no services needed.
+- `cargo test` — unit and HTTP router tests; fast, no services needed.
 - `cargo build --release` — release binary at `target/release/parseon`.
 - No lint/format config exists (no clippy/rustfmt config, no CI). Verify with `cargo test`.
+- Don't run build commands by yourself, ask me and I'll run and give you output
 
 ## Running the indexer
 
-1. `docker compose up -d` — starts `postgres:16` and the Rust indexer.
+1. `docker compose up --build` — starts `postgres:16` and the development indexer.
 2. `cp .env.example .env` — `.env` is gitignored; loaded via `dotenvy` + clap env vars.
 3. Set `RPC_URL` and `CHAIN_ID` in `.env` (the defaults target Base mainnet).
-4. `./target/release/parseon` — runs HTTP API + single-chain indexing coordinator.
+4. Edit Rust, Cargo, or migration SQL files; Watchexec recompiles and restarts the indexer.
+
+Compose bind-mounts the repository into the development container and retains
+the Cargo registry and `target/` directory in named volumes. Follow rebuilds
+with `docker compose logs -f indexer`. The final Dockerfile stage remains the
+minimal production image and can be built with `docker build -t parseon .`.
 
 Default `HTTP_LISTEN=0.0.0.0:8080`. Override if port is taken (e.g. `HTTP_LISTEN=0.0.0.0:8081`).
+
+Swagger UI is served at `/swagger-ui/`; the generated OpenAPI document is at
+`/api-docs/openapi.json`.
 
 The indexer validates the RPC endpoint's chain ID at startup and only indexes
 blocks returned by the RPC `finalized` tag. Base's public endpoint is
 rate-limited; replace `RPC_URL` for sustained workloads.
-
-### Per-chain deployment
-
-Each Parseon instance indexes a single chain. For multi-chain:
-```bash
-# Instance 1: Base
-CHAIN_ID=8453 ./target/release/parseon
-
-# Instance 2: Ethereum
-CHAIN_ID=1 ./target/release/parseon
-
-# Instance 3: Arbitrum (different terminal)
-CHAIN_ID=42161 ./target/release/parseon
-```
-
-Each instance needs its own direct `RPC_URL`. Instances may share PostgreSQL,
-but monitor ownership must not overlap because every instance polls the same
-`monitors` table.
-
-## Critical gotchas
 
 ### sqlx migrations are embedded at compile time
 
@@ -72,7 +61,7 @@ watcher/       runtime Monitor conversion and covers()/next_block() cursor logic
 abi/           runtime function-signature parsing + calldata decoding (no codegen, no sol! macro)
 rpc/           alloy HTTP provider, block fetch with receipt filtering, LRU block cache
 db/            monitor_repo, tx_repo, dyn_table (per-monitor result tables)
-api/           axum REST: /monitors/{id}, /healthz
+api/           axum REST + OpenAPI/Swagger UI: /monitors/{id}, /healthz, /swagger-ui/
 ```
 
 ## Key design decisions
