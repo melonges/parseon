@@ -19,12 +19,8 @@ pub enum SqlValue {
 /// suitable for direct sqlx binding.
 ///
 /// Returns one `SqlValue` per parameter in declaration order.
-pub fn decode_calldata(
-    input_types: &str,
-    data: &[u8],
-) -> Result<Vec<SqlValue>, AbiError> {
-    let ty = DynSolType::from_str(input_types)
-        .map_err(|e| AbiError::Type(e.to_string()))?;
+pub fn decode_calldata(input_types: &str, data: &[u8]) -> Result<Vec<SqlValue>, AbiError> {
+    let ty = DynSolType::from_str(input_types).map_err(|e| AbiError::Type(e.to_string()))?;
     let decoded = ty
         .abi_decode_params(data)
         .map_err(|e| AbiError::Decode(e.to_string()))?;
@@ -47,9 +43,7 @@ pub fn value_to_sql(v: DynSolValue) -> Result<SqlValue, AbiError> {
         DynSolValue::Address(a) => Ok(SqlValue::Text(format!("{a:?}"))),
         DynSolValue::String(s) => Ok(SqlValue::Text(s)),
         DynSolValue::Bytes(b) => Ok(SqlValue::Bytea(b.to_vec())),
-        DynSolValue::FixedBytes(word, size) => {
-            Ok(SqlValue::Bytea(word[..size].to_vec()))
-        }
+        DynSolValue::FixedBytes(word, size) => Ok(SqlValue::Bytea(word[..size].to_vec())),
         DynSolValue::Function(f) => Ok(SqlValue::Bytea(f.as_slice().to_vec())),
         DynSolValue::Uint(u, _) => BigDecimal::from_str(&u.to_string())
             .map(SqlValue::Numeric)
@@ -57,18 +51,16 @@ pub fn value_to_sql(v: DynSolValue) -> Result<SqlValue, AbiError> {
         DynSolValue::Int(i, _) => BigDecimal::from_str(&i.to_string())
             .map(SqlValue::Numeric)
             .map_err(|e| AbiError::Decode(format!("int->BigDecimal: {e}"))),
-        DynSolValue::Array(_) | DynSolValue::FixedArray(_) | DynSolValue::Tuple(_) => {
-            Err(AbiError::Decode(
-                "composite types not supported at decode time".into(),
-            ))
-        }
+        DynSolValue::Array(_) | DynSolValue::FixedArray(_) | DynSolValue::Tuple(_) => Err(
+            AbiError::Decode("composite types not supported at decode time".into()),
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{U256, address};
+    use alloy::primitives::{address, U256};
     use alloy::sol_types::SolCall;
 
     alloy::sol! {
@@ -90,10 +82,7 @@ mod tests {
         let values = decode_calldata("(address,uint256)", args).unwrap();
         assert_eq!(values.len(), 2);
         match &values[0] {
-            SqlValue::Text(s) => assert_eq!(
-                s,
-                "0xd8da6bf26964af9d7eed66e0db1c02b9c4a5b0e9"
-            ),
+            SqlValue::Text(s) => assert_eq!(s, "0xd8da6bf26964af9d7eed66e0db1c02b9c4a5b0e9"),
             v => panic!("address: {v:?}"),
         }
         match &values[1] {

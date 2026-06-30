@@ -8,7 +8,8 @@ use utoipa::OpenApi;
     ),
     tags(
         (name = "health", description = "Service health"),
-        (name = "monitors", description = "EVM transaction monitor management")
+        (name = "monitors", description = "EVM transaction monitor management"),
+        (name = "results", description = "Search decoded monitor results")
     )
 )]
 pub struct ApiDoc;

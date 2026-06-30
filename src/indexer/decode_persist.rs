@@ -4,7 +4,8 @@ use sqlx::types::BigDecimal;
 use std::str::FromStr;
 
 use crate::abi::decode_calldata;
-use crate::db::{dyn_table, monitor_repo, tx_repo, tx_repo::TxInput};
+use crate::db::dyn_table::ResultInput;
+use crate::db::{dyn_table, monitor_repo};
 use crate::error::AppResult;
 use crate::rpc::fetch::MatchedTx;
 use crate::watcher::model::Monitor;
@@ -12,11 +13,11 @@ use crate::watcher::model::Monitor;
 /// Process all matched txs in a block for the monitors that cover it.
 ///
 /// For each tx, find the monitor whose (address, selector) matches, decode the
-/// calldata, and persist the tx metadata + params. All storage and cursor
-/// updates for the block commit atomically.
+/// calldata, and persist the full transaction row (metadata + params) into the
+/// monitor's result table. All storage and cursor updates for the block commit
+/// atomically.
 pub async fn process_block(
     pool: &PgPool,
-    chain_id: i64,
     chain_label: &str,
     block_number: i64,
     block_hash: &str,
@@ -61,30 +62,27 @@ pub async fn process_block(
             }
         };
 
-        let tx_input = TxInput {
-            tx_hash: &tx.hash.to_string(),
-            chain_id,
-            monitor_id: monitor.id,
+        let result = ResultInput {
+            tx_hash: tx.hash.to_string(),
             block_number,
-            block_hash,
-            from_addr: &tx.from.to_string(),
-            to_addr: &tx.to.to_string(),
+            block_hash: block_hash.to_string(),
+            from_addr: tx.from.to_string(),
+            to_addr: tx.to.to_string(),
             value: uint_to_decimal(tx.value),
             gas_used: BigDecimal::from_str(&tx.gas_used.to_string()).expect("u64 fits BigDecimal"),
             gas_price: BigDecimal::from_str(&tx.gas_price.to_string())
                 .expect("u128 fits BigDecimal"),
             status: 1,
             input_raw: tx.input.clone(),
-            selector: &selector_hex,
+            params,
         };
 
-        tx_repo::insert_tx(&mut db_tx, &tx_input).await?;
-        dyn_table::insert_params(
+        dyn_table::insert_result(
             &mut db_tx,
             &monitor.address.to_string(),
             &selector_hex,
             &monitor.params,
-            &params,
+            &result,
         )
         .await?;
 

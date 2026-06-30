@@ -171,7 +171,6 @@ pub async fn run(
 
             if let Err(e) = decode_persist::process_block(
                 &pool,
-                chain.chain_id,
                 &chain_label,
                 block_number,
                 &block_hash_hex,

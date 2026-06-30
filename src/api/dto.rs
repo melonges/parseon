@@ -32,3 +32,23 @@ pub struct Health {
 pub struct ErrorResponse {
     pub error: String,
 }
+
+// ----- Results search -----
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ResultsQuery {
+    /// Maximum number of results (default 50, clamped to 200).
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    /// Pagination offset (default 0).
+    #[serde(default)]
+    pub offset: i64,
+    /// Filter by transaction sender (normalized, case-insensitive).
+    pub from_addr: Option<String>,
+    /// Filter by transaction status (1 = success, 0 = reverted).
+    pub status: Option<i16>,
+}
+
+fn default_limit() -> i64 {
+    50
+}

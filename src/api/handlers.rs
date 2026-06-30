@@ -1,9 +1,10 @@
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 
 use crate::api::AppState;
-use crate::api::dto::{CreateMonitor, ErrorResponse, Health, UpdateMonitor};
+use crate::api::dto::{CreateMonitor, ErrorResponse, Health, ResultsQuery, UpdateMonitor};
+use crate::db::dyn_table::{self, MonitorResult, SearchParams};
 use crate::db::monitor_repo::MonitorRow;
 use crate::db::monitor_repo::{self, MonitorInput};
 use crate::error::{AppError, AppResult};
@@ -138,4 +139,60 @@ pub async fn delete_monitor(
 ) -> AppResult<axum::http::StatusCode> {
     monitor_repo::delete(&state.pool, id).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+// ----- Results -----
+
+#[utoipa::path(
+    get,
+    path = "/monitors/{id}/results",
+    tag = "results",
+    params(
+        ("id" = i64, Path, description = "Monitor ID"),
+        ("from_addr" = Option<String>, Query, description = "Filter by sender address (case-insensitive)"),
+        ("status" = Option<i16>, Query, description = "Filter by transaction status (1 = success, 0 = reverted)"),
+        ("limit" = Option<i64>, Query, description = "Maximum number of results (default 50, max 200)"),
+        ("offset" = Option<i64>, Query, description = "Pagination offset (default 0)")
+    ),
+    responses(
+        (status = OK, description = "Decoded results ordered by block_number descending", body = [MonitorResult]),
+        (status = BAD_REQUEST, description = "Invalid query parameter", body = ErrorResponse),
+        (status = NOT_FOUND, description = "Monitor not found", body = ErrorResponse),
+        (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
+    )
+)]
+pub async fn list_monitor_results(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Query(query): Query<ResultsQuery>,
+) -> AppResult<Json<Vec<MonitorResult>>> {
+    let from_addr = match query.from_addr {
+        Some(ref addr) => Some(normalize_addr(addr)?),
+        None => None,
+    };
+    let monitor = monitor_repo::get(&state.pool, id).await?;
+    let search = SearchParams {
+        from_addr,
+        status: query.status,
+        limit: query.limit.clamp(1, 200),
+        offset: query.offset.max(0),
+    };
+    let rows = dyn_table::query_results(
+        &state.pool,
+        &monitor.address,
+        &monitor.selector,
+        &monitor.param_schema.0,
+        &search,
+    )
+    .await?;
+    Ok(Json(rows))
+}
+
+/// Validate and normalize an address filter to lowercase hex.
+fn normalize_addr(value: &str) -> AppResult<String> {
+    use alloy::primitives::Address;
+    let address: Address = value
+        .parse()
+        .map_err(|e| AppError::BadRequest(format!("invalid from_addr: {e}")))?;
+    Ok(address.to_string().to_ascii_lowercase())
 }

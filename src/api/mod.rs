@@ -84,6 +84,7 @@ mod tests {
             ("/monitors/{id}", "get", &["200", "404", "500"][..]),
             ("/monitors/{id}", "patch", &["200", "400", "404", "500"][..]),
             ("/monitors/{id}", "delete", &["204", "404", "500"][..]),
+            ("/monitors/{id}/results", "get", &["200", "400", "404", "500"][..]),
         ];
 
         for (path, method, expected_statuses) in expected_operations {
@@ -101,6 +102,7 @@ mod tests {
             "CreateMonitor",
             "ErrorResponse",
             "Health",
+            "MonitorResult",
             "MonitorRow",
             "ParamSpec",
             "SqlKind",

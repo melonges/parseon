@@ -36,7 +36,8 @@ pub struct MonitorInput {
 pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRow> {
     validate_range(input.start_block, input.end_block)?;
     let normalized_address = validate_address(&input.address)?;
-    let spec = parse_func_signature(&input.signature)?;
+    let mut spec = parse_func_signature(&input.signature)?;
+    dyn_table::dedupe_param_columns(&mut spec.params);
 
     let mut tx = pool.begin().await?;
 

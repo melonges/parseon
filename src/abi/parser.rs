@@ -3,7 +3,7 @@ use alloy::json_abi::Function;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use super::types::{SqlKind, sol_type_to_sql_kind};
+use super::types::{sol_type_to_sql_kind, SqlKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ParamSpec {
