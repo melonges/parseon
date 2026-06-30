@@ -13,17 +13,17 @@
 - Keep the description imperative, lowercase, and concise; use `!` only for intentional breaking changes.
 - Prefer one coherent change per commit. Common types are `feat`, `fix`, `refactor`, `docs`, `test`, `build`, and `chore`.
 
-## Running the indexer
+## Running Parseon
 
-1. `docker compose up --build` — starts `postgres:16` and the development indexer.
+1. `docker compose up -d` — starts PostgreSQL 16 on `localhost:5432`.
 2. `cp .env.example .env` — `.env` is gitignored; loaded via `dotenvy` + clap env vars.
 3. Set `RPC_URL` and `CHAIN_ID` in `.env` (the defaults target Base mainnet).
-4. Edit Rust, Cargo, or migration SQL files; Watchexec recompiles and restarts the indexer.
+4. Run the Parseon app on the host. Its default `DATABASE_URL` connects to the
+   Compose PostgreSQL instance.
 
-Compose bind-mounts the repository into the development container and retains
-the Cargo registry and `target/` directory in named volumes. Follow rebuilds
-with `docker compose logs -f indexer`. The final Dockerfile stage remains the
-minimal production image and can be built with `docker build -t parseon .`.
+PostgreSQL data is retained in the `pgdata` named volume. Check database logs
+with `docker compose logs -f postgres`. The Dockerfile remains available for
+building a standalone production image with `docker build -t parseon .`.
 
 Default `HTTP_LISTEN=0.0.0.0:8080`. Override if port is taken (e.g. `HTTP_LISTEN=0.0.0.0:8081`).
 
