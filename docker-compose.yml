@@ -15,32 +15,5 @@ services:
       timeout: 3s
       retries: 10
 
-  indexer:
-    build:
-      context: .
-      target: development
-    init: true
-    env_file: .env
-    environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/parseon
-      CARGO_TERM_COLOR: always
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "${HTTP_PORT:-8080}:8080"
-    volumes:
-      - .:/app
-      - cargo-registry:/usr/local/cargo/registry
-      - cargo-target:/app/target
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      start_period: 120s
-      retries: 5
-
 volumes:
-  cargo-registry:
-  cargo-target:
   pgdata:

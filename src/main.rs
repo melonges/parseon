@@ -1,11 +1,13 @@
-mod abi;
 mod api;
+mod cache;
 mod config;
+mod core;
 mod db;
 mod error;
-mod indexer;
 mod rpc;
-mod watcher;
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
@@ -21,53 +23,56 @@ async fn main() -> anyhow::Result<()> {
         )
         .try_init();
 
-    tracing::info!(chain_id = config.chain_id, "starting parseon");
+    tracing::info!("starting parseon");
 
     // Database.
     let pool = db::pool::connect(&config.database_url).await?;
 
-    // Fail fast if the direct RPC endpoint points at a different chain.
-    let rpc_provider = rpc::provider::build(&config.rpc_url)?;
-    let rpc_chain_id = rpc::provider::chain_id(&rpc_provider).await?;
-    let configured_chain_id = u64::try_from(config.chain_id)
-        .map_err(|_| anyhow::anyhow!("CHAIN_ID must be non-negative"))?;
-    anyhow::ensure!(
-        rpc_chain_id == configured_chain_id,
-        "RPC chain ID {rpc_chain_id} does not match configured CHAIN_ID {configured_chain_id}"
+    // Discover the single indexed chain and require finalized-head support.
+    let block_source = Arc::new(rpc::provider::JsonRpcBlockSource::connect(&config.rpc_url)?);
+    let source = core::worker::probe_source(block_source.as_ref()).await?;
+    let chain = core::Chain::new(i64::try_from(source.chain_id)?)?;
+    tracing::info!(
+        chain_id = source.chain_id,
+        finalized_head = source.finalized_head,
+        "RPC chain and finalized head validated"
     );
-    tracing::info!(chain_id = rpc_chain_id, "RPC chain ID validated");
+    let runtime_status = core::status::RuntimeStatus::new(chain.id, source.finalized_head);
 
-    // Cancellation token shared by coordinator and API.
+    // Cancellation token shared by worker and API.
     let cancel = CancellationToken::new();
 
-    let chain_config = indexer::coordinator::ChainConfig {
-        chain_id: config.chain_id,
-        rpc_url: config.rpc_url.clone(),
-        batch_size: config.default_batch_size as i32,
+    let worker_config = core::worker::WorkerConfig {
+        chain,
+        batch_size: i64::try_from(config.default_batch_size).unwrap_or(i64::MAX),
+        poll_interval: Duration::from_millis(config.poll_interval_ms.max(100)),
     };
+    let storage = Arc::new(db::storage::PostgresStorage::new(pool.clone()));
+    let block_cache = Arc::new(cache::MemoryBlockCache::new(config.block_cache_size));
 
-    // Coordinator: single-chain indexing loop.
-    let coordinator_handle = tokio::spawn({
-        let chain = chain_config;
-        let pool = pool.clone();
+    // Single-chain indexing worker.
+    let worker_handle = tokio::spawn({
+        let worker_config = worker_config;
+        let storage = storage.clone();
+        let block_source = block_source.clone();
+        let block_cache = block_cache.clone();
+        let runtime_status = runtime_status.clone();
         let cancel = cancel.clone();
         async move {
-            if let Err(e) = indexer::coordinator::run(
-                chain,
-                pool,
-                config.block_cache_size,
-                config.poll_interval_ms,
+            core::worker::run(
+                worker_config,
+                storage,
+                block_source,
+                block_cache,
+                runtime_status,
                 cancel,
             )
-            .await
-            {
-                tracing::error!("coordinator: {e}");
-            }
+            .await;
         }
     });
 
     // HTTP API.
-    let state = api::AppState::new(pool.clone());
+    let state = api::AppState::new((*storage).clone(), runtime_status);
     let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(&config.http_listen).await?;
     tracing::info!(listen = %config.http_listen, "http API listening");
@@ -77,11 +82,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Graceful shutdown on SIGINT, or if coordinator/server task ends.
+    // Graceful shutdown on SIGINT, or if worker/server task ends.
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        _ = coordinator_handle => {
-            tracing::warn!("coordinator task exited unexpectedly");
+        _ = worker_handle => {
+            tracing::warn!("worker task exited unexpectedly");
         }
         _ = server_handle => {
             tracing::warn!("http server task exited unexpectedly");

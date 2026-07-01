@@ -1,11 +1,13 @@
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use crate::api::handlers;
 use crate::api::AppState;
+use crate::api::handlers;
 
 pub fn health_routes() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().routes(routes!(handlers::healthz))
+    OpenApiRouter::new()
+        .routes(routes!(handlers::healthz))
+        .routes(routes!(handlers::status))
 }
 
 pub fn monitor_routes() -> OpenApiRouter<AppState> {

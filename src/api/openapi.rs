@@ -7,7 +7,7 @@ use utoipa::OpenApi;
         description = "HTTP API for managing Parseon EVM transaction monitors"
     ),
     tags(
-        (name = "health", description = "Service health"),
+        (name = "health", description = "Service health and finalized indexing status"),
         (name = "monitors", description = "EVM transaction monitor management"),
         (name = "results", description = "Search decoded monitor results")
     )

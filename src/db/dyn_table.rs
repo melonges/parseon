@@ -1,11 +1,14 @@
+use alloy::dyn_abi::DynSolType;
 use alloy::hex;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use sqlx::postgres::PgRow;
 use sqlx::types::BigDecimal;
 use sqlx::{PgConnection, PgPool, QueryBuilder, Row, Transaction};
+use std::str::FromStr;
 
-use crate::abi::{ParamSpec, SqlKind, SqlValue};
+use crate::core::DecodedValue;
+use crate::core::abi::parse_abi_type;
+use crate::db::monitor_repo::StoredParam;
 use crate::error::{AppError, AppResult};
 
 /// Standard transaction-metadata columns every result table carries alongside
@@ -41,6 +44,43 @@ const RESERVED_COLUMNS: &[&str] = &[
     "created_at",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PgColumnType {
+    Numeric,
+    Bool,
+    Text,
+    Bytea,
+}
+
+impl PgColumnType {
+    fn from_sol_type(sol_type: &str) -> AppResult<Self> {
+        let ty = parse_abi_type(sol_type)?;
+        Ok(match ty {
+            DynSolType::Uint(_) | DynSolType::Int(_) => Self::Numeric,
+            DynSolType::Bool => Self::Bool,
+            DynSolType::Address | DynSolType::String => Self::Text,
+            DynSolType::Bytes | DynSolType::FixedBytes(_) | DynSolType::Function => Self::Bytea,
+            _ => unreachable!("core ABI validation rejects composite types"),
+        })
+    }
+
+    fn ddl_type(self) -> &'static str {
+        match self {
+            Self::Numeric => "NUMERIC",
+            Self::Bool => "BOOLEAN",
+            Self::Text => "TEXT",
+            Self::Bytea => "BYTEA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PgParam {
+    name: String,
+    column: String,
+    kind: PgColumnType,
+}
+
 /// Return the result table name for a normalized address and selector.
 pub fn result_table_name(address: &str, selector: &str) -> AppResult<String> {
     let address = address.strip_prefix("0x").unwrap_or(address);
@@ -62,39 +102,45 @@ pub fn result_table_name(address: &str, selector: &str) -> AppResult<String> {
     ))
 }
 
-/// Rename any decoded-parameter column that collides with a reserved standard
-/// column (e.g. `transfer(address to, uint256 value)` → `value` becomes
-/// `value_param`). The ABI `name` is preserved so API output is unaffected.
-pub fn dedupe_param_columns(params: &mut [ParamSpec]) {
+/// Derive PostgreSQL-only type and column metadata from the semantic ABI schema.
+fn postgres_params(params: &[StoredParam]) -> AppResult<Vec<PgParam>> {
     use std::collections::HashSet;
 
     let reserved: HashSet<&str> = RESERVED_COLUMNS.iter().copied().collect();
-    // Columns already taken by non-colliding params.
     let mut used: HashSet<String> = params
         .iter()
-        .filter_map(|p| {
-            if reserved.contains(p.column.as_str()) {
+        .filter_map(|param| {
+            if reserved.contains(param.name.as_str()) {
                 None
             } else {
-                Some(p.column.clone())
+                Some(param.name.clone())
             }
         })
         .collect();
 
-    for p in params.iter_mut() {
-        if !reserved.contains(p.column.as_str()) {
-            continue;
-        }
-        let base = format!("{}_param", p.column);
-        let mut final_col = base.clone();
-        let mut n = 1;
-        while used.contains(&final_col) {
-            final_col = format!("{base}_{n}");
-            n += 1;
-        }
-        used.insert(final_col.clone());
-        p.column = final_col;
-    }
+    params
+        .iter()
+        .map(|param| {
+            let column = if reserved.contains(param.name.as_str()) {
+                let base = format!("{}_param", param.name);
+                let mut candidate = base.clone();
+                let mut suffix = 1;
+                while used.contains(&candidate) {
+                    candidate = format!("{base}_{suffix}");
+                    suffix += 1;
+                }
+                used.insert(candidate.clone());
+                candidate
+            } else {
+                param.name.clone()
+            };
+            Ok(PgParam {
+                name: param.name.clone(),
+                column,
+                kind: PgColumnType::from_sol_type(&param.sol_type)?,
+            })
+        })
+        .collect()
 }
 
 /// Create the per-monitor result table: standard transaction metadata columns
@@ -104,10 +150,11 @@ pub async fn create_result_table(
     tx: &mut Transaction<'_, sqlx::Postgres>,
     address: &str,
     selector: &str,
-    params: &[ParamSpec],
+    params: &[StoredParam],
 ) -> AppResult<()> {
     let table = result_table_name(address, selector)?;
     let table_ident = Identifier::new(table.as_str())?;
+    let params = postgres_params(params)?;
 
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("CREATE TABLE IF NOT EXISTS ");
     qb.push(table_ident.clone()).push(" (");
@@ -118,10 +165,10 @@ pub async fn create_result_table(
         for (name, ty) in STANDARD_COLUMNS {
             cols.push(*name).push_unseparated(" ").push_unseparated(*ty);
         }
-        for p in params {
+        for p in &params {
             cols.push(Identifier::new(p.column.as_str())?)
                 .push_unseparated(" ")
-                .push_unseparated(p.sql_kind.ddl_type());
+                .push_unseparated(p.kind.ddl_type());
         }
     }
     qb.push(")");
@@ -186,7 +233,7 @@ pub struct ResultInput {
     pub gas_price: BigDecimal,
     pub status: i16,
     pub input_raw: Vec<u8>,
-    pub params: Vec<SqlValue>,
+    pub params: Vec<DecodedValue>,
 }
 
 /// Insert a matched transaction's metadata and decoded params into the
@@ -195,15 +242,21 @@ pub async fn insert_result(
     conn: &mut PgConnection,
     address: &str,
     selector: &str,
-    params: &[ParamSpec],
+    params: &[StoredParam],
     input: &ResultInput,
 ) -> AppResult<()> {
     let table = Identifier::new(result_table_name(address, selector)?)?;
+    let params = postgres_params(params)?;
+    if params.len() != input.params.len() {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "decoded parameter count does not match monitor schema"
+        )));
+    }
 
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("INSERT INTO ");
     qb.push(table)
         .push(" (tx_hash, block_number, block_hash, from_addr, to_addr, value, gas_used, gas_price, status, input_raw");
-    for p in params {
+    for p in &params {
         qb.push(", ").push(Identifier::new(p.column.as_str())?);
     }
     qb.push(") VALUES (")
@@ -229,10 +282,20 @@ pub async fn insert_result(
     for val in &input.params {
         qb.push(", ");
         match val {
-            SqlValue::Numeric(v) => qb.push_bind(v),
-            SqlValue::Bool(v) => qb.push_bind(*v),
-            SqlValue::Text(v) => qb.push_bind(v.as_str()),
-            SqlValue::Bytea(v) => qb.push_bind(v),
+            DecodedValue::Uint(v) => {
+                qb.push_bind(BigDecimal::from_str(&v.to_string()).map_err(|error| {
+                    AppError::Internal(anyhow::anyhow!("uint to numeric: {error}"))
+                })?)
+            }
+            DecodedValue::Int(v) => {
+                qb.push_bind(BigDecimal::from_str(&v.to_string()).map_err(|error| {
+                    AppError::Internal(anyhow::anyhow!("int to numeric: {error}"))
+                })?)
+            }
+            DecodedValue::Bool(v) => qb.push_bind(*v),
+            DecodedValue::Address(v) => qb.push_bind(v.to_string()),
+            DecodedValue::String(v) => qb.push_bind(v.as_str()),
+            DecodedValue::Bytes(v) => qb.push_bind(v),
         };
     }
     qb.push(") ON CONFLICT (tx_hash) DO NOTHING");
@@ -250,8 +313,8 @@ pub struct SearchParams {
 }
 
 /// A single decoded transaction result returned by the search endpoint.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MonitorResult {
+#[derive(Debug)]
+pub struct ResultRecord {
     pub tx_hash: String,
     pub block_number: i64,
     pub block_hash: String,
@@ -265,7 +328,6 @@ pub struct MonitorResult {
     pub status: i16,
     pub created_at: DateTime<Utc>,
     /// Decoded ABI parameters keyed by their Solidity name.
-    #[schema(value_type = Object)]
     pub params: serde_json::Value,
 }
 
@@ -277,15 +339,16 @@ pub async fn query_results(
     pool: &PgPool,
     address: &str,
     selector: &str,
-    params: &[ParamSpec],
+    params: &[StoredParam],
     search: &SearchParams,
-) -> AppResult<Vec<MonitorResult>> {
+) -> AppResult<Vec<ResultRecord>> {
     let table = Identifier::new(result_table_name(address, selector)?)?;
+    let params = postgres_params(params)?;
 
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
         "SELECT tx_hash, block_number, block_hash, from_addr, to_addr, value, gas_used, gas_price, status, created_at",
     );
-    for p in params {
+    for p in &params {
         qb.push(", ").push(Identifier::new(p.column.as_str())?);
     }
     qb.push(" FROM ").push(table);
@@ -314,18 +377,18 @@ pub async fn query_results(
     let mut results = Vec::with_capacity(rows.len());
     for row in rows {
         let mut param_map = serde_json::Map::new();
-        for p in params {
-            param_map.insert(p.name.clone(), read_param(&row, &p.column, p.sql_kind)?);
+        for p in &params {
+            param_map.insert(p.name.clone(), read_param(&row, &p.column, p.kind)?);
         }
-        results.push(MonitorResult {
+        results.push(ResultRecord {
             tx_hash: row.try_get("tx_hash")?,
             block_number: row.try_get("block_number")?,
             block_hash: row.try_get("block_hash")?,
             from_addr: row.try_get("from_addr")?,
             to_addr: row.try_get("to_addr")?,
-            value: row.try_get::<BigDecimal, _>("value")?.to_string(),
-            gas_used: row.try_get::<BigDecimal, _>("gas_used")?.to_string(),
-            gas_price: row.try_get::<BigDecimal, _>("gas_price")?.to_string(),
+            value: row.try_get::<BigDecimal, _>("value")?.to_plain_string(),
+            gas_used: row.try_get::<BigDecimal, _>("gas_used")?.to_plain_string(),
+            gas_price: row.try_get::<BigDecimal, _>("gas_price")?.to_plain_string(),
             status: row.try_get("status")?,
             created_at: row.try_get("created_at")?,
             params: serde_json::Value::Object(param_map),
@@ -335,15 +398,15 @@ pub async fn query_results(
 }
 
 /// Read a decoded parameter column as JSON, coercing by its storage kind.
-fn read_param(row: &PgRow, column: &str, kind: SqlKind) -> AppResult<serde_json::Value> {
+fn read_param(row: &PgRow, column: &str, kind: PgColumnType) -> AppResult<serde_json::Value> {
     Ok(match kind {
-        SqlKind::Numeric => match row.try_get::<Option<BigDecimal>, _>(column)? {
-            Some(d) => serde_json::Value::String(d.to_string()),
+        PgColumnType::Numeric => match row.try_get::<Option<BigDecimal>, _>(column)? {
+            Some(d) => serde_json::Value::String(d.to_plain_string()),
             None => serde_json::Value::Null,
         },
-        SqlKind::Bool => serde_json::json!(row.try_get::<Option<bool>, _>(column)?),
-        SqlKind::Text => serde_json::json!(row.try_get::<Option<String>, _>(column)?),
-        SqlKind::Bytea => match row.try_get::<Option<Vec<u8>>, _>(column)? {
+        PgColumnType::Bool => serde_json::json!(row.try_get::<Option<bool>, _>(column)?),
+        PgColumnType::Text => serde_json::json!(row.try_get::<Option<String>, _>(column)?),
+        PgColumnType::Bytea => match row.try_get::<Option<Vec<u8>>, _>(column)? {
             Some(b) => serde_json::Value::String(format!("0x{}", hex::encode(b))),
             None => serde_json::Value::Null,
         },
@@ -391,15 +454,17 @@ impl std::fmt::Display for Identifier {
 
 #[cfg(test)]
 mod tests {
-    use super::{Identifier, dedupe_param_columns, result_table_name};
-    use crate::abi::ParamSpec;
+    use std::str::FromStr;
 
-    fn spec(name: &str, sql_kind: crate::abi::SqlKind) -> ParamSpec {
-        ParamSpec {
+    use sqlx::types::BigDecimal;
+
+    use super::{Identifier, PgColumnType, postgres_params, result_table_name};
+    use crate::db::monitor_repo::StoredParam;
+
+    fn spec(name: &str, sol_type: &str) -> StoredParam {
+        StoredParam {
             name: name.to_string(),
-            sol_type: name.to_string(),
-            sql_kind,
-            column: name.to_string(),
+            sol_type: sol_type.to_string(),
         }
     }
 
@@ -418,29 +483,52 @@ mod tests {
     }
 
     #[test]
-    fn dedupes_only_colliding_param_columns() {
-        let mut params = vec![
-            spec("to", crate::abi::SqlKind::Text),
-            spec("value", crate::abi::SqlKind::Numeric),
-        ];
-        dedupe_param_columns(&mut params);
+    fn renders_numeric_values_without_scientific_notation() {
+        let value = BigDecimal::from_str("5e+16").unwrap();
+
+        assert_eq!(value.to_plain_string(), "50000000000000000");
+    }
+
+    #[test]
+    fn derives_only_colliding_param_columns() {
+        let params = postgres_params(&[spec("to", "address"), spec("value", "uint256")]).unwrap();
         assert_eq!(params[0].name, "to");
-        assert_eq!(params[0].column, "to"); // not reserved
-        assert_eq!(params[1].name, "value"); // ABI name preserved
-        assert_eq!(params[1].column, "value_param"); // renamed
+        assert_eq!(params[0].column, "to");
+        assert_eq!(params[1].name, "value");
+        assert_eq!(params[1].column, "value_param");
     }
 
     #[test]
     fn dedupe_avoids_secondary_collision() {
         // `value` collides with reserved, and `value_param` is already taken
         // by another explicit param.
-        let mut params = vec![
-            spec("value", crate::abi::SqlKind::Numeric),
-            spec("value_param", crate::abi::SqlKind::Numeric),
-        ];
-        dedupe_param_columns(&mut params);
+        let params =
+            postgres_params(&[spec("value", "uint256"), spec("value_param", "uint256")]).unwrap();
         assert_eq!(params[0].column, "value_param_1");
         assert_eq!(params[1].column, "value_param");
+    }
+
+    #[test]
+    fn maps_abi_types_to_postgres_types() {
+        let params = postgres_params(&[
+            spec("uint_value", "uint256"),
+            spec("int_value", "int64"),
+            spec("enabled", "bool"),
+            spec("owner", "address"),
+            spec("label", "string"),
+            spec("payload", "bytes"),
+            spec("word", "bytes32"),
+            spec("callback", "function"),
+        ])
+        .unwrap();
+        assert_eq!(params[0].kind, PgColumnType::Numeric);
+        assert_eq!(params[1].kind, PgColumnType::Numeric);
+        assert_eq!(params[2].kind, PgColumnType::Bool);
+        assert_eq!(params[3].kind, PgColumnType::Text);
+        assert_eq!(params[4].kind, PgColumnType::Text);
+        assert_eq!(params[5].kind, PgColumnType::Bytea);
+        assert_eq!(params[6].kind, PgColumnType::Bytea);
+        assert_eq!(params[7].kind, PgColumnType::Bytea);
     }
 
     #[test]
