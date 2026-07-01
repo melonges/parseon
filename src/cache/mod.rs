@@ -64,12 +64,12 @@ mod tests {
     #[test]
     fn keys_and_evicts_by_chain() {
         let cache = MemoryBlockCache::new(4);
-        let base = Chain::new(8453).unwrap();
+        let second_chain = Chain::new(2).unwrap();
         let mainnet = Chain::new(1).unwrap();
-        cache.put(base, block(10));
+        cache.put(second_chain, block(10));
         cache.put(mainnet, block(10));
-        cache.evict_before(base, 11);
-        assert!(cache.get(base, 10).is_none());
+        cache.evict_before(second_chain, 11);
+        assert!(cache.get(second_chain, 10).is_none());
         assert!(cache.get(mainnet, 10).is_some());
     }
 }

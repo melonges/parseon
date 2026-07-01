@@ -77,16 +77,16 @@ Status: implemented in v0.2.0.
 - Allow breaking internal and API schema changes while the project is in early development.
 - Defer separate crates until boundaries prove stable.
 
-## v0.3 — Reorg handling and finality guarantees
+## v0.3 — Finalized-only consistency and observability
 
-Make returned data trustworthy and explicit.
+Use the block source's finalized head as a simple, explicit consistency boundary.
 
-- Store indexed block metadata: number, hash, parent hash, timestamp, and finality status.
-- Support finalized-only and confirmation-depth indexing modes.
-- Detect reorgs by validating parent hashes.
-- Roll back decoded rows and monitor cursors on reorg.
-- Expose chain progress and data finality through the API.
-- Default result queries to finalized data where possible.
+- Keep `finalized` as the only indexing mode.
+- Probe the finalized head during startup and fail when the block source does not support it.
+- Never schedule blocks above the finalized head.
+- Expose the finalized head, worker state, latest successful poll, and latest error through `GET /status`.
+- Treat all returned monitor results as finalized by contract, without per-row finality fields.
+- Document that consistency depends on the configured block source faithfully implementing its finalized-head signal.
 
 ## v0.4 — Multi-chain indexing
 
@@ -154,6 +154,18 @@ Split only if the project has enough stability and real pressure to justify it.
 - Avoid creating crates only to mirror folders.
 - Document crate-boundary rules before moving code.
 
+## v0.10 — Provisional indexing and rollback engine
+
+Add near-head indexing only together with the machinery required to make it correct.
+
+- Add confirmation-depth and near-head provisional indexing.
+- Store a canonical block metadata ledger with block number, hash, parent hash, timestamp, and finality status.
+- Detect reorgs by comparing parent and canonical hashes.
+- Atomically remove orphaned results, rewind all affected cursors including completed monitors, and replay the canonical branch.
+- Promote provisional data to finalized as the block source's finalized head advances.
+- Fail closed when no common ancestor exists within retained rollback history.
+- Add API finality filtering and explicit `provisional`, `finalized`, and `reorged` states.
+
 ## v1.0 — Production self-hosted Parseon
 
 Make Parseon reliable to operate as infrastructure.
@@ -172,9 +184,10 @@ Make Parseon reliable to operate as infrastructure.
 
 ## Current priorities
 
-1. Implement finality and reorg guarantees.
+1. Complete finalized-only consistency and observability.
 2. Add multi-chain workers.
 3. Optimize parallel indexing.
 4. Build richer APIs for management and querying.
 5. Add Redis, eRPC, Etherscan, MongoDB, and sink adapters only after the core traits are stable.
-6. Reevaluate separate crates near v0.9, not before the domain model settles.
+6. Add provisional indexing and rollback only as a coherent v0.10 feature.
+7. Reevaluate separate crates near v0.9, not before the domain model settles.

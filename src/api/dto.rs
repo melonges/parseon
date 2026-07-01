@@ -83,6 +83,16 @@ pub struct Health {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+pub struct Status {
+    pub mode: &'static str,
+    pub chain_id: i64,
+    pub finalized_head: i64,
+    pub worker_state: &'static str,
+    pub last_successful_poll_at: DateTime<Utc>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
 }

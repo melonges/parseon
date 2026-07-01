@@ -10,17 +10,22 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::openapi::ApiDoc;
+use crate::core::status::RuntimeStatus;
 use crate::db::storage::PostgresStorage;
 
 /// Shared state passed to all handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub storage: PostgresStorage,
+    pub runtime_status: RuntimeStatus,
 }
 
 impl AppState {
-    pub fn new(storage: PostgresStorage) -> Self {
-        Self { storage }
+    pub fn new(storage: PostgresStorage, runtime_status: RuntimeStatus) -> Self {
+        Self {
+            storage,
+            runtime_status,
+        }
     }
 }
 
@@ -47,13 +52,17 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{AppState, router};
+    use crate::core::status::RuntimeStatus;
     use crate::db::storage::PostgresStorage;
 
     fn test_router() -> axum::Router {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://postgres:postgres@localhost/parseon")
             .expect("test database URL should be valid");
-        router(AppState::new(PostgresStorage::new(pool)))
+        router(AppState::new(
+            PostgresStorage::new(pool),
+            RuntimeStatus::new(42, 20_000_000),
+        ))
     }
 
     #[tokio::test]
@@ -80,6 +89,7 @@ mod tests {
 
         let expected_operations = [
             ("/healthz", "get", &["200", "500"][..]),
+            ("/status", "get", &["200"][..]),
             ("/monitors", "get", &["200", "500"][..]),
             ("/monitors", "post", &["200", "400", "409", "500"][..]),
             ("/monitors/{id}", "get", &["200", "404", "500"][..]),
@@ -110,6 +120,7 @@ mod tests {
             "Health",
             "MonitorResult",
             "MonitorRow",
+            "Status",
             "UpdateMonitor",
         ] {
             assert!(schemas.contains_key(schema), "missing schema {schema}");
@@ -119,6 +130,29 @@ mod tests {
         assert!(abi_param_properties.contains_key("name"));
         assert!(abi_param_properties.contains_key("sol_type"));
         assert!(!schemas.contains_key("SqlKind"));
+    }
+
+    #[tokio::test]
+    async fn reports_finalized_runtime_status() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let status: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status["mode"], "finalized");
+        assert_eq!(status["chain_id"], 42);
+        assert_eq!(status["finalized_head"], 20_000_000);
+        assert_eq!(status["worker_state"], "running");
+        assert!(status["last_successful_poll_at"].is_string());
+        assert!(status["last_error"].is_null());
     }
 
     #[tokio::test]

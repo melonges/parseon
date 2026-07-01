@@ -4,8 +4,10 @@ use axum::extract::{Path, Query, State};
 
 use crate::api::AppState;
 use crate::api::dto::{
-    CreateMonitor, ErrorResponse, Health, MonitorResult, MonitorRow, ResultsQuery, UpdateMonitor,
+    CreateMonitor, ErrorResponse, Health, MonitorResult, MonitorRow, ResultsQuery, Status,
+    UpdateMonitor,
 };
+use crate::core::status::WorkerState;
 use crate::db::dyn_table::SearchParams;
 use crate::db::monitor_repo::MonitorInput;
 use crate::error::{AppError, AppResult};
@@ -27,6 +29,29 @@ pub async fn healthz(State(state): State<AppState>) -> AppResult<Json<Health>> {
         status: "ok",
         monitors,
     }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/status",
+    tag = "health",
+    responses(
+        (status = OK, description = "Finalized indexing progress and worker state", body = Status)
+    )
+)]
+pub async fn status(State(state): State<AppState>) -> Json<Status> {
+    let snapshot = state.runtime_status.snapshot();
+    Json(Status {
+        mode: "finalized",
+        chain_id: snapshot.chain_id,
+        finalized_head: snapshot.finalized_head,
+        worker_state: match snapshot.worker_state {
+            WorkerState::Running => "running",
+            WorkerState::Degraded => "degraded",
+        },
+        last_successful_poll_at: snapshot.last_successful_poll_at,
+        last_error: snapshot.last_error,
+    })
 }
 
 // ----- Monitors -----

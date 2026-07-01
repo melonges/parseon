@@ -6,6 +6,7 @@ pub mod indexer;
 pub mod monitor;
 pub mod ports;
 pub mod scheduler;
+pub mod status;
 pub mod worker;
 
 use self::abi::AbiParam;
@@ -88,7 +89,7 @@ mod tests {
 
     #[test]
     fn validates_chain_ids() {
-        assert_eq!(Chain::new(8453).unwrap().id, 8453);
+        assert_eq!(Chain::new(42).unwrap().id, 42);
         assert!(Chain::new(-1).is_err());
     }
 

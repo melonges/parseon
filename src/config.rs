@@ -34,10 +34,6 @@ pub struct Config {
     /// Direct JSON-RPC endpoint for the indexed chain
     #[arg(long, env = "RPC_URL", default_value = "https://mainnet.base.org")]
     pub rpc_url: String,
-
-    /// Chain ID to index (e.g. 8453 for Base, 1 for Ethereum)
-    #[arg(long, env = "CHAIN_ID", default_value_t = 8453)]
-    pub chain_id: i64,
 }
 
 impl Config {

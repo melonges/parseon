@@ -2,6 +2,20 @@
 
 All notable changes to Parseon are documented in this file.
 
+## 0.3.0 - 2026-07-01
+
+### Added
+
+- Startup validation that requires the configured RPC endpoint to return a finalized head.
+- `GET /status` with finalized indexing progress, worker state, latest successful poll time, and latest error.
+- Runtime status coverage in router and OpenAPI tests.
+
+### Changed
+
+- Poll the finalized head even when no monitors are active so runtime status remains current.
+- Remove chain-ID configuration and discover the single instance's chain ID from its RPC endpoint.
+- Document finalized-only consistency as the v0.3 contract and defer provisional indexing and rollback to v0.10.
+
 ## 0.2.0 - 2026-06-30
 
 ### Added

@@ -11,8 +11,6 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::core::ports::BlockSource;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = config::Config::load();
@@ -25,21 +23,21 @@ async fn main() -> anyhow::Result<()> {
         )
         .try_init();
 
-    tracing::info!(chain_id = config.chain_id, "starting parseon");
+    tracing::info!("starting parseon");
 
     // Database.
     let pool = db::pool::connect(&config.database_url).await?;
 
-    // Fail fast if the direct RPC endpoint points at a different chain.
-    let chain = core::Chain::new(config.chain_id)?;
+    // Discover the single indexed chain and require finalized-head support.
     let block_source = Arc::new(rpc::provider::JsonRpcBlockSource::connect(&config.rpc_url)?);
-    let rpc_chain_id = block_source.chain_id().await?;
-    let configured_chain_id = u64::try_from(chain.id)?;
-    anyhow::ensure!(
-        rpc_chain_id == configured_chain_id,
-        "RPC chain ID {rpc_chain_id} does not match configured CHAIN_ID {configured_chain_id}"
+    let source = core::worker::probe_source(block_source.as_ref()).await?;
+    let chain = core::Chain::new(i64::try_from(source.chain_id)?)?;
+    tracing::info!(
+        chain_id = source.chain_id,
+        finalized_head = source.finalized_head,
+        "RPC chain and finalized head validated"
     );
-    tracing::info!(chain_id = rpc_chain_id, "RPC chain ID validated");
+    let runtime_status = core::status::RuntimeStatus::new(chain.id, source.finalized_head);
 
     // Cancellation token shared by worker and API.
     let cancel = CancellationToken::new();
@@ -58,14 +56,23 @@ async fn main() -> anyhow::Result<()> {
         let storage = storage.clone();
         let block_source = block_source.clone();
         let block_cache = block_cache.clone();
+        let runtime_status = runtime_status.clone();
         let cancel = cancel.clone();
         async move {
-            core::worker::run(worker_config, storage, block_source, block_cache, cancel).await;
+            core::worker::run(
+                worker_config,
+                storage,
+                block_source,
+                block_cache,
+                runtime_status,
+                cancel,
+            )
+            .await;
         }
     });
 
     // HTTP API.
-    let state = api::AppState::new((*storage).clone());
+    let state = api::AppState::new((*storage).clone(), runtime_status);
     let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(&config.http_listen).await?;
     tracing::info!(listen = %config.http_listen, "http API listening");
