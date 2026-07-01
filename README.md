@@ -25,3 +25,9 @@ Parseon is being built to make focused onchain indexing simple: describe the cal
 The project is moving quickly. Issues, ideas, and early contributions are welcome.
 
 See the [roadmap](./roadmap.md) for planned milestones, the [terminology guide](./terminology.md) for domain language, and the [changelog](./CHANGELOG.md) for completed work.
+
+## License
+
+Licensed under either the [Apache License, Version 2.0](./LICENSE-APACHE) or the [MIT license](./LICENSE-MIT), at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Parseon by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
