@@ -5,23 +5,18 @@
 <h1 align="center">Parseon</h1>
 
 <p align="center">
-  <strong>Turn EVM calldata into queryable data.</strong><br />
-  Parseon is a small, self-hosted EVM indexer built in Rust.
+  <strong>Turn EVM calldata into queryable data</strong><br />
+  Parseon is a small, self-hosted EVM indexer built in Rust
 </p>
 
 <p align="center">
   <img alt="Early development" src="https://img.shields.io/badge/status-early_development-151515?style=flat-square" />
   <img alt="Rust" src="https://img.shields.io/badge/Rust-151515?style=flat-square&logo=rust&logoColor=white" />
   <img alt="EVM" src="https://img.shields.io/badge/EVM-151515?style=flat-square&logo=ethereum&logoColor=white" />
-  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-151515?style=flat-square&logo=postgresql&logoColor=white" />
 </p>
 
----
-
 > [!WARNING]
-> **Parseon is in early development.** Expect breaking changes, incomplete features, and evolving APIs and storage formats. It is not ready for production or critical workloads.
-
-Define a monitor with a contract address and Solidity function signature. Parseon follows finalized blocks, decodes matching transactions, and stores their parameters in PostgreSQL for querying through its HTTP API.
+> **Parseon is in early development.** Only suitable for use by developers.
 
 ## The direction
 
