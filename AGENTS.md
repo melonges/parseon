@@ -73,3 +73,6 @@ api/           axum REST + OpenAPI/Swagger UI: /monitors/{id}, /healthz, /swagge
 - **Per-monitor dynamic tables**: each monitor gets an `<address_without_0x>_<selector_without_0x>` table containing only decoded ABI parameter columns. Created/dropped dynamically in `db/dyn_table.rs` using `AssertSqlSafe`.
 - **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`); result tables are keyed by address and selector.
 - **Atomic block persistence**: transaction metadata, decoded parameter rows, and all covering monitor cursors commit in one PostgreSQL transaction.
+
+## Roadmap
+- ** roadmap in roadmap.md
