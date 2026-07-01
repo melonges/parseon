@@ -79,6 +79,8 @@ Status: implemented in v0.2.0.
 
 ## v0.3 — Finalized-only consistency and observability
 
+Status: implemented in v0.3.0.
+
 Use the block source's finalized head as a simple, explicit consistency boundary.
 
 - Keep `finalized` as the only indexing mode.
@@ -184,10 +186,10 @@ Make Parseon reliable to operate as infrastructure.
 
 ## Current priorities
 
-1. Complete finalized-only consistency and observability.
-2. Add multi-chain workers.
-3. Optimize parallel indexing.
-4. Build richer APIs for management and querying.
-5. Add Redis, eRPC, Etherscan, MongoDB, and sink adapters only after the core traits are stable.
-6. Add provisional indexing and rollback only as a coherent v0.10 feature.
-7. Reevaluate separate crates near v0.9, not before the domain model settles.
+1. Add multi-chain workers.
+2. Optimize parallel indexing.
+3. Build richer APIs for management and querying.
+4. Add optional adapters only after the core traits are stable.
+5. Add runtime monitor filters.
+6. Reevaluate separate crates near v0.9, not before the domain model settles.
+7. Add provisional indexing and rollback only as a coherent v0.10 feature.
