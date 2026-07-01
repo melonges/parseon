@@ -131,7 +131,9 @@ Expand the ecosystem around the core after internal traits are stable.
 
 - Add Redis block cache adapter.
 - Add eRPC block source adapter for multi-provider routing, failover, and RPC caching.
-- Add Etherscan-style block source adapter for backfill, fallback reads, ABI discovery, or metadata enrichment.
+- Add indexed-data adapters for services such as Etherscan, Blockscout, Alchemy, and Moralis, with room for providers such as QuickNode and GoldRush as demand proves useful.
+- Use address- and contract-oriented APIs for faster historical backfills, fallback reads, ABI discovery, and metadata enrichment while keeping direct JSON-RPC as the canonical chain and finality source.
+- Evaluate provider-specific ERC-20 and ERC-721 transfer APIs as optimized sources for transfer monitors; their indexed transfer results can avoid scanning unrelated blocks, transactions, receipts, and logs, reducing indexing latency and JSON-RPC traffic.
 - Experiment with MongoDB storage for document-oriented decoded results.
 - Consider sink adapters such as webhooks, Kafka, files, or ClickHouse.
 - Reevaluate whether any adapter should become a separate crate based on dependency weight and reuse.
