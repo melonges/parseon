@@ -10,7 +10,7 @@ use crate::db::monitor_repo::{MonitorRecord, StoredParam};
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateMonitor {
     pub address: String,
-    /// Human-readable function or event signature, e.g. `transfer(address to,
+    /// Human-readable function or event signature, e.g. `function transfer(address to,
     /// uint256 value)` or `event Transfer(address indexed from, address indexed to, uint256 value)`.
     pub signature: String,
     pub start_block: i64,

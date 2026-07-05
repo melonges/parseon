@@ -19,22 +19,18 @@ pub async fn fetch_block(provider: &HttpProvider, block_number: u64) -> AppResul
         .map_err(AppError::Rpc)?
         .ok_or_else(|| AppError::NotFound(format!("block {block_number}")))?;
 
-    let block_hash = block.header().hash;
     let mut out = Vec::new();
     for tx in block.transactions().txns() {
         let Some(to) = tx.to() else { continue };
         out.push(BlockTransaction {
             hash: tx.tx_hash(),
-            from: tx.from(),
             to,
             input: tx.input().to_vec(),
-            value: tx.value(),
         });
     }
 
     Ok(SourceBlock {
         number: i64::try_from(block_number).map_err(|error| AppError::Internal(error.into()))?,
-        hash: block_hash,
         transactions: out,
     })
 }
@@ -61,9 +57,7 @@ pub async fn fetch_logs(
                     .map(|n| i64::try_from(n))
                     .transpose()
                     .map_err(|e| AppError::Internal(e.into()))?,
-                block_hash: log.block_hash,
                 transaction_hash: log.transaction_hash,
-                transaction_index: log.transaction_index,
                 log_index: log.log_index,
                 address: log.address(),
                 topics: log.topics().to_vec(),
@@ -90,8 +84,6 @@ pub async fn fetch_receipts(
             .ok_or_else(|| AppError::NotFound(format!("receipt for {}", tx.hash)))?;
         out.push(ExecutedTransaction {
             transaction: tx.clone(),
-            gas_used: receipt.gas_used(),
-            gas_price: receipt.effective_gas_price(),
             succeeded: receipt.status(),
         });
     }

@@ -199,7 +199,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    use alloy::primitives::{Address, B256};
+    use alloy::primitives::Address;
     use async_trait::async_trait;
 
     use super::*;
@@ -274,7 +274,6 @@ mod tests {
         async fn fetch_block(&self, block_number: i64) -> anyhow::Result<SourceBlock> {
             Ok(SourceBlock {
                 number: block_number,
-                hash: B256::ZERO,
                 transactions: Vec::new(),
             })
         }

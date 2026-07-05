@@ -38,7 +38,6 @@ pub fn decode_calls(
         let call = DecodedCall {
             monitor_id: monitor.id,
             block_number: block.number,
-            block_hash: block.hash,
             transaction,
             params,
         };
@@ -74,15 +73,9 @@ pub fn decode_events(
             log.block_number == Some(block_number),
             "log has missing or incorrect block number"
         );
-        let block_hash = log
-            .block_hash
-            .ok_or_else(|| anyhow::anyhow!("log is missing block hash"))?;
         let transaction_hash = log
             .transaction_hash
             .ok_or_else(|| anyhow::anyhow!("log is missing transaction hash"))?;
-        let transaction_index = log
-            .transaction_index
-            .ok_or_else(|| anyhow::anyhow!("log is missing transaction index"))?;
         let log_index = log
             .log_index
             .ok_or_else(|| anyhow::anyhow!("log is missing log index"))?;
@@ -92,18 +85,17 @@ pub fn decode_events(
             };
             let params = decode_event(&target.params, target.topic0, &log.topics, &log.data)
                 .map_err(|error| {
-                    anyhow::anyhow!("event decode failed for monitor {}: {error}", monitor.id)
+                    anyhow::anyhow!(
+                        "event decode failed for monitor {} ({}): {error}",
+                        monitor.id,
+                        target.signature
+                    )
                 })?;
             events.push(DecodedEvent {
                 monitor_id: monitor.id,
                 block_number,
-                block_hash,
                 transaction_hash,
-                transaction_index,
                 log_index,
-                address: log.address,
-                topics: log.topics.clone(),
-                data: log.data.clone(),
                 params,
             });
         }
@@ -136,10 +128,8 @@ mod tests {
         };
         let transaction = BlockTransaction {
             hash: B256::ZERO,
-            from: Address::ZERO,
             to: contract,
             input: call.abi_encode(),
-            value: U256::ZERO,
         };
         let monitor = Monitor {
             id: 9,
@@ -161,20 +151,15 @@ mod tests {
         };
         let block = SourceBlock {
             number: 1,
-            hash: B256::ZERO,
             transactions: vec![transaction.clone()],
         };
         let executed = vec![
             ExecutedTransaction {
                 transaction: transaction.clone(),
-                gas_used: 1,
-                gas_price: 1,
                 succeeded: false,
             },
             ExecutedTransaction {
                 transaction,
-                gas_used: 1,
-                gas_price: 1,
                 succeeded: true,
             },
         ];

@@ -67,24 +67,19 @@ pub enum DecodedValue {
 #[derive(Debug, Clone)]
 pub struct BlockTransaction {
     pub hash: B256,
-    pub from: Address,
     pub to: Address,
     pub input: Vec<u8>,
-    pub value: U256,
 }
 
 #[derive(Debug, Clone)]
 pub struct SourceBlock {
     pub number: i64,
-    pub hash: B256,
     pub transactions: Vec<BlockTransaction>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ExecutedTransaction {
     pub transaction: BlockTransaction,
-    pub gas_used: u64,
-    pub gas_price: u128,
     pub succeeded: bool,
 }
 
@@ -92,7 +87,6 @@ pub struct ExecutedTransaction {
 pub struct DecodedCall {
     pub monitor_id: i64,
     pub block_number: i64,
-    pub block_hash: B256,
     pub transaction: ExecutedTransaction,
     pub params: Vec<DecodedValue>,
 }
@@ -100,9 +94,7 @@ pub struct DecodedCall {
 #[derive(Debug, Clone)]
 pub struct SourceLog {
     pub block_number: Option<i64>,
-    pub block_hash: Option<B256>,
     pub transaction_hash: Option<B256>,
-    pub transaction_index: Option<u64>,
     pub log_index: Option<u64>,
     pub address: Address,
     pub topics: Vec<B256>,
@@ -114,13 +106,8 @@ pub struct SourceLog {
 pub struct DecodedEvent {
     pub monitor_id: i64,
     pub block_number: i64,
-    pub block_hash: B256,
     pub transaction_hash: B256,
-    pub transaction_index: u64,
     pub log_index: u64,
-    pub address: Address,
-    pub topics: Vec<B256>,
-    pub data: Vec<u8>,
     pub params: Vec<DecodedValue>,
 }
 

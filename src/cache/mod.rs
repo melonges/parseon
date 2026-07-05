@@ -49,14 +49,11 @@ impl BlockCache for MemoryBlockCache {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::B256;
-
     use super::*;
 
     fn block(number: i64) -> SourceBlock {
         SourceBlock {
             number,
-            hash: B256::ZERO,
             transactions: Vec::new(),
         }
     }

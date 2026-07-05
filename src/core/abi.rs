@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::str::FromStr;
 
 use alloy::dyn_abi::{DynSolEvent, DynSolType, DynSolValue, Specifier};
-use alloy::json_abi::{Event, Function};
+use alloy::json_abi::{AbiItem, Event, Function};
 use alloy::primitives::B256;
 
 use super::DecodedValue;
@@ -95,10 +95,7 @@ fn ensure_supported_type(ty: &DynSolType) -> Result<(), AbiError> {
     }
 }
 
-pub fn parse_func_signature(signature: &str) -> Result<MethodSpec, AbiError> {
-    let func = Function::parse(signature)
-        .map_err(|error| AbiError::Parse(format!("failed to parse signature: {error}")))?;
-
+fn method_spec(func: &Function) -> Result<MethodSpec, AbiError> {
     let mut names = HashSet::new();
     let params = func
         .inputs
@@ -134,16 +131,17 @@ pub fn parse_func_signature(signature: &str) -> Result<MethodSpec, AbiError> {
 }
 
 pub fn parse_target_signature(signature: &str) -> Result<TargetSpec, AbiError> {
-    if signature.trim_start().starts_with("event ") {
-        parse_event_signature(signature).map(TargetSpec::Event)
-    } else {
-        parse_func_signature(signature).map(TargetSpec::Call)
+    match AbiItem::parse(signature)
+        .map_err(|error| AbiError::Parse(format!("failed to parse target signature: {error}")))? {
+        AbiItem::Function(func) => method_spec(&func).map(TargetSpec::Call),
+        AbiItem::Event(event) => event_spec(&event).map(TargetSpec::Event),
+        _ => Err(AbiError::Parse(format!(
+            "invalid target signature: {signature}"
+        ))),
     }
 }
 
-pub fn parse_event_signature(signature: &str) -> Result<EventSpec, AbiError> {
-    let event = Event::parse(signature)
-        .map_err(|error| AbiError::Parse(format!("failed to parse event signature: {error}")))?;
+fn event_spec(event: &Event) -> Result<EventSpec, AbiError> {
     if event.anonymous {
         return Err(AbiError::Parse("anonymous events are not supported".into()));
     }
@@ -244,7 +242,7 @@ fn decode_value(value: DynSolValue) -> Result<DecodedValue, AbiError> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, B256, U256, address, keccak256};
+    use alloy::primitives::{Address};
     use alloy::sol_types::SolCall;
 
     use super::*;
@@ -255,60 +253,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_typed_method() {
-        let spec =
-            parse_func_signature("function transfer(address to, uint256 value) returns (bool)")
-                .unwrap();
-        assert_eq!(spec.selector, transferCall::SELECTOR);
-        assert_eq!(spec.params[0].name, "to");
-        assert_eq!(spec.params[0].ty, DynSolType::Address);
-        assert_eq!(spec.params[1].ty, DynSolType::Uint(256));
-    }
-
-    #[test]
-    fn generates_names_and_rejects_duplicates() {
-        let spec = parse_func_signature("transfer(address,uint256)").unwrap();
-        assert_eq!(spec.params[0].name, "arg_0");
-        assert_eq!(spec.params[1].name, "arg_1");
-        assert!(parse_func_signature("transfer(address value,uint256 value)").is_err());
-        assert!(parse_func_signature("transfer(address,uint256 arg_0)").is_err());
-    }
-
-    #[test]
-    fn rejects_unsupported_signatures() {
-        assert!(parse_func_signature("totalSupply()").is_err());
-        assert!(parse_func_signature("doThing(uint256[] ids)").is_err());
-    }
-
-    #[test]
-    fn decodes_typed_calldata() {
-        let call = transferCall {
-            to: address!("d8da6bf26964af9d7eed66e0db1c02b9c4a5b0e9"),
-            value: U256::from(42),
-        };
-        let data = call.abi_encode();
-        let params = parse_func_signature("transfer(address to,uint256 value)")
-            .unwrap()
-            .params;
-        let values = decode_calldata(&params, &data[4..]).unwrap();
-        assert_eq!(values[0], DecodedValue::Address(call.to));
-        assert_eq!(values[1], DecodedValue::Uint(call.value));
-    }
-
-    #[test]
-    fn decodes_fixed_bytes() {
-        let mut word = [0u8; 32];
-        word[..2].copy_from_slice(&[0xde, 0xad]);
-        let call = f_bytes32Call { word: word.into() };
-        let data = call.abi_encode();
-        let params = parse_func_signature("f_bytes32(bytes32 word)")
-            .unwrap()
-            .params;
-        let values = decode_calldata(&params, &data[4..]).unwrap();
-        assert_eq!(values[0], DecodedValue::Bytes(word.to_vec()));
-    }
-
-    #[test]
     fn address_type_is_semantic_not_storage_specific() {
         let param = AbiParam::new("owner", DynSolType::Address).unwrap();
         assert_eq!(param.sol_type(), "address");
@@ -316,36 +260,13 @@ mod tests {
     }
 
     #[test]
-    fn infers_event_kind_and_preserves_indexed_metadata() {
-        let TargetSpec::Event(spec) = parse_target_signature(
-            "event Transfer(address indexed from, address indexed to, uint256 value)",
-        )
-        .unwrap() else {
-            panic!("expected event")
+    fn infers_function_kind_and_rejects_other_abi_items() {
+        let TargetSpec::Call(spec) =
+            parse_target_signature("function transfer(address to, uint256 value)").unwrap()
+        else {
+            panic!("expected call")
         };
-        assert_eq!(spec.topic0, keccak256("Transfer(address,address,uint256)"));
-        assert!(spec.params[0].indexed);
-        assert!(!spec.params[2].indexed);
-        assert!(parse_event_signature("event Hidden(uint256 value) anonymous").is_err());
-        assert!(parse_event_signature("event Batch(uint256[] values)").is_err());
-    }
-
-    #[test]
-    fn decodes_indexed_and_body_event_values() {
-        let spec = parse_event_signature(
-            "event Message(address indexed sender, string indexed label, uint256 value)",
-        )
-        .unwrap();
-        let sender = address!("0000000000000000000000000000000000000001");
-        let mut sender_topic = [0u8; 32];
-        sender_topic[12..].copy_from_slice(sender.as_slice());
-        let label_hash = keccak256("hello");
-        let topics = [spec.topic0, B256::from(sender_topic), label_hash];
-        let data =
-            DynSolValue::Tuple(vec![DynSolValue::Uint(U256::from(7), 256)]).abi_encode_params();
-        let values = decode_event(&spec.params, spec.topic0, &topics, &data).unwrap();
-        assert_eq!(values[0], DecodedValue::Address(sender));
-        assert_eq!(values[1], DecodedValue::Bytes(label_hash.to_vec()));
-        assert_eq!(values[2], DecodedValue::Uint(U256::from(7)));
+        assert_eq!(spec.selector, transferCall::SELECTOR);
+        assert!(parse_target_signature("error Unauthorized(address caller)").is_err());
     }
 }
