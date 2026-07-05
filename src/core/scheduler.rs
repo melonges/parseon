@@ -27,17 +27,17 @@ mod tests {
     use super::*;
     use crate::core::filter::Filter;
     use crate::core::monitor::Monitor;
-    use crate::core::{Cursor, Target};
+    use crate::core::{CallTarget, Cursor, Target};
 
     fn monitor(id: i64, start: i64, cursor: Option<i64>, end: Option<i64>) -> Monitor {
         Monitor {
             id,
-            target: Target {
+            target: Target::Call(CallTarget {
                 address: Address::ZERO,
                 selector: [0; 4],
                 signature: "f(uint256)".into(),
                 inputs: Vec::new(),
-            },
+            }),
             start_block: start,
             end_block: end,
             cursor: Cursor(cursor),

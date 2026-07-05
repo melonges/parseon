@@ -64,7 +64,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Status> {
     responses(
         (status = OK, description = "Monitor created", body = MonitorRow),
         (status = BAD_REQUEST, description = "Invalid request or ABI signature", body = ErrorResponse),
-        (status = CONFLICT, description = "A monitor already exists for the address and selector", body = ErrorResponse),
+        (status = CONFLICT, description = "A monitor already exists for the kind, address, and signature hash", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -169,8 +169,6 @@ pub async fn delete_monitor(
     tag = "results",
     params(
         ("id" = i64, Path, description = "Monitor ID"),
-        ("from_addr" = Option<String>, Query, description = "Filter by sender address (case-insensitive)"),
-        ("status" = Option<i16>, Query, description = "Filter by transaction status (1 = success, 0 = reverted)"),
         ("limit" = Option<i64>, Query, description = "Maximum number of results (default 50, max 200)"),
         ("offset" = Option<i64>, Query, description = "Pagination offset (default 0)")
     ),
@@ -186,26 +184,11 @@ pub async fn list_monitor_results(
     Path(id): Path<i64>,
     Query(query): Query<ResultsQuery>,
 ) -> AppResult<Json<Vec<MonitorResult>>> {
-    let from_addr = match query.from_addr {
-        Some(ref addr) => Some(normalize_addr(addr)?),
-        None => None,
-    };
     let monitor = state.storage.get_monitor(id).await?;
     let search = SearchParams {
-        from_addr,
-        status: query.status,
         limit: query.limit.clamp(1, 200),
         offset: query.offset.max(0),
     };
     let rows = state.storage.query_results(&monitor, &search).await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
-}
-
-/// Validate and normalize an address filter to lowercase hex.
-fn normalize_addr(value: &str) -> AppResult<String> {
-    use alloy::primitives::Address;
-    let address: Address = value
-        .parse()
-        .map_err(|e| AppError::BadRequest(format!("invalid from_addr: {e}")))?;
-    Ok(address.to_string().to_ascii_lowercase())
 }

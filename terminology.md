@@ -19,6 +19,7 @@ Naming should stay boring and precise. Clever names are cute until they become m
 | `Worker` | Runtime task that indexes one chain. | One worker per chain in the multi-chain architecture. |
 | `Scheduler` | Component that decides which block ranges to fetch next. | Owns batching and concurrency decisions. |
 | `DecodedCall` | A matched transaction call with decoded ABI parameters. | Core/domain term. |
+| `DecodedEvent` | A matched EVM log with decoded event parameters and log identity. | Core/domain term. |
 | `ResultRecord` | Storage-level persisted decoded call. | Internal persistence term. |
 | `MonitorResult` | API representation of a persisted decoded call. | User-facing API term. |
 | `Adapter` | Compile-time integration around the core. | Prefer this over `Plugin` for now. |
@@ -155,17 +156,18 @@ chain_id + block_hash
 chain_id + tx_hash
 ```
 
-## DecodedCall, ResultRecord, MonitorResult
+## DecodedCall, DecodedEvent, ResultRecord, MonitorResult
 
 Use different names for different layers:
 
 | Layer | Term |
 | --- | --- |
 | Core | `DecodedCall` |
+| Core | `DecodedEvent` |
 | Storage | `ResultRecord` |
 | API | `MonitorResult` |
 
-Avoid calling decoded calls `Event`. EVM already has logs/events, and mixing calldata decoding with events will produce confusion with impressive efficiency.
+Use `DecodedCall` for calldata and `DecodedEvent` for EVM logs; do not collapse these distinct result kinds into one domain term.
 
 ## Finality status
 
@@ -217,7 +219,7 @@ BlockSource, not Provider
 Storage, not DB plugin
 Cache, not Cache plugin
 Worker, not Watcher
-DecodedCall, not Event
+DecodedCall or DecodedEvent, not generic Event
 MonitorResult, not Transaction
 Cursor, not Offset
 Adapter, not Plugin
@@ -226,4 +228,4 @@ Sink, not Export plugin
 
 A good Parseon sentence should read like this:
 
-> Parseon runs chain workers. Each worker reads blocks from a block source, matches transactions against monitor targets, decodes calldata into decoded calls, applies monitor filters, persists monitor results through storage, and uses cache adapters to reduce repeated block and receipt reads.
+> Parseon runs chain workers. Each worker reads finalized calls and logs from a block source, matches them against monitor targets, decodes calldata into decoded calls and logs into decoded events, persists monitor results through storage, and uses cache adapters to reduce repeated reads.

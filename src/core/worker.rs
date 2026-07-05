@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use super::indexer;
 use super::ports::{BlockCache, BlockCommit, BlockSource, Storage};
 use super::status::RuntimeStatus;
-use super::{Chain, scheduler};
+use super::{Chain, DecodedResult, Target, scheduler};
 
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
@@ -113,32 +113,71 @@ pub async fn run_once(
             continue;
         }
 
-        let block = match cache.get(config.chain, block_number) {
-            Some(block) => block,
-            None => {
-                let block = source.fetch_block(block_number).await?;
-                cache.put(config.chain, block.clone());
-                block
-            }
-        };
-        let candidates = block
-            .transactions
+        let call_monitors = covering
             .iter()
-            .filter(|transaction| {
-                let selector = transaction.input.get(..4).unwrap_or_default();
-                covering
-                    .iter()
-                    .any(|monitor| monitor.matches(transaction.to, selector))
-            })
+            .filter(|m| matches!(&m.target, Target::Call(_)))
             .cloned()
             .collect::<Vec<_>>();
-        let executed = source.fetch_receipts(&candidates).await?;
-        let calls = indexer::decode_calls(&block, &covering, executed);
+        let event_monitors = covering
+            .iter()
+            .filter(|m| matches!(&m.target, Target::Event(_)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut results = Vec::new();
+        if !call_monitors.is_empty() {
+            let block = match cache.get(config.chain, block_number) {
+                Some(block) => block,
+                None => {
+                    let block = source.fetch_block(block_number).await?;
+                    cache.put(config.chain, block.clone());
+                    block
+                }
+            };
+            let candidates = block
+                .transactions
+                .iter()
+                .filter(|transaction| {
+                    let selector = transaction.input.get(..4).unwrap_or_default();
+                    call_monitors
+                        .iter()
+                        .any(|monitor| monitor.matches_call(transaction.to, selector))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let executed = source.fetch_receipts(&candidates).await?;
+            results.extend(
+                indexer::decode_calls(&block, &call_monitors, executed)
+                    .into_iter()
+                    .map(DecodedResult::Call),
+            );
+        }
+        if !event_monitors.is_empty() {
+            let mut addresses = Vec::new();
+            let mut topic0s = Vec::new();
+            for monitor in &event_monitors {
+                if let Target::Event(target) = &monitor.target {
+                    addresses.push(target.address);
+                    topic0s.push(target.topic0);
+                }
+            }
+            addresses.sort_unstable();
+            addresses.dedup();
+            topic0s.sort_unstable();
+            topic0s.dedup();
+            let logs = source
+                .fetch_logs(block_number, &addresses, &topic0s)
+                .await?;
+            results.extend(
+                indexer::decode_events(block_number, &event_monitors, logs)?
+                    .into_iter()
+                    .map(DecodedResult::Event),
+            );
+        }
         decoded += storage
             .commit_block(BlockCommit {
                 block_number,
                 monitors: covering,
-                calls,
+                results,
             })
             .await?;
     }
@@ -167,7 +206,9 @@ mod tests {
     use crate::core::filter::Filter;
     use crate::core::monitor::Monitor;
     use crate::core::ports::{BlockCache, BlockCommit, BlockSource, Storage};
-    use crate::core::{BlockTransaction, Cursor, ExecutedTransaction, SourceBlock, Target};
+    use crate::core::{
+        BlockTransaction, CallTarget, Cursor, ExecutedTransaction, SourceBlock, Target,
+    };
 
     struct FakeStorage {
         monitor: Monitor,
@@ -181,7 +222,7 @@ mod tests {
         }
 
         async fn commit_block(&self, commit: BlockCommit) -> anyhow::Result<usize> {
-            let count = commit.calls.len();
+            let count = commit.results.len();
             self.commits.lock().unwrap().push(commit);
             Ok(count)
         }
@@ -291,12 +332,12 @@ mod tests {
         let storage = FakeStorage {
             monitor: Monitor {
                 id: 7,
-                target: Target {
+                target: Target::Call(CallTarget {
                     address: Address::ZERO,
                     selector: [1, 2, 3, 4],
                     signature: "f(uint256)".into(),
                     inputs: Vec::new(),
-                },
+                }),
                 start_block: 10,
                 end_block: None,
                 cursor: Cursor(None),
@@ -335,12 +376,12 @@ mod tests {
         let storage = FakeStorage {
             monitor: Monitor {
                 id: 7,
-                target: Target {
+                target: Target::Call(CallTarget {
                     address: Address::ZERO,
                     selector: [1, 2, 3, 4],
                     signature: "f(uint256)".into(),
                     inputs: Vec::new(),
-                },
+                }),
                 start_block: 11,
                 end_block: None,
                 cursor: Cursor(None),

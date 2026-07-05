@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
-use alloy::dyn_abi::{DynSolType, DynSolValue, Specifier};
-use alloy::json_abi::Function;
+use alloy::dyn_abi::{DynSolEvent, DynSolType, DynSolValue, Specifier};
+use alloy::json_abi::{Event, Function};
+use alloy::primitives::B256;
 
 use super::DecodedValue;
 
@@ -10,6 +11,7 @@ use super::DecodedValue;
 pub struct AbiParam {
     pub name: String,
     pub ty: DynSolType,
+    pub indexed: bool,
 }
 
 impl AbiParam {
@@ -18,6 +20,7 @@ impl AbiParam {
         Ok(Self {
             name: name.into(),
             ty,
+            indexed: false,
         })
     }
 
@@ -26,10 +29,29 @@ impl AbiParam {
     }
 }
 
+impl AbiParam {
+    pub fn with_indexed(mut self, indexed: bool) -> Self {
+        self.indexed = indexed;
+        self
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MethodSpec {
     pub selector: [u8; 4],
     pub params: Vec<AbiParam>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventSpec {
+    pub topic0: B256,
+    pub params: Vec<AbiParam>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TargetSpec {
+    Call(MethodSpec),
+    Event(EventSpec),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +133,87 @@ pub fn parse_func_signature(signature: &str) -> Result<MethodSpec, AbiError> {
     })
 }
 
+pub fn parse_target_signature(signature: &str) -> Result<TargetSpec, AbiError> {
+    if signature.trim_start().starts_with("event ") {
+        parse_event_signature(signature).map(TargetSpec::Event)
+    } else {
+        parse_func_signature(signature).map(TargetSpec::Call)
+    }
+}
+
+pub fn parse_event_signature(signature: &str) -> Result<EventSpec, AbiError> {
+    let event = Event::parse(signature)
+        .map_err(|error| AbiError::Parse(format!("failed to parse event signature: {error}")))?;
+    if event.anonymous {
+        return Err(AbiError::Parse("anonymous events are not supported".into()));
+    }
+    let mut names = HashSet::new();
+    let params = event
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(index, param)| {
+            let ty = Specifier::<DynSolType>::resolve(param)
+                .map_err(|error| AbiError::Type(format!("param `{}`: {error}", param.name)))?;
+            let name = if param.name.is_empty() {
+                format!("arg_{index}")
+            } else {
+                param.name.clone()
+            };
+            if !names.insert(name.clone()) {
+                return Err(AbiError::Parse(format!(
+                    "duplicate parameter name `{name}`"
+                )));
+            }
+            Ok(AbiParam::new(name, ty)?.with_indexed(param.indexed))
+        })
+        .collect::<Result<Vec<_>, AbiError>>()?;
+    Ok(EventSpec {
+        topic0: event.selector(),
+        params,
+    })
+}
+
+pub fn decode_event(
+    params: &[AbiParam],
+    topic0: B256,
+    topics: &[B256],
+    data: &[u8],
+) -> Result<Vec<DecodedValue>, AbiError> {
+    let indexed = params
+        .iter()
+        .filter(|p| p.indexed)
+        .map(|p| p.ty.clone())
+        .collect();
+    let body = DynSolType::Tuple(
+        params
+            .iter()
+            .filter(|p| !p.indexed)
+            .map(|p| p.ty.clone())
+            .collect(),
+    );
+    let event = DynSolEvent::new(Some(topic0), indexed, body)
+        .ok_or_else(|| AbiError::Decode("event has too many indexed parameters".into()))?;
+    let decoded = event
+        .decode_log_parts(topics.iter().copied(), data)
+        .map_err(|error| AbiError::Decode(error.to_string()))?;
+    let mut indexed = decoded.indexed.into_iter();
+    let mut body = decoded.body.into_iter();
+    params
+        .iter()
+        .map(|param| {
+            decode_value(
+                if param.indexed {
+                    indexed.next()
+                } else {
+                    body.next()
+                }
+                .ok_or_else(|| AbiError::Decode("decoded parameter count mismatch".into()))?,
+            )
+        })
+        .collect()
+}
+
 pub fn decode_calldata(params: &[AbiParam], data: &[u8]) -> Result<Vec<DecodedValue>, AbiError> {
     let ty = DynSolType::Tuple(params.iter().map(|param| param.ty.clone()).collect());
     let decoded = ty
@@ -141,7 +244,7 @@ fn decode_value(value: DynSolValue) -> Result<DecodedValue, AbiError> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address, U256, address};
+    use alloy::primitives::{Address, B256, U256, address, keccak256};
     use alloy::sol_types::SolCall;
 
     use super::*;
@@ -210,5 +313,39 @@ mod tests {
         let param = AbiParam::new("owner", DynSolType::Address).unwrap();
         assert_eq!(param.sol_type(), "address");
         assert_eq!(Address::ZERO.to_string().len(), 42);
+    }
+
+    #[test]
+    fn infers_event_kind_and_preserves_indexed_metadata() {
+        let TargetSpec::Event(spec) = parse_target_signature(
+            "event Transfer(address indexed from, address indexed to, uint256 value)",
+        )
+        .unwrap() else {
+            panic!("expected event")
+        };
+        assert_eq!(spec.topic0, keccak256("Transfer(address,address,uint256)"));
+        assert!(spec.params[0].indexed);
+        assert!(!spec.params[2].indexed);
+        assert!(parse_event_signature("event Hidden(uint256 value) anonymous").is_err());
+        assert!(parse_event_signature("event Batch(uint256[] values)").is_err());
+    }
+
+    #[test]
+    fn decodes_indexed_and_body_event_values() {
+        let spec = parse_event_signature(
+            "event Message(address indexed sender, string indexed label, uint256 value)",
+        )
+        .unwrap();
+        let sender = address!("0000000000000000000000000000000000000001");
+        let mut sender_topic = [0u8; 32];
+        sender_topic[12..].copy_from_slice(sender.as_slice());
+        let label_hash = keccak256("hello");
+        let topics = [spec.topic0, B256::from(sender_topic), label_hash];
+        let data =
+            DynSolValue::Tuple(vec![DynSolValue::Uint(U256::from(7), 256)]).abi_encode_params();
+        let values = decode_event(&spec.params, spec.topic0, &topics, &data).unwrap();
+        assert_eq!(values[0], DecodedValue::Address(sender));
+        assert_eq!(values[1], DecodedValue::Bytes(label_hash.to_vec()));
+        assert_eq!(values[2], DecodedValue::Uint(U256::from(7)));
     }
 }

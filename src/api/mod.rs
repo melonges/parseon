@@ -115,21 +115,33 @@ mod tests {
         let schemas = document["components"]["schemas"].as_object().unwrap();
         for schema in [
             "AbiParamSchema",
+            "CallMonitorResult",
             "CreateMonitor",
             "ErrorResponse",
             "Health",
             "MonitorResult",
             "MonitorRow",
+            "EventMonitorResult",
             "Status",
             "UpdateMonitor",
         ] {
             assert!(schemas.contains_key(schema), "missing schema {schema}");
         }
         let abi_param_properties = schemas["AbiParamSchema"]["properties"].as_object().unwrap();
-        assert_eq!(abi_param_properties.len(), 2);
+        assert_eq!(abi_param_properties.len(), 3);
         assert!(abi_param_properties.contains_key("name"));
         assert!(abi_param_properties.contains_key("sol_type"));
+        assert!(abi_param_properties.contains_key("indexed"));
         assert!(!schemas.contains_key("SqlKind"));
+
+        let result_parameters = paths["/monitors/{id}/results"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        let parameter_names = result_parameters
+            .iter()
+            .map(|parameter| parameter["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(parameter_names, ["id", "limit", "offset"]);
     }
 
     #[tokio::test]

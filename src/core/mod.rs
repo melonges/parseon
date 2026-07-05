@@ -33,11 +33,25 @@ impl Cursor {
 }
 
 #[derive(Debug, Clone)]
-pub struct Target {
+pub enum Target {
+    Call(CallTarget),
+    Event(EventTarget),
+}
+
+#[derive(Debug, Clone)]
+pub struct CallTarget {
     pub address: Address,
     pub selector: [u8; 4],
     pub signature: String,
     pub inputs: Vec<AbiParam>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventTarget {
+    pub address: Address,
+    pub topic0: B256,
+    pub signature: String,
+    pub params: Vec<AbiParam>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +95,39 @@ pub struct DecodedCall {
     pub block_hash: B256,
     pub transaction: ExecutedTransaction,
     pub params: Vec<DecodedValue>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceLog {
+    pub block_number: Option<i64>,
+    pub block_hash: Option<B256>,
+    pub transaction_hash: Option<B256>,
+    pub transaction_index: Option<u64>,
+    pub log_index: Option<u64>,
+    pub address: Address,
+    pub topics: Vec<B256>,
+    pub data: Vec<u8>,
+    pub removed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecodedEvent {
+    pub monitor_id: i64,
+    pub block_number: i64,
+    pub block_hash: B256,
+    pub transaction_hash: B256,
+    pub transaction_index: u64,
+    pub log_index: u64,
+    pub address: Address,
+    pub topics: Vec<B256>,
+    pub data: Vec<u8>,
+    pub params: Vec<DecodedValue>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DecodedResult {
+    Call(DecodedCall),
+    Event(DecodedEvent),
 }
 
 #[cfg(test)]

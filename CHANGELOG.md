@@ -2,6 +2,26 @@
 
 All notable changes to Parseon are documented in this file.
 
+## 0.4.0 - 2026-07-05
+
+### Added
+
+- Finalized, log-native EVM event monitors inferred from `event` ABI signatures.
+- Indexed-parameter metadata and decoding, including topic hashes for indexed dynamic values.
+- Tagged call and event result responses with minimal transaction/log identity and decoded parameters.
+
+### Changed
+
+- Store results in ID-based `monitor_<id>_results` tables and identify monitors by kind, address, and signature hash.
+- Keep result tables focused on decoded ABI values plus transaction hash, block number, and event log index.
+- Fetch matching event logs once per block without fetching full blocks or receipts for event-only work.
+- Destructively reset v0.3 monitor data and result tables for the new event-aware schema.
+
+### Breaking
+
+- Monitor responses now expose `kind` and exactly one of `selector` or `topic0`; result responses are tagged by kind.
+- Result queries no longer expose sender or transaction-status filters.
+
 ## 0.3.0 - 2026-07-01
 
 ### Added

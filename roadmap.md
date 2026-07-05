@@ -90,7 +90,18 @@ Use the block source's finalized head as a simple, explicit consistency boundary
 - Treat all returned monitor results as finalized by contract, without per-row finality fields.
 - Document that consistency depends on the configured block source faithfully implementing its finalized-head signal.
 
-## v0.4 — Multi-chain indexing
+## v0.4 — EVM event indexing
+
+Status: implemented in v0.4.0.
+
+- Add finalized, log-native EVM event monitors alongside function-call monitors.
+- Infer target kind from flat human-readable ABI signatures.
+- Decode non-anonymous events with scalar parameters and preserve indexed metadata.
+- Store decoded event parameters with only transaction hash, block number, and log index as result identity.
+- Fetch event logs without unnecessary full-block or receipt requests.
+- Keep call and event persistence with cursor progress atomic.
+
+## v0.5 — Multi-chain indexing
 
 Run one Parseon instance across multiple EVM chains.
 
@@ -102,7 +113,7 @@ Run one Parseon instance across multiple EVM chains.
 - Isolate chain state, errors, cache, and finality settings.
 - Allow chains to be enabled, disabled, or updated without restarting the service.
 
-## v0.5 — Parallel execution and performance
+## v0.6 — Parallel execution and performance
 
 Scale indexing without duplicating block source work.
 
@@ -114,7 +125,7 @@ Scale indexing without duplicating block source work.
 - Add backpressure for block source calls and database writes.
 - Expose Prometheus-compatible metrics.
 
-## v0.6 — Rich API and management surface
+## v0.7 — Rich API and management surface
 
 Prepare Parseon for a future frontend.
 
@@ -122,10 +133,13 @@ Prepare Parseon for a future frontend.
 - Add pause, resume, and reindex operations.
 - Add cursor-based pagination.
 - Add advanced result filtering.
+- Revisit call and event resource shapes.
+- Add event-metadata searches and decoded-parameter filters.
+- Revisit offset and cursor pagination design across both result kinds.
 - Keep OpenAPI first-class.
 - Consider GraphQL after the HTTP model stabilizes.
 
-## v0.7 — Optional adapters
+## v0.8 — Optional adapters
 
 Expand the ecosystem around the core after internal traits are stable.
 
@@ -138,7 +152,7 @@ Expand the ecosystem around the core after internal traits are stable.
 - Consider sink adapters such as webhooks, Kafka, files, or ClickHouse.
 - Reevaluate whether any adapter should become a separate crate based on dependency weight and reuse.
 
-## v0.8 — Runtime monitor filters
+## v0.9 — Runtime monitor filters
 
 Let each monitor decide which decoded calls should be stored.
 
@@ -148,7 +162,7 @@ Let each monitor decide which decoded calls should be stored.
 - Benchmark filter overhead.
 - Consider WASM filters later for advanced users.
 
-## v0.9 — Crate split evaluation
+## v0.10 — Crate split evaluation
 
 Split only if the project has enough stability and real pressure to justify it.
 
@@ -158,7 +172,7 @@ Split only if the project has enough stability and real pressure to justify it.
 - Avoid creating crates only to mirror folders.
 - Document crate-boundary rules before moving code.
 
-## v0.10 — Provisional indexing and rollback engine
+## v0.11 — Provisional indexing and rollback engine
 
 Add near-head indexing only together with the machinery required to make it correct.
 
@@ -193,5 +207,5 @@ Make Parseon reliable to operate as infrastructure.
 3. Build richer APIs for management and querying.
 4. Add optional adapters only after the core traits are stable.
 5. Add runtime monitor filters.
-6. Reevaluate separate crates near v0.9, not before the domain model settles.
-7. Add provisional indexing and rollback only as a coherent v0.10 feature.
+6. Reevaluate separate crates near v0.10, not before the domain model settles.
+7. Add provisional indexing and rollback only as a coherent v0.11 feature.

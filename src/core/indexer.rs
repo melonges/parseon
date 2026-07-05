@@ -1,6 +1,6 @@
-use super::abi::decode_calldata;
+use super::abi::{decode_calldata, decode_event};
 use super::monitor::Monitor;
-use super::{DecodedCall, ExecutedTransaction, SourceBlock};
+use super::{DecodedCall, DecodedEvent, ExecutedTransaction, SourceBlock, SourceLog, Target};
 
 pub fn decode_calls(
     block: &SourceBlock,
@@ -15,17 +15,20 @@ pub fn decode_calls(
         let selector = transaction.transaction.input.get(..4).unwrap_or_default();
         let Some(monitor) = monitors
             .iter()
-            .find(|monitor| monitor.matches(transaction.transaction.to, selector))
+            .find(|monitor| monitor.matches_call(transaction.transaction.to, selector))
         else {
             continue;
         };
         let calldata = transaction.transaction.input.get(4..).unwrap_or_default();
-        let params = match decode_calldata(&monitor.target.inputs, calldata) {
+        let Target::Call(target) = &monitor.target else {
+            continue;
+        };
+        let params = match decode_calldata(&target.inputs, calldata) {
             Ok(params) => params,
             Err(error) => {
                 tracing::warn!(
                     monitor = monitor.id,
-                    signature = %monitor.target.signature,
+                    signature = %target.signature,
                     tx = %transaction.transaction.hash,
                     "decode error: {error}"
                 );
@@ -46,6 +49,68 @@ pub fn decode_calls(
     calls
 }
 
+pub fn decode_events(
+    block_number: i64,
+    monitors: &[Monitor],
+    logs: Vec<SourceLog>,
+) -> anyhow::Result<Vec<DecodedEvent>> {
+    let mut events = Vec::new();
+    for log in logs {
+        let Some(topic0) = log.topics.first().copied() else {
+            continue;
+        };
+        let matching = monitors
+            .iter()
+            .filter(|m| m.matches_event(log.address, topic0))
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            continue;
+        }
+        anyhow::ensure!(
+            !log.removed,
+            "removed log returned for finalized block {block_number}"
+        );
+        anyhow::ensure!(
+            log.block_number == Some(block_number),
+            "log has missing or incorrect block number"
+        );
+        let block_hash = log
+            .block_hash
+            .ok_or_else(|| anyhow::anyhow!("log is missing block hash"))?;
+        let transaction_hash = log
+            .transaction_hash
+            .ok_or_else(|| anyhow::anyhow!("log is missing transaction hash"))?;
+        let transaction_index = log
+            .transaction_index
+            .ok_or_else(|| anyhow::anyhow!("log is missing transaction index"))?;
+        let log_index = log
+            .log_index
+            .ok_or_else(|| anyhow::anyhow!("log is missing log index"))?;
+        for monitor in matching {
+            let Target::Event(target) = &monitor.target else {
+                unreachable!()
+            };
+            let params = decode_event(&target.params, target.topic0, &log.topics, &log.data)
+                .map_err(|error| {
+                    anyhow::anyhow!("event decode failed for monitor {}: {error}", monitor.id)
+                })?;
+            events.push(DecodedEvent {
+                monitor_id: monitor.id,
+                block_number,
+                block_hash,
+                transaction_hash,
+                transaction_index,
+                log_index,
+                address: log.address,
+                topics: log.topics.clone(),
+                data: log.data.clone(),
+                params,
+            });
+        }
+    }
+    Ok(events)
+}
+
 #[cfg(test)]
 mod tests {
     use alloy::dyn_abi::DynSolType;
@@ -56,7 +121,7 @@ mod tests {
     use crate::core::abi::AbiParam;
     use crate::core::filter::Filter;
     use crate::core::monitor::Monitor;
-    use crate::core::{BlockTransaction, Cursor, DecodedValue, Target};
+    use crate::core::{BlockTransaction, CallTarget, Cursor, DecodedValue, Target};
 
     alloy::sol! {
         function transfer(address to, uint256 value) external returns (bool);
@@ -78,7 +143,7 @@ mod tests {
         };
         let monitor = Monitor {
             id: 9,
-            target: Target {
+            target: Target::Call(CallTarget {
                 address: contract,
                 selector: transferCall::SELECTOR,
                 signature: "transfer(address,uint256)".into(),
@@ -86,7 +151,7 @@ mod tests {
                     AbiParam::new("to", DynSolType::Address).unwrap(),
                     AbiParam::new("value", DynSolType::Uint(256)).unwrap(),
                 ],
-            },
+            }),
             start_block: 1,
             end_block: None,
             cursor: Cursor(None),

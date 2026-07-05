@@ -1,12 +1,13 @@
 use async_trait::async_trait;
 
 use super::monitor::Monitor;
-use super::{BlockTransaction, Chain, DecodedCall, ExecutedTransaction, SourceBlock};
+use super::{BlockTransaction, Chain, DecodedResult, ExecutedTransaction, SourceBlock, SourceLog};
+use alloy::primitives::{Address, B256};
 
 pub struct BlockCommit {
     pub block_number: i64,
     pub monitors: Vec<Monitor>,
-    pub calls: Vec<DecodedCall>,
+    pub results: Vec<DecodedResult>,
 }
 
 #[async_trait]
@@ -24,6 +25,14 @@ pub trait BlockSource: Send + Sync {
         &self,
         transactions: &[BlockTransaction],
     ) -> anyhow::Result<Vec<ExecutedTransaction>>;
+    async fn fetch_logs(
+        &self,
+        _block_number: i64,
+        _addresses: &[Address],
+        _topic0s: &[B256],
+    ) -> anyhow::Result<Vec<SourceLog>> {
+        anyhow::bail!("log fetching is not implemented")
+    }
 }
 
 pub trait BlockCache: Send + Sync {

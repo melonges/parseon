@@ -73,7 +73,7 @@ Preferred project vocabulary:
 - Use **Storage** for primary persisted state and queryable decoded results.
 - Use **Cache** for temporary block/receipt caching.
 - Use **Worker** for a runtime indexing task, usually one per chain.
-- Use **DecodedCall** in core, **ResultRecord** in storage, and **MonitorResult** in API responses.
+- Use **DecodedCall** and **DecodedEvent** in core, **ResultRecord** in storage, and **MonitorResult** in API responses.
 - Use **Adapter**, not **Plugin**, until there is a real need for runtime-loaded extensions.
 - Use **Sink** for optional output destinations such as Kafka, webhooks, files, or ClickHouse.
 
@@ -93,7 +93,7 @@ api/           axum REST + OpenAPI/Swagger UI: /monitors/{id}, /healthz, /swagge
 Future architecture should move toward:
 
 ```
-parseon-core   monitor targets, filters, decoded calls, scheduler, workers, reorg/finality logic
+parseon-core   monitor targets, filters, decoded calls/events, scheduler, workers, reorg/finality logic
 block-source   JSON-RPC / eRPC / Etherscan source adapters
 storage        PostgreSQL first, MongoDB later
 cache          memory first, Redis later
@@ -107,9 +107,9 @@ sinks          optional webhooks, Kafka, files, ClickHouse
 - **Direct RPC endpoint**: `RPC_URL` determines the chain and must support the `finalized` block tag.
 - **Database-backed monitor state**: The worker reloads monitors each poll; no in-memory registry can retain stale cursors.
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
-- **Per-monitor dynamic tables**: each monitor gets an `<address_without_0x>_<selector_without_0x>` table containing transaction metadata and decoded ABI parameter columns. PostgreSQL column names and types are derived inside `db/dyn_table.rs`; they are not part of the core ABI model.
-- **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`); result tables are keyed by address and selector.
-- **Atomic block persistence**: transaction metadata, decoded parameter rows, and all covering monitor cursors commit in one PostgreSQL transaction.
+- **Per-monitor dynamic tables**: each monitor gets a `monitor_<id>_results` table containing minimal result identity and decoded ABI parameter columns. PostgreSQL column names and types are derived inside `db/dyn_table.rs`; they are not part of the core ABI model.
+- **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`) and result-table names.
+- **Atomic block persistence**: decoded call/event rows and all covering monitor cursors commit in one PostgreSQL transaction.
 
 ## Roadmap
 - ** roadmap in roadmap.md

@@ -1,12 +1,13 @@
 use alloy::eips::BlockNumberOrTag;
 use alloy::network::AnyNetwork;
 use alloy::network::BlockResponse;
+use alloy::primitives::{Address, B256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::transports::http::reqwest::Client;
 use async_trait::async_trait;
 
 use crate::core::ports::BlockSource;
-use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock};
+use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
 use crate::error::{AppError, AppResult};
 use crate::rpc::fetch;
 
@@ -45,6 +46,21 @@ impl BlockSource for JsonRpcBlockSource {
         transactions: &[BlockTransaction],
     ) -> anyhow::Result<Vec<ExecutedTransaction>> {
         Ok(fetch::fetch_receipts(&self.provider, transactions).await?)
+    }
+
+    async fn fetch_logs(
+        &self,
+        block_number: i64,
+        addresses: &[Address],
+        topic0s: &[B256],
+    ) -> anyhow::Result<Vec<SourceLog>> {
+        Ok(fetch::fetch_logs(
+            &self.provider,
+            u64::try_from(block_number)?,
+            addresses,
+            topic0s,
+        )
+        .await?)
     }
 }
 

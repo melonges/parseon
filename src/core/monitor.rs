@@ -27,8 +27,12 @@ impl Monitor {
         self.cursor.next(self.start_block)
     }
 
-    pub fn matches(&self, address: Address, selector: &[u8]) -> bool {
-        self.target.address == address && self.target.selector == selector
+    pub fn matches_call(&self, address: Address, selector: &[u8]) -> bool {
+        matches!(&self.target, Target::Call(target) if target.address == address && target.selector == selector)
+    }
+
+    pub fn matches_event(&self, address: Address, topic0: alloy::primitives::B256) -> bool {
+        matches!(&self.target, Target::Event(target) if target.address == address && target.topic0 == topic0)
     }
 }
 
@@ -43,12 +47,12 @@ mod tests {
     fn monitor() -> Monitor {
         Monitor {
             id: 1,
-            target: Target {
+            target: Target::Call(crate::core::CallTarget {
                 address: Address::ZERO,
                 selector: [1, 2, 3, 4],
                 signature: "f(uint256)".into(),
                 inputs: vec![AbiParam::new("value", DynSolType::Uint(256)).unwrap()],
-            },
+            }),
             start_block: 10,
             end_block: Some(12),
             cursor: Cursor(None),
@@ -72,7 +76,7 @@ mod tests {
     #[test]
     fn matches_target() {
         let monitor = monitor();
-        assert!(monitor.matches(Address::ZERO, &[1, 2, 3, 4]));
-        assert!(!monitor.matches(Address::ZERO, &[4, 3, 2, 1]));
+        assert!(monitor.matches_call(Address::ZERO, &[1, 2, 3, 4]));
+        assert!(!monitor.matches_call(Address::ZERO, &[4, 3, 2, 1]));
     }
 }

@@ -4,9 +4,11 @@ use alloy::network::primitives::BlockTransactionsKind;
 use alloy::network::{BlockResponse, ReceiptResponse, TransactionResponse};
 use alloy::providers::Provider;
 
-use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock};
+use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
 use crate::error::{AppError, AppResult};
 use crate::rpc::provider::HttpProvider;
+use alloy::primitives::{Address, B256};
+use alloy::rpc::types::Filter;
 
 /// Fetch and cache the transaction fields needed for monitor matching.
 pub async fn fetch_block(provider: &HttpProvider, block_number: u64) -> AppResult<SourceBlock> {
@@ -35,6 +37,41 @@ pub async fn fetch_block(provider: &HttpProvider, block_number: u64) -> AppResul
         hash: block_hash,
         transactions: out,
     })
+}
+
+pub async fn fetch_logs(
+    provider: &HttpProvider,
+    block_number: u64,
+    addresses: &[Address],
+    topic0s: &[B256],
+) -> AppResult<Vec<SourceLog>> {
+    let filter = Filter::new()
+        .select(block_number)
+        .address(addresses.to_vec())
+        .event_signature(topic0s.to_vec());
+    provider
+        .get_logs(&filter)
+        .await
+        .map_err(AppError::Rpc)?
+        .into_iter()
+        .map(|log| {
+            Ok(SourceLog {
+                block_number: log
+                    .block_number
+                    .map(|n| i64::try_from(n))
+                    .transpose()
+                    .map_err(|e| AppError::Internal(e.into()))?,
+                block_hash: log.block_hash,
+                transaction_hash: log.transaction_hash,
+                transaction_index: log.transaction_index,
+                log_index: log.log_index,
+                address: log.address(),
+                topics: log.topics().to_vec(),
+                data: log.data().data.to_vec(),
+                removed: log.removed,
+            })
+        })
+        .collect()
 }
 
 /// Fetch receipts only for transactions that matched a monitor. Base's public

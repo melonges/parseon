@@ -20,7 +20,7 @@
 
 ## The direction
 
-Parseon is being built to make focused onchain indexing simple: describe the calls you care about, run one service, and own the resulting data.
+Parseon is being built to make focused onchain indexing simple: describe the calls and events you care about, run one service, and own the resulting data.
 
 The project is moving quickly. Issues, ideas, and early contributions are welcome.
 
