@@ -32,6 +32,7 @@ mod tests {
     fn monitor(id: i64, start: i64, cursor: Option<i64>, end: Option<i64>) -> Monitor {
         Monitor {
             id,
+            chain: crate::core::Chain::new(1).unwrap(),
             target: Target::Call(CallTarget {
                 address: Address::ZERO,
                 selector: [0; 4],

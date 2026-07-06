@@ -20,3 +20,13 @@ pub fn monitor_routes() -> OpenApiRouter<AppState> {
         ))
         .routes(routes!(handlers::list_monitor_results))
 }
+
+pub fn chain_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(handlers::create_chain, handlers::list_chains))
+        .routes(routes!(
+            handlers::get_chain,
+            handlers::update_chain,
+            handlers::delete_chain
+        ))
+}

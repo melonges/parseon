@@ -132,7 +132,8 @@ fn method_spec(func: &Function) -> Result<MethodSpec, AbiError> {
 
 pub fn parse_target_signature(signature: &str) -> Result<TargetSpec, AbiError> {
     match AbiItem::parse(signature)
-        .map_err(|error| AbiError::Parse(format!("failed to parse target signature: {error}")))? {
+        .map_err(|error| AbiError::Parse(format!("failed to parse target signature: {error}")))?
+    {
         AbiItem::Function(func) => method_spec(&func).map(TargetSpec::Call),
         AbiItem::Event(event) => event_spec(&event).map(TargetSpec::Event),
         _ => Err(AbiError::Parse(format!(
@@ -242,7 +243,7 @@ fn decode_value(value: DynSolValue) -> Result<DecodedValue, AbiError> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{Address};
+    use alloy::primitives::Address;
     use alloy::sol_types::SolCall;
 
     use super::*;

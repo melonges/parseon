@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use crate::core::abi::parse_selector;
 use crate::core::filter::Filter;
 use crate::core::monitor::Monitor;
-use crate::core::ports::{BlockCommit, Storage};
-use crate::core::{CallTarget, Cursor, DecodedResult, EventTarget, Target};
+use crate::core::ports::{BlockCommit, ChainRegistry, RegisteredChain, Storage};
+use crate::core::{CallTarget, Chain, Cursor, DecodedResult, EventTarget, Target};
 use crate::error::AppResult;
 
 use super::dyn_table::{CallResultInput, EventResultInput, ResultRecord, SearchParams};
-use super::{dyn_table, monitor_repo};
+use super::{chain_repo, dyn_table, monitor_repo};
 
 #[derive(Clone)]
 pub struct PostgresStorage {
@@ -33,8 +33,11 @@ impl PostgresStorage {
         monitor_repo::create(&self.pool, input).await
     }
 
-    pub async fn list_monitor_records(&self) -> AppResult<Vec<monitor_repo::MonitorRecord>> {
-        monitor_repo::list(&self.pool).await
+    pub async fn list_monitor_records(
+        &self,
+        chain_id: Option<i64>,
+    ) -> AppResult<Vec<monitor_repo::MonitorRecord>> {
+        monitor_repo::list(&self.pool, chain_id).await
     }
 
     pub async fn get_monitor(&self, id: i64) -> AppResult<monitor_repo::MonitorRecord> {
@@ -55,6 +58,36 @@ impl PostgresStorage {
         monitor_repo::delete(&self.pool, id).await
     }
 
+    pub async fn create_chain(
+        &self,
+        chain: Chain,
+        rpc_url: &str,
+        enabled: bool,
+    ) -> AppResult<chain_repo::ChainRecord> {
+        chain_repo::create(&self.pool, chain, rpc_url, enabled).await
+    }
+
+    pub async fn list_chain_records(&self) -> AppResult<Vec<chain_repo::ChainRecord>> {
+        chain_repo::list(&self.pool).await
+    }
+
+    pub async fn get_chain(&self, chain_id: i64) -> AppResult<chain_repo::ChainRecord> {
+        chain_repo::get(&self.pool, chain_id).await
+    }
+
+    pub async fn update_chain(
+        &self,
+        chain_id: i64,
+        rpc_url: Option<&str>,
+        enabled: Option<bool>,
+    ) -> AppResult<chain_repo::ChainRecord> {
+        chain_repo::update(&self.pool, chain_id, rpc_url, enabled).await
+    }
+
+    pub async fn delete_chain(&self, chain_id: i64) -> AppResult<()> {
+        chain_repo::delete(&self.pool, chain_id).await
+    }
+
     pub async fn query_results(
         &self,
         monitor: &monitor_repo::MonitorRecord,
@@ -73,6 +106,7 @@ impl PostgresStorage {
     fn to_monitor(row: &monitor_repo::MonitorRecord) -> anyhow::Result<Monitor> {
         Ok(Monitor {
             id: row.id,
+            chain: Chain::new(row.chain_id)?,
             target: if row.kind == "call" {
                 Target::Call(CallTarget {
                     address: row.address.parse()?,
@@ -110,8 +144,8 @@ impl PostgresStorage {
 
 #[async_trait]
 impl Storage for PostgresStorage {
-    async fn load_monitors(&self) -> anyhow::Result<Vec<Monitor>> {
-        monitor_repo::list(&self.pool)
+    async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>> {
+        monitor_repo::list(&self.pool, Some(chain.id))
             .await?
             .iter()
             .map(Self::to_monitor)
@@ -119,6 +153,14 @@ impl Storage for PostgresStorage {
     }
 
     async fn commit_block(&self, commit: BlockCommit) -> anyhow::Result<usize> {
+        anyhow::ensure!(
+            commit
+                .monitors
+                .iter()
+                .all(|monitor| monitor.chain == commit.chain),
+            "cross-chain monitor set rejected for chain {}",
+            commit.chain.id
+        );
         let mut tx = self.pool.begin().await?;
         let mut monitor_ids = commit
             .monitors
@@ -129,9 +171,10 @@ impl Storage for PostgresStorage {
         monitor_ids.dedup();
 
         let rows = sqlx::query_as::<_, monitor_repo::MonitorRecord>(
-            "SELECT * FROM monitors WHERE id = ANY($1) ORDER BY id FOR UPDATE",
+            "SELECT * FROM monitors WHERE id = ANY($1) AND chain_id = $2 ORDER BY id FOR UPDATE",
         )
         .bind(&monitor_ids)
+        .bind(commit.chain.id)
         .fetch_all(&mut *tx)
         .await?;
         anyhow::ensure!(
@@ -177,10 +220,79 @@ impl Storage for PostgresStorage {
             let completed = monitor
                 .end_block
                 .is_some_and(|end| commit.block_number >= end);
-            monitor_repo::set_cursor(&mut tx, monitor.id, commit.block_number, completed).await?;
+            monitor_repo::set_cursor(
+                &mut tx,
+                monitor.id,
+                commit.chain.id,
+                commit.block_number,
+                completed,
+            )
+            .await?;
         }
 
         tx.commit().await?;
         Ok(commit.results.len())
+    }
+}
+
+#[async_trait]
+impl ChainRegistry for PostgresStorage {
+    async fn list_registered_chains(&self) -> anyhow::Result<Vec<RegisteredChain>> {
+        chain_repo::list(&self.pool)
+            .await?
+            .iter()
+            .map(chain_repo::ChainRecord::registered)
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy::primitives::Address;
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+    use crate::core::filter::Filter;
+    use crate::core::monitor::Monitor;
+
+    fn monitor(chain_id: i64) -> Monitor {
+        Monitor {
+            id: 1,
+            chain: Chain::new(chain_id).unwrap(),
+            target: Target::Call(CallTarget {
+                address: Address::ZERO,
+                selector: [0; 4],
+                signature: "f()".into(),
+                inputs: Vec::new(),
+            }),
+            start_block: 0,
+            end_block: None,
+            cursor: Cursor(None),
+            completed: false,
+            enabled: true,
+            filter: Filter::All,
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_cross_chain_commits_before_database_access() {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/parseon")
+            .unwrap();
+        let storage = PostgresStorage::new(pool);
+        let error = storage
+            .commit_block(BlockCommit {
+                chain: Chain::new(1).unwrap(),
+                block_number: 10,
+                monitors: vec![monitor(2)],
+                results: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cross-chain monitor set rejected")
+        );
     }
 }

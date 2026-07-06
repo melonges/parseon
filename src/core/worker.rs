@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::indexer;
 use super::ports::{BlockCache, BlockCommit, BlockSource, Storage};
-use super::status::RuntimeStatus;
+use super::status::ChainStatus;
 use super::{Chain, DecodedResult, Target, scheduler};
 
 #[derive(Debug, Clone)]
@@ -20,7 +20,7 @@ pub async fn run(
     storage: Arc<dyn Storage>,
     source: Arc<dyn BlockSource>,
     cache: Arc<dyn BlockCache>,
-    status: RuntimeStatus,
+    status: ChainStatus,
     cancel: CancellationToken,
 ) {
     tracing::info!(chain_id = config.chain.id, "worker started");
@@ -39,8 +39,8 @@ pub async fn run(
         {
             Ok(poll) => status.record_success(poll.finalized_head),
             Err(error) => {
-                status.record_error(&error);
-                tracing::warn!(chain_id = config.chain.id, "worker tick: {error:#}");
+                let message = status.record_error(&error);
+                tracing::warn!(chain_id = config.chain.id, error = %message, "worker tick failed");
             }
         }
         tokio::select! {
@@ -82,7 +82,7 @@ pub async fn run_once(
     cancel: &CancellationToken,
 ) -> anyhow::Result<PollResult> {
     let finalized_head = source.finalized_head().await?;
-    let monitors = storage.load_monitors().await?;
+    let monitors = storage.load_monitors(config.chain).await?;
     let active = monitors
         .iter()
         .filter(|monitor| monitor.enabled && !monitor.completed)
@@ -175,6 +175,7 @@ pub async fn run_once(
         }
         decoded += storage
             .commit_block(BlockCommit {
+                chain: config.chain,
                 block_number,
                 monitors: covering,
                 results,
@@ -217,8 +218,11 @@ mod tests {
 
     #[async_trait]
     impl Storage for FakeStorage {
-        async fn load_monitors(&self) -> anyhow::Result<Vec<Monitor>> {
-            Ok(vec![self.monitor.clone()])
+        async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>> {
+            Ok((self.monitor.chain == chain)
+                .then(|| self.monitor.clone())
+                .into_iter()
+                .collect())
         }
 
         async fn commit_block(&self, commit: BlockCommit) -> anyhow::Result<usize> {
@@ -331,6 +335,7 @@ mod tests {
         let storage = FakeStorage {
             monitor: Monitor {
                 id: 7,
+                chain: Chain::new(1).unwrap(),
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
                     selector: [1, 2, 3, 4],
@@ -370,11 +375,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_keeps_last_head_and_degrades_after_rpc_failure() {
-        let status = RuntimeStatus::new(1, 9);
+    async fn ignores_monitors_owned_by_another_chain() {
         let storage = FakeStorage {
             monitor: Monitor {
                 id: 7,
+                chain: Chain::new(2).unwrap(),
+                target: Target::Call(CallTarget {
+                    address: Address::ZERO,
+                    selector: [1, 2, 3, 4],
+                    signature: "f(uint256)".into(),
+                    inputs: Vec::new(),
+                }),
+                start_block: 10,
+                end_block: None,
+                cursor: Cursor(None),
+                completed: false,
+                enabled: true,
+                filter: Filter::All,
+            },
+            commits: Mutex::new(Vec::new()),
+        };
+        let config = WorkerConfig {
+            chain: Chain::new(1).unwrap(),
+            batch_size: 1,
+            poll_interval: Duration::from_millis(100),
+        };
+
+        let poll = run_once(
+            &config,
+            &storage,
+            &FakeSource,
+            &FakeCache::default(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(poll.finalized_head, 10);
+        assert!(storage.commits.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn status_keeps_last_head_and_degrades_after_rpc_failure() {
+        let status = ChainStatus::running(1, 9);
+        let storage = FakeStorage {
+            monitor: Monitor {
+                id: 7,
+                chain: Chain::new(1).unwrap(),
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
                     selector: [1, 2, 3, 4],
@@ -419,7 +466,7 @@ mod tests {
         status.record_error(&error);
 
         let snapshot = status.snapshot();
-        assert_eq!(snapshot.finalized_head, 10);
+        assert_eq!(snapshot.finalized_head, Some(10));
         assert_eq!(
             snapshot.worker_state,
             super::super::status::WorkerState::Degraded

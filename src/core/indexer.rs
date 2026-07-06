@@ -133,6 +133,7 @@ mod tests {
         };
         let monitor = Monitor {
             id: 9,
+            chain: crate::core::Chain::new(1).unwrap(),
             target: Target::Call(CallTarget {
                 address: contract,
                 selector: transferCall::SELECTOR,

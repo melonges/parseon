@@ -6,7 +6,7 @@ use alloy::providers::{Provider, RootProvider};
 use alloy::transports::http::reqwest::Client;
 use async_trait::async_trait;
 
-use crate::core::ports::BlockSource;
+use crate::core::ports::{BlockSource, BlockSourceFactory};
 use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
 use crate::error::{AppError, AppResult};
 use crate::rpc::fetch;
@@ -16,6 +16,15 @@ pub type HttpProvider = RootProvider<AnyNetwork>;
 
 pub struct JsonRpcBlockSource {
     provider: HttpProvider,
+}
+
+#[derive(Debug, Default)]
+pub struct JsonRpcBlockSourceFactory;
+
+impl BlockSourceFactory for JsonRpcBlockSourceFactory {
+    fn connect(&self, rpc_url: &str) -> anyhow::Result<std::sync::Arc<dyn BlockSource>> {
+        Ok(std::sync::Arc::new(JsonRpcBlockSource::connect(rpc_url)?))
+    }
 }
 
 impl JsonRpcBlockSource {

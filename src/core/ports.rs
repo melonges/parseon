@@ -1,10 +1,12 @@
 use async_trait::async_trait;
+use std::sync::Arc;
 
 use super::monitor::Monitor;
 use super::{BlockTransaction, Chain, DecodedResult, ExecutedTransaction, SourceBlock, SourceLog};
 use alloy::primitives::{Address, B256};
 
 pub struct BlockCommit {
+    pub chain: Chain,
     pub block_number: i64,
     pub monitors: Vec<Monitor>,
     pub results: Vec<DecodedResult>,
@@ -12,8 +14,24 @@ pub struct BlockCommit {
 
 #[async_trait]
 pub trait Storage: Send + Sync {
-    async fn load_monitors(&self) -> anyhow::Result<Vec<Monitor>>;
+    async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>>;
     async fn commit_block(&self, commit: BlockCommit) -> anyhow::Result<usize>;
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RegisteredChain {
+    pub chain: Chain,
+    pub rpc_url: String,
+    pub enabled: bool,
+}
+
+#[async_trait]
+pub trait ChainRegistry: Send + Sync {
+    async fn list_registered_chains(&self) -> anyhow::Result<Vec<RegisteredChain>>;
+}
+
+pub trait BlockSourceFactory: Send + Sync {
+    fn connect(&self, rpc_url: &str) -> anyhow::Result<Arc<dyn BlockSource>>;
 }
 
 #[async_trait]

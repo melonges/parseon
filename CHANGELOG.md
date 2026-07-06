@@ -2,6 +2,28 @@
 
 All notable changes to Parseon are documented in this file.
 
+## 0.5.0 - 2026-07-06
+
+### Added
+
+- PostgreSQL-backed chain registry with create, read, update, and delete HTTP APIs.
+- A runtime supervisor that reconciles registry changes and runs one isolated finalized-only worker per enabled chain.
+- Aggregate per-chain status with starting, running, degraded, and disabled worker states.
+- Chain-scoped monitor creation and optional `chain_id` filtering on monitor lists.
+
+### Changed
+
+- Start the HTTP server with an empty chain registry and discover each chain ID from its registered RPC endpoint.
+- Scope monitor loading, cursor commits, block caches, source failures, and worker cancellation by chain.
+- Keep registered RPC URLs write-only in HTTP responses and runtime diagnostics.
+- Destructively reset v0.4 monitors and dynamic result tables for the chain-aware schema.
+
+### Breaking
+
+- Remove the `RPC_URL` CLI/environment setting; chains must be registered through `POST /chains`.
+- Require `chain_id` in monitor creation requests and include it in monitor responses.
+- Change `GET /status` from one chain object to `{ "mode": "finalized", "chains": [...] }`.
+
 ## 0.4.0 - 2026-07-05
 
 ### Added

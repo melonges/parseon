@@ -10,6 +10,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::openapi::ApiDoc;
+use crate::core::ports::BlockSourceFactory;
 use crate::core::status::RuntimeStatus;
 use crate::db::storage::PostgresStorage;
 
@@ -18,13 +19,19 @@ use crate::db::storage::PostgresStorage;
 pub struct AppState {
     pub storage: PostgresStorage,
     pub runtime_status: RuntimeStatus,
+    pub source_factory: std::sync::Arc<dyn BlockSourceFactory>,
 }
 
 impl AppState {
-    pub fn new(storage: PostgresStorage, runtime_status: RuntimeStatus) -> Self {
+    pub fn new(
+        storage: PostgresStorage,
+        runtime_status: RuntimeStatus,
+        source_factory: std::sync::Arc<dyn BlockSourceFactory>,
+    ) -> Self {
         Self {
             storage,
             runtime_status,
+            source_factory,
         }
     }
 }
@@ -33,6 +40,7 @@ impl AppState {
 pub fn router(state: AppState) -> axum::Router {
     let (router, openapi) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(routes::health_routes())
+        .merge(routes::chain_routes())
         .merge(routes::monitor_routes())
         .split_for_parts();
 
@@ -52,16 +60,21 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{AppState, router};
-    use crate::core::status::RuntimeStatus;
+    use crate::core::status::{ChainStatus, RuntimeStatus};
     use crate::db::storage::PostgresStorage;
+    use crate::rpc::provider::JsonRpcBlockSourceFactory;
 
     fn test_router() -> axum::Router {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://postgres:postgres@localhost/parseon")
             .expect("test database URL should be valid");
+        let statuses = RuntimeStatus::default();
+        statuses.replace(ChainStatus::running(42, 20_000_000));
+        statuses.replace(ChainStatus::disabled(8453));
         router(AppState::new(
             PostgresStorage::new(pool),
-            RuntimeStatus::new(42, 20_000_000),
+            statuses,
+            std::sync::Arc::new(JsonRpcBlockSourceFactory),
         ))
     }
 
@@ -90,6 +103,15 @@ mod tests {
         let expected_operations = [
             ("/healthz", "get", &["200", "500"][..]),
             ("/status", "get", &["200"][..]),
+            ("/chains", "get", &["200", "500"][..]),
+            ("/chains", "post", &["201", "400", "409", "500"][..]),
+            ("/chains/{chain_id}", "get", &["200", "404", "500"][..]),
+            (
+                "/chains/{chain_id}",
+                "patch",
+                &["200", "400", "404", "500"][..],
+            ),
+            ("/chains/{chain_id}", "delete", &["204", "404", "500"][..]),
             ("/monitors", "get", &["200", "500"][..]),
             ("/monitors", "post", &["200", "400", "409", "500"][..]),
             ("/monitors/{id}", "get", &["200", "404", "500"][..]),
@@ -116,6 +138,9 @@ mod tests {
         for schema in [
             "AbiParamSchema",
             "CallMonitorResult",
+            "ChainRow",
+            "ChainStatusRow",
+            "CreateChain",
             "CreateMonitor",
             "ErrorResponse",
             "Health",
@@ -124,6 +149,7 @@ mod tests {
             "EventMonitorResult",
             "Status",
             "UpdateMonitor",
+            "UpdateChain",
         ] {
             assert!(schemas.contains_key(schema), "missing schema {schema}");
         }
@@ -133,6 +159,24 @@ mod tests {
         assert!(abi_param_properties.contains_key("sol_type"));
         assert!(abi_param_properties.contains_key("indexed"));
         assert!(!schemas.contains_key("SqlKind"));
+        assert!(schemas["ChainRow"]["properties"].get("rpc_url").is_none());
+        assert_eq!(
+            schemas["CreateChain"]["properties"]["rpc_url"]["writeOnly"],
+            true
+        );
+        assert!(
+            schemas["MonitorRow"]["properties"]
+                .get("chain_id")
+                .is_some()
+        );
+        assert!(
+            schemas["CreateMonitor"]["properties"]
+                .get("chain_id")
+                .is_some()
+        );
+
+        let monitor_parameters = paths["/monitors"]["get"]["parameters"].as_array().unwrap();
+        assert_eq!(monitor_parameters[0]["name"], "chain_id");
 
         let result_parameters = paths["/monitors/{id}/results"]["get"]["parameters"]
             .as_array()
@@ -160,11 +204,16 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let status: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(status["mode"], "finalized");
-        assert_eq!(status["chain_id"], 42);
-        assert_eq!(status["finalized_head"], 20_000_000);
-        assert_eq!(status["worker_state"], "running");
-        assert!(status["last_successful_poll_at"].is_string());
-        assert!(status["last_error"].is_null());
+        assert_eq!(status["chains"].as_array().unwrap().len(), 2);
+        assert_eq!(status["chains"][0]["chain_id"], 42);
+        assert_eq!(status["chains"][0]["enabled"], true);
+        assert_eq!(status["chains"][0]["finalized_head"], 20_000_000);
+        assert_eq!(status["chains"][0]["worker_state"], "running");
+        assert!(status["chains"][0]["last_successful_poll_at"].is_string());
+        assert!(status["chains"][0]["last_error"].is_null());
+        assert_eq!(status["chains"][1]["chain_id"], 8453);
+        assert_eq!(status["chains"][1]["worker_state"], "disabled");
+        assert!(status["chains"][1].get("finalized_head").is_none());
     }
 
     #[tokio::test]

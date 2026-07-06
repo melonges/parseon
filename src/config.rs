@@ -30,10 +30,6 @@ pub struct Config {
     /// Block cache capacity per chain worker
     #[arg(long, env = "BLOCK_CACHE_SIZE", default_value_t = 512)]
     pub block_cache_size: usize,
-
-    /// Direct JSON-RPC endpoint for the indexed chain
-    #[arg(long, env = "RPC_URL", default_value = "https://mainnet.base.org")]
-    pub rpc_url: String,
 }
 
 impl Config {

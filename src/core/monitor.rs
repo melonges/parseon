@@ -1,11 +1,12 @@
 use alloy::primitives::Address;
 
 use super::filter::Filter;
-use super::{Cursor, Target};
+use super::{Chain, Cursor, Target};
 
 #[derive(Debug, Clone)]
 pub struct Monitor {
     pub id: i64,
+    pub chain: Chain,
     pub target: Target,
     pub start_block: i64,
     pub end_block: Option<i64>,
@@ -47,6 +48,7 @@ mod tests {
     fn monitor() -> Monitor {
         Monitor {
             id: 1,
+            chain: Chain::new(1).unwrap(),
             target: Target::Call(crate::core::CallTarget {
                 address: Address::ZERO,
                 selector: [1, 2, 3, 4],

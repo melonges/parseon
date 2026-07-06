@@ -37,6 +37,7 @@ impl StoredParam {
 #[derive(Debug, Clone, FromRow)]
 pub struct MonitorRecord {
     pub id: i64,
+    pub chain_id: i64,
     pub address: String,
     pub signature: String,
     pub kind: String,
@@ -53,6 +54,7 @@ pub struct MonitorRecord {
 
 #[derive(Debug, Clone)]
 pub struct MonitorInput {
+    pub chain_id: i64,
     pub address: String,
     pub signature: String,
     pub start_block: i64,
@@ -77,12 +79,22 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRec
         .collect::<Vec<_>>();
     let mut tx = pool.begin().await?;
 
+    let chain_exists: Option<i64> =
+        sqlx::query_scalar("SELECT chain_id FROM chains WHERE chain_id = $1 FOR KEY SHARE")
+            .bind(input.chain_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if chain_exists.is_none() {
+        return Err(AppError::NotFound(format!("chain {}", input.chain_id)));
+    }
+
     let row = sqlx::query_as::<_, MonitorRecord>(
         r#"INSERT INTO monitors
-             (address, signature, kind, signature_hash, param_schema, start_block, end_block)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+             (chain_id, address, signature, kind, signature_hash, param_schema, start_block, end_block)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            RETURNING *"#,
     )
+    .bind(input.chain_id)
     .bind(&normalized_address)
     .bind(&input.signature)
     .bind(kind)
@@ -104,10 +116,13 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRec
     Ok(row)
 }
 
-pub async fn list(pool: &PgPool) -> AppResult<Vec<MonitorRecord>> {
-    let rows = sqlx::query_as::<_, MonitorRecord>("SELECT * FROM monitors ORDER BY id")
-        .fetch_all(pool)
-        .await?;
+pub async fn list(pool: &PgPool, chain_id: Option<i64>) -> AppResult<Vec<MonitorRecord>> {
+    let rows = sqlx::query_as::<_, MonitorRecord>(
+        "SELECT * FROM monitors WHERE ($1::BIGINT IS NULL OR chain_id = $1) ORDER BY id",
+    )
+    .bind(chain_id)
+    .fetch_all(pool)
+    .await?;
     Ok(rows)
 }
 
@@ -214,15 +229,17 @@ pub async fn update(
 pub async fn set_cursor(
     conn: &mut PgConnection,
     id: i64,
+    chain_id: i64,
     cursor: i64,
     completed: bool,
 ) -> AppResult<()> {
     sqlx::query(
-        "UPDATE monitors SET cursor = $1, completed = $2, updated_at = NOW() WHERE id = $3",
+        "UPDATE monitors SET cursor = $1, completed = $2, updated_at = NOW() WHERE id = $3 AND chain_id = $4",
     )
     .bind(cursor)
     .bind(completed)
     .bind(id)
+    .bind(chain_id)
     .execute(conn)
     .await?;
     Ok(())

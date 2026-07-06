@@ -4,10 +4,11 @@ use utoipa::OpenApi;
 #[openapi(
     info(
         title = "Parseon API",
-        description = "HTTP API for managing Parseon EVM call and event monitors"
+        description = "HTTP API for managing Parseon EVM chains, monitors, and decoded results"
     ),
     tags(
         (name = "health", description = "Service health and finalized indexing status"),
+        (name = "chains", description = "EVM chain registry management"),
         (name = "monitors", description = "EVM call and event monitor management"),
         (name = "results", description = "Search decoded monitor results")
     )

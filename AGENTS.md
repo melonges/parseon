@@ -23,9 +23,9 @@
 
 1. `docker compose up -d` — starts PostgreSQL 16 on `localhost:5432`.
 2. `cp .env.example .env` — `.env` is gitignored; loaded via `dotenvy` + clap env vars.
-3. Set `RPC_URL` in `.env` (the default targets Base mainnet). Parseon discovers the chain ID from that endpoint.
-4. Run the Parseon app on the host. Its default `DATABASE_URL` connects to the
+3. Run the Parseon app on the host. Its default `DATABASE_URL` connects to the
    Compose PostgreSQL instance.
+4. Register RPC endpoints with `POST /chains`. Parseon discovers and stores each endpoint's chain ID.
 
 PostgreSQL data is retained in the `pgdata` named volume. Check database logs
 with `docker compose logs -f postgres`. The Dockerfile remains available for
@@ -36,9 +36,9 @@ Default `HTTP_LISTEN=0.0.0.0:8080`. Override if port is taken (e.g. `HTTP_LISTEN
 Swagger UI is served at `/swagger-ui/`; the generated OpenAPI document is at
 `/api-docs/openapi.json`.
 
-The indexer validates the RPC endpoint's chain ID at startup and only indexes
-blocks returned by the RPC `finalized` tag. Base's public endpoint is
-rate-limited; replace `RPC_URL` for sustained workloads.
+The chain API validates each RPC endpoint's chain ID and `finalized` tag before
+registration. The supervisor runs one finalized-only worker per enabled chain.
+Base's public endpoint is rate-limited; register a private endpoint for sustained workloads.
 
 ### sqlx migrations are embedded at compile time
 
@@ -50,7 +50,7 @@ sqlx stores checksums in `_sqlx_migrations`. If you edit an already-applied migr
 
 To reset the schema during development:
 ```sql
-DROP TABLE IF EXISTS transactions, monitors CASCADE;
+DROP TABLE IF EXISTS transactions, monitors, chains CASCADE;
 DELETE FROM _sqlx_migrations;
 ```
 Then rebuild and restart.
@@ -82,8 +82,8 @@ Some implementation files may still use library-specific provider terminology in
 ## Architecture
 
 ```
-main.rs        config load → DB connect (+migrate) → source chain validation → worker + HTTP API
-core/          domain models, ABI, monitors, filters, scheduler, indexer, worker, and adapter ports
+main.rs        config load → DB connect (+migrate) → chain supervisor + HTTP API
+core/          domain models, ABI, monitors, filters, scheduler, indexer, worker, supervisor, and adapter ports
 cache/         chain-aware in-memory implementation of the core BlockCache port
 rpc/           Alloy JSON-RPC implementation of the core BlockSource port
 db/            PostgresStorage, monitor_repo, dyn_table (per-monitor result tables)
@@ -103,10 +103,12 @@ sinks          optional webhooks, Kafka, files, ClickHouse
 
 ## Key design decisions
 
-- **Single-chain per instance**: Each Parseon instance indexes the chain served by its configured RPC endpoint.
-- **Direct RPC endpoint**: `RPC_URL` determines the chain and must support the `finalized` block tag.
+- **Database-backed chain registry**: Each enabled chain has one isolated worker, source, cache, cancellation token, and status record.
+- **Direct RPC endpoints**: Registered endpoints determine their EIP-155 chain IDs and must support the `finalized` block tag.
+- **Write-only RPC URLs**: Provider endpoints are persisted for workers but never returned or logged.
 - **Database-backed monitor state**: The worker reloads monitors each poll; no in-memory registry can retain stale cursors.
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
+- **Chain-scoped monitors**: Each monitor belongs to one immutable registered chain; identical targets may exist on different chains.
 - **Per-monitor dynamic tables**: each monitor gets a `monitor_<id>_results` table containing minimal result identity and decoded ABI parameter columns. PostgreSQL column names and types are derived inside `db/dyn_table.rs`; they are not part of the core ABI model.
 - **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`) and result-table names.
 - **Atomic block persistence**: decoded call/event rows and all covering monitor cursors commit in one PostgreSQL transaction.

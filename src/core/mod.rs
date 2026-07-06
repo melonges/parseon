@@ -7,6 +7,7 @@ pub mod monitor;
 pub mod ports;
 pub mod scheduler;
 pub mod status;
+pub mod supervisor;
 pub mod worker;
 
 use self::abi::AbiParam;

@@ -2,13 +2,54 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::core::status::{ChainStatusSnapshot, WorkerState};
+use crate::db::chain_repo::ChainRecord;
 use crate::db::dyn_table::ResultRecord;
 use crate::db::monitor_repo::{MonitorRecord, StoredParam};
+
+// ----- Chains -----
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateChain {
+    #[schema(write_only)]
+    pub rpc_url: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateChain {
+    #[schema(write_only)]
+    pub rpc_url: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChainRow {
+    pub chain_id: i64,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<ChainRecord> for ChainRow {
+    fn from(record: ChainRecord) -> Self {
+        Self {
+            chain_id: record.chain_id,
+            enabled: record.enabled,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        }
+    }
+}
 
 // ----- Monitors -----
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateMonitor {
+    pub chain_id: i64,
     pub address: String,
     /// Human-readable function or event signature, e.g. `function transfer(address to,
     /// uint256 value)` or `event Transfer(address indexed from, address indexed to, uint256 value)`.
@@ -46,6 +87,7 @@ impl From<StoredParam> for AbiParamSchema {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MonitorRow {
     pub id: i64,
+    pub chain_id: i64,
     pub address: String,
     pub signature: String,
     pub kind: String,
@@ -67,6 +109,7 @@ impl From<MonitorRecord> for MonitorRow {
     fn from(record: MonitorRecord) -> Self {
         Self {
             id: record.id,
+            chain_id: record.chain_id,
             address: record.address,
             signature: record.signature,
             kind: record.kind.clone(),
@@ -93,11 +136,37 @@ pub struct Health {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Status {
     pub mode: &'static str,
+    pub chains: Vec<ChainStatusRow>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChainStatusRow {
     pub chain_id: i64,
-    pub finalized_head: i64,
+    pub enabled: bool,
     pub worker_state: &'static str,
-    pub last_successful_poll_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finalized_head: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_successful_poll_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+}
+
+impl From<ChainStatusSnapshot> for ChainStatusRow {
+    fn from(snapshot: ChainStatusSnapshot) -> Self {
+        Self {
+            chain_id: snapshot.chain_id,
+            enabled: snapshot.enabled,
+            worker_state: match snapshot.worker_state {
+                WorkerState::Starting => "starting",
+                WorkerState::Running => "running",
+                WorkerState::Degraded => "degraded",
+                WorkerState::Disabled => "disabled",
+            },
+            finalized_head: snapshot.finalized_head,
+            last_successful_poll_at: snapshot.last_successful_poll_at,
+            last_error: snapshot.last_error,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -163,10 +232,33 @@ fn default_limit() -> i64 {
     50
 }
 
+fn default_enabled() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::dyn_table::{CallResultRecord, EventResultRecord};
+
+    #[test]
+    fn chain_rpc_url_is_write_only() {
+        let create: CreateChain = serde_json::from_value(serde_json::json!({
+            "rpc_url": "https://user:secret@example.invalid"
+        }))
+        .unwrap();
+        assert!(create.enabled);
+
+        let row = ChainRow {
+            chain_id: 1,
+            enabled: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let value = serde_json::to_value(row).unwrap();
+        assert!(value.get("rpc_url").is_none());
+        assert!(!value.to_string().contains("secret"));
+    }
 
     #[test]
     fn serializes_minimal_call_result() {

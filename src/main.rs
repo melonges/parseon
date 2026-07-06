@@ -28,51 +28,34 @@ async fn main() -> anyhow::Result<()> {
     // Database.
     let pool = db::pool::connect(&config.database_url).await?;
 
-    // Discover the single indexed chain and require finalized-head support.
-    let block_source = Arc::new(rpc::provider::JsonRpcBlockSource::connect(&config.rpc_url)?);
-    let source = core::worker::probe_source(block_source.as_ref()).await?;
-    let chain = core::Chain::new(i64::try_from(source.chain_id)?)?;
-    tracing::info!(
-        chain_id = source.chain_id,
-        finalized_head = source.finalized_head,
-        "RPC chain and finalized head validated"
-    );
-    let runtime_status = core::status::RuntimeStatus::new(chain.id, source.finalized_head);
-
-    // Cancellation token shared by worker and API.
+    // Cancellation token shared by the supervisor and API.
     let cancel = CancellationToken::new();
-
-    let worker_config = core::worker::WorkerConfig {
-        chain,
+    let supervisor_config = core::supervisor::SupervisorConfig {
         batch_size: i64::try_from(config.default_batch_size).unwrap_or(i64::MAX),
         poll_interval: Duration::from_millis(config.poll_interval_ms.max(100)),
+        block_cache_size: config.block_cache_size,
     };
     let storage = Arc::new(db::storage::PostgresStorage::new(pool.clone()));
-    let block_cache = Arc::new(cache::MemoryBlockCache::new(config.block_cache_size));
+    let source_factory = Arc::new(rpc::provider::JsonRpcBlockSourceFactory);
+    let runtime_status = core::status::RuntimeStatus::default();
 
-    // Single-chain indexing worker.
-    let worker_handle = tokio::spawn({
-        let worker_config = worker_config;
-        let storage = storage.clone();
-        let block_source = block_source.clone();
-        let block_cache = block_cache.clone();
-        let runtime_status = runtime_status.clone();
+    // Reconciles the database registry and runs one isolated worker per enabled chain.
+    let supervisor_handle = tokio::spawn({
         let cancel = cancel.clone();
+        let supervisor = core::supervisor::Supervisor::new(
+            supervisor_config,
+            storage.clone(),
+            storage.clone(),
+            source_factory.clone(),
+            runtime_status.clone(),
+        );
         async move {
-            core::worker::run(
-                worker_config,
-                storage,
-                block_source,
-                block_cache,
-                runtime_status,
-                cancel,
-            )
-            .await;
+            supervisor.run(cancel).await;
         }
     });
 
     // HTTP API.
-    let state = api::AppState::new((*storage).clone(), runtime_status);
+    let state = api::AppState::new((*storage).clone(), runtime_status, source_factory);
     let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(&config.http_listen).await?;
     tracing::info!(listen = %config.http_listen, "http API listening");
@@ -82,11 +65,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Graceful shutdown on SIGINT, or if worker/server task ends.
+    // Graceful shutdown on SIGINT, or if supervisor/server task ends.
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        _ = worker_handle => {
-            tracing::warn!("worker task exited unexpectedly");
+        _ = supervisor_handle => {
+            tracing::warn!("supervisor task exited unexpectedly");
         }
         _ = server_handle => {
             tracing::warn!("http server task exited unexpectedly");

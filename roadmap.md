@@ -103,6 +103,8 @@ Status: implemented in v0.4.0.
 
 ## v0.5 — Multi-chain indexing
 
+Status: implemented in v0.5.0.
+
 Run one Parseon instance across multiple EVM chains.
 
 - Add a chain registry.
@@ -202,10 +204,9 @@ Make Parseon reliable to operate as infrastructure.
 
 ## Current priorities
 
-1. Add multi-chain workers.
-2. Optimize parallel indexing.
-3. Build richer APIs for management and querying.
-4. Add optional adapters only after the core traits are stable.
-5. Add runtime monitor filters.
-6. Reevaluate separate crates near v0.10, not before the domain model settles.
-7. Add provisional indexing and rollback only as a coherent v0.11 feature.
+1. Optimize parallel indexing.
+2. Build richer APIs for management and querying.
+3. Add optional adapters only after the core traits are stable.
+4. Add runtime monitor filters.
+5. Reevaluate separate crates near v0.10, not before the domain model settles.
+6. Add provisional indexing and rollback only as a coherent v0.11 feature.
