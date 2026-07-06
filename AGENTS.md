@@ -35,6 +35,7 @@ Default `HTTP_LISTEN=0.0.0.0:8080`. Override if port is taken (e.g. `HTTP_LISTEN
 
 Swagger UI is served at `/swagger-ui/`; the generated OpenAPI document is at
 `/api-docs/openapi.json`.
+Prometheus-compatible metrics are served at `/metrics`.
 
 The chain API validates each RPC endpoint's chain ID and `finalized` tag before
 registration. The supervisor runs one finalized-only worker per enabled chain.
@@ -108,6 +109,7 @@ sinks          optional webhooks, Kafka, files, ClickHouse
 - **Write-only RPC URLs**: Provider endpoints are persisted for workers but never returned or logged.
 - **Database-backed monitor state**: The worker reloads monitors each poll; no in-memory registry can retain stale cursors.
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
+- **Bounded indexing**: `BLOCK_CONCURRENCY` and `RPC_REQUEST_CONCURRENCY` apply per chain; `DB_WRITE_CONCURRENCY` limits atomic commits across the process; `RPC_BATCH_SIZE` controls targeted receipt batches.
 - **Chain-scoped monitors**: Each monitor belongs to one immutable registered chain; identical targets may exist on different chains.
 - **Per-monitor dynamic tables**: each monitor gets a `monitor_<id>_results` table containing minimal result identity and decoded ABI parameter columns. PostgreSQL column names and types are derived inside `db/dyn_table.rs`; they are not part of the core ABI model.
 - **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`) and result-table names.

@@ -38,6 +38,7 @@ impl ChainStatus {
         })
     }
 
+    #[cfg(test)]
     pub fn running(chain_id: i64, finalized_head: i64) -> Self {
         Self::new(ChainStatusSnapshot {
             chain_id,

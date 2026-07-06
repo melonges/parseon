@@ -4,6 +4,7 @@ pub mod abi;
 pub mod filter;
 pub mod indexer;
 pub mod monitor;
+pub mod pipeline;
 pub mod ports;
 pub mod scheduler;
 pub mod status;
@@ -120,6 +121,12 @@ pub enum DecodedResult {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use futures_util::StreamExt;
+
     use super::{Chain, Cursor};
 
     #[test]
@@ -132,5 +139,29 @@ mod tests {
     fn cursor_computes_next_block() {
         assert_eq!(Cursor(None).next(10), 10);
         assert_eq!(Cursor(Some(12)).next(10), 13);
+    }
+
+    #[tokio::test]
+    async fn pipeline_bounds_work_and_yields_in_input_order() {
+        let current = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let futures = (0..8).map(|value| {
+            let current = current.clone();
+            let maximum = maximum.clone();
+            async move {
+                let in_flight = current.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(in_flight, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis((8 - value) as u64)).await;
+                current.fetch_sub(1, Ordering::SeqCst);
+                value
+            }
+        });
+
+        let values = super::pipeline::ordered(futures, 3)
+            .collect::<Vec<_>>()
+            .await;
+
+        assert_eq!(values, (0..8).collect::<Vec<_>>());
+        assert_eq!(maximum.load(Ordering::SeqCst), 3);
     }
 }

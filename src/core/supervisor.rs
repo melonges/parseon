@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -9,12 +10,15 @@ use super::Chain;
 use super::ports::{BlockSource, BlockSourceFactory, ChainRegistry, RegisteredChain, Storage};
 use super::status::{ChainStatus, RuntimeStatus};
 use super::worker::{self, WorkerConfig};
+use crate::metrics::Metrics;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SupervisorConfig {
     pub batch_size: i64,
     pub poll_interval: Duration,
     pub block_cache_size: usize,
+    pub block_concurrency: usize,
+    pub db_write_concurrency: usize,
 }
 
 struct WorkerRuntime {
@@ -29,6 +33,8 @@ pub struct Supervisor {
     storage: Arc<dyn Storage>,
     source_factory: Arc<dyn BlockSourceFactory>,
     statuses: RuntimeStatus,
+    metrics: Metrics,
+    db_writes: Arc<Semaphore>,
     workers: HashMap<i64, WorkerRuntime>,
 }
 
@@ -39,13 +45,17 @@ impl Supervisor {
         storage: Arc<dyn Storage>,
         source_factory: Arc<dyn BlockSourceFactory>,
         statuses: RuntimeStatus,
+        metrics: Metrics,
     ) -> Self {
+        let db_write_concurrency = config.db_write_concurrency.max(1);
         Self {
             config,
             registry,
             storage,
             source_factory,
             statuses,
+            metrics,
+            db_writes: Arc::new(Semaphore::new(db_write_concurrency)),
             workers: HashMap::new(),
         }
     }
@@ -155,6 +165,7 @@ impl Supervisor {
             WorkerConfig {
                 chain,
                 batch_size: self.config.batch_size,
+                block_concurrency: self.config.block_concurrency,
                 poll_interval: self.config.poll_interval,
             },
             self.storage.clone(),
@@ -162,6 +173,8 @@ impl Supervisor {
             Arc::new(crate::cache::MemoryBlockCache::new(
                 self.config.block_cache_size,
             )),
+            self.db_writes.clone(),
+            self.metrics.clone(),
             status,
             cancel.clone(),
         ));
@@ -280,8 +293,9 @@ mod tests {
             })
         }
 
-        async fn fetch_receipts(
+        async fn fetch_executed_transactions(
             &self,
+            _block: &SourceBlock,
             _transactions: &[BlockTransaction],
         ) -> anyhow::Result<Vec<ExecutedTransaction>> {
             Ok(Vec::new())
@@ -328,11 +342,14 @@ mod tests {
                 batch_size: 1,
                 poll_interval: Duration::from_secs(60),
                 block_cache_size: 1,
+                block_concurrency: 1,
+                db_write_concurrency: 1,
             },
             registry,
             Arc::new(EmptyStorage),
             factory,
             statuses,
+            Metrics::default(),
         )
     }
 

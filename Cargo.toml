@@ -1,6 +1,6 @@
 [package]
 name = "parseon"
-version = "0.5.0"
+version = "0.6.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
@@ -16,6 +16,7 @@ alloy = { version = "2.1", features = [
     "essentials",
     "reqwest",
 ] }
+alloy-rpc-types-any = "2.1"
 sqlx = { version = "0.9", features = [
     "postgres",
     "runtime-tokio",
@@ -42,6 +43,13 @@ async-trait = "0.1"
 clap = { version = "4.6", features = ["derive", "env"] }
 dotenvy = "0.15"
 lru = "0.18"
+futures-util = "0.3"
+prometheus-client = "0.23"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+criterion = { version = "0.7", features = ["async_tokio"] }
+
+[[bench]]
+name = "worker_pipeline"
+harness = false

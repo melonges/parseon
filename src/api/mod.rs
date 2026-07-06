@@ -13,6 +13,7 @@ use crate::api::openapi::ApiDoc;
 use crate::core::ports::BlockSourceFactory;
 use crate::core::status::RuntimeStatus;
 use crate::db::storage::PostgresStorage;
+use crate::metrics::Metrics;
 
 /// Shared state passed to all handlers.
 #[derive(Clone)]
@@ -20,6 +21,7 @@ pub struct AppState {
     pub storage: PostgresStorage,
     pub runtime_status: RuntimeStatus,
     pub source_factory: std::sync::Arc<dyn BlockSourceFactory>,
+    pub metrics: Metrics,
 }
 
 impl AppState {
@@ -27,11 +29,13 @@ impl AppState {
         storage: PostgresStorage,
         runtime_status: RuntimeStatus,
         source_factory: std::sync::Arc<dyn BlockSourceFactory>,
+        metrics: Metrics,
     ) -> Self {
         Self {
             storage,
             runtime_status,
             source_factory,
+            metrics,
         }
     }
 }
@@ -74,7 +78,8 @@ mod tests {
         router(AppState::new(
             PostgresStorage::new(pool),
             statuses,
-            std::sync::Arc::new(JsonRpcBlockSourceFactory),
+            std::sync::Arc::new(JsonRpcBlockSourceFactory::default()),
+            crate::metrics::Metrics::default(),
         ))
     }
 
@@ -103,6 +108,7 @@ mod tests {
         let expected_operations = [
             ("/healthz", "get", &["200", "500"][..]),
             ("/status", "get", &["200"][..]),
+            ("/metrics", "get", &["200", "500"][..]),
             ("/chains", "get", &["200", "500"][..]),
             ("/chains", "post", &["201", "400", "409", "500"][..]),
             ("/chains/{chain_id}", "get", &["200", "404", "500"][..]),
@@ -254,5 +260,28 @@ mod tests {
                 .unwrap()
                 .starts_with("text/html")
         );
+    }
+
+    #[tokio::test]
+    async fn serves_prometheus_metrics() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; version=0.0.4; charset=utf-8"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("parseon_rpc_operations"));
+        assert!(!body.contains("rpc_url"));
     }
 }

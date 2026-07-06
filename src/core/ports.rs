@@ -39,8 +39,9 @@ pub trait BlockSource: Send + Sync {
     async fn chain_id(&self) -> anyhow::Result<u64>;
     async fn finalized_head(&self) -> anyhow::Result<i64>;
     async fn fetch_block(&self, block_number: i64) -> anyhow::Result<SourceBlock>;
-    async fn fetch_receipts(
+    async fn fetch_executed_transactions(
         &self,
+        block: &SourceBlock,
         transactions: &[BlockTransaction],
     ) -> anyhow::Result<Vec<ExecutedTransaction>>;
     async fn fetch_logs(

@@ -30,6 +30,22 @@ pub struct Config {
     /// Block cache capacity per chain worker
     #[arg(long, env = "BLOCK_CACHE_SIZE", default_value_t = 512)]
     pub block_cache_size: usize,
+
+    /// Blocks prepared concurrently by each chain worker
+    #[arg(long, env = "BLOCK_CONCURRENCY", default_value_t = 4)]
+    pub block_concurrency: usize,
+
+    /// Maximum concurrent RPC requests per registered chain
+    #[arg(long, env = "RPC_REQUEST_CONCURRENCY", default_value_t = 16)]
+    pub rpc_request_concurrency: usize,
+
+    /// Maximum concurrent atomic database commits across all chains
+    #[arg(long, env = "DB_WRITE_CONCURRENCY", default_value_t = 4)]
+    pub db_write_concurrency: usize,
+
+    /// Maximum JSON-RPC calls grouped into one receipt batch
+    #[arg(long, env = "RPC_BATCH_SIZE", default_value_t = 20)]
+    pub rpc_batch_size: usize,
 }
 
 impl Config {

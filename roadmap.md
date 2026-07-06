@@ -117,6 +117,8 @@ Run one Parseon instance across multiple EVM chains.
 
 ## v0.6 — Parallel execution and performance
 
+Status: implemented across v0.6.0 and v0.6.1.
+
 Scale indexing without duplicating block source work.
 
 - Add bounded concurrent block fetching.

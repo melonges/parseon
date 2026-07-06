@@ -2,6 +2,32 @@
 
 All notable changes to Parseon are documented in this file.
 
+## 0.6.1 - 2026-07-06
+
+### Added
+
+- Automatic receipt fetching through direct requests, bounded JSON-RPC batches, or `eth_getBlockReceipts`.
+- Prometheus-compatible runtime metrics at `GET /metrics` for RPC work, indexing lag, cache access, decoded results, and database commits.
+- Per-chain RPC concurrency and receipt batch-size configuration.
+
+### Changed
+
+- Fall back to targeted receipt requests when an endpoint rejects batching or block receipts.
+- Learn optional RPC capabilities independently for each registered endpoint until its worker is replaced.
+
+## 0.6.0 - 2026-07-06
+
+### Added
+
+- Bounded concurrent block preparation with configurable per-chain concurrency.
+- Process-wide database write backpressure shared by all chain workers.
+- A repeatable worker-pipeline benchmark comparing serial and bounded execution.
+
+### Changed
+
+- Prepare blocks concurrently while preserving ascending, atomic block commits so cursors never advance beyond failed work.
+- Fetch call data and event logs concurrently for blocks covered by both monitor kinds.
+
 ## 0.5.0 - 2026-07-06
 
 ### Added

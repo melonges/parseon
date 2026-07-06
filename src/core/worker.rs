@@ -1,7 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::StreamExt;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
+
+use crate::metrics::Metrics;
 
 use super::indexer;
 use super::ports::{BlockCache, BlockCommit, BlockSource, Storage};
@@ -12,6 +16,7 @@ use super::{Chain, DecodedResult, Target, scheduler};
 pub struct WorkerConfig {
     pub chain: Chain,
     pub batch_size: i64,
+    pub block_concurrency: usize,
     pub poll_interval: Duration,
 }
 
@@ -20,6 +25,8 @@ pub async fn run(
     storage: Arc<dyn Storage>,
     source: Arc<dyn BlockSource>,
     cache: Arc<dyn BlockCache>,
+    db_writes: Arc<Semaphore>,
+    metrics: Metrics,
     status: ChainStatus,
     cancel: CancellationToken,
 ) {
@@ -33,6 +40,8 @@ pub async fn run(
             storage.as_ref(),
             source.as_ref(),
             cache.as_ref(),
+            db_writes.as_ref(),
+            &metrics,
             &cancel,
         )
         .await
@@ -79,6 +88,8 @@ pub async fn run_once(
     storage: &dyn Storage,
     source: &dyn BlockSource,
     cache: &dyn BlockCache,
+    db_writes: &Semaphore,
+    metrics: &Metrics,
     cancel: &CancellationToken,
 ) -> anyhow::Result<PollResult> {
     let finalized_head = source.finalized_head().await?;
@@ -88,6 +99,7 @@ pub async fn run_once(
         .filter(|monitor| monitor.enabled && !monitor.completed)
         .collect::<Vec<_>>();
     if active.is_empty() {
+        metrics.set_worker_lag(config.chain.id, 0);
         return Ok(PollResult {
             finalized_head,
             decoded: 0,
@@ -95,41 +107,140 @@ pub async fn run_once(
     }
 
     let wanted = scheduler::plan_blocks(&active, finalized_head, config.batch_size);
+    let planned = wanted
+        .into_iter()
+        .filter_map(|block_number| {
+            let covering = active
+                .iter()
+                .filter(|monitor| {
+                    monitor.covers(block_number)
+                        && monitor.cursor.0.is_none_or(|cursor| cursor < block_number)
+                })
+                .map(|monitor| (*monitor).clone())
+                .collect::<Vec<_>>();
+            (!covering.is_empty()).then_some((block_number, covering))
+        })
+        .collect::<Vec<_>>();
+
+    let mut prepared = super::pipeline::ordered(
+        planned
+            .into_iter()
+            .map(|(block_number, covering)| async move {
+                prepare_block(config.chain, block_number, covering, source, cache, metrics).await
+            }),
+        config.block_concurrency,
+    );
     let mut decoded = 0;
+    let mut progress = active
+        .iter()
+        .map(|monitor| {
+            (
+                monitor.id,
+                monitor.cursor.0.unwrap_or(monitor.start_block - 1),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
 
-    for block_number in wanted {
-        if cancel.is_cancelled() {
-            break;
-        }
-        let covering = active
+    loop {
+        let next = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break,
+            next = prepared.next() => next,
+        };
+        let Some(next) = next else { break };
+        let prepared = next?;
+        let calls = prepared
+            .results
             .iter()
-            .filter(|monitor| {
-                monitor.covers(block_number)
-                    && monitor.cursor.0.is_none_or(|cursor| cursor < block_number)
+            .filter(|result| matches!(result, DecodedResult::Call(_)))
+            .count() as u64;
+        let events = prepared.results.len() as u64 - calls;
+        let permit = db_writes.acquire().await?;
+        let _in_flight = metrics.in_flight(config.chain.id, "db");
+        let started = std::time::Instant::now();
+        let result = storage
+            .commit_block(BlockCommit {
+                chain: config.chain,
+                block_number: prepared.block_number,
+                monitors: prepared.monitors,
+                results: prepared.results,
             })
-            .map(|monitor| (*monitor).clone())
-            .collect::<Vec<_>>();
-        if covering.is_empty() {
-            continue;
+            .await;
+        drop(permit);
+        match result {
+            Ok(count) => {
+                metrics.record_commit(config.chain.id, calls, events, "success", started.elapsed());
+                decoded += count;
+                for monitor_id in prepared.monitor_ids {
+                    progress.insert(monitor_id, prepared.block_number);
+                }
+            }
+            Err(error) => {
+                metrics.record_commit(config.chain.id, calls, events, "error", started.elapsed());
+                return Err(error);
+            }
         }
+    }
 
-        let call_monitors = covering
-            .iter()
-            .filter(|m| matches!(&m.target, Target::Call(_)))
-            .cloned()
-            .collect::<Vec<_>>();
-        let event_monitors = covering
-            .iter()
-            .filter(|m| matches!(&m.target, Target::Event(_)))
-            .cloned()
-            .collect::<Vec<_>>();
+    let min_cursor = progress.values().copied().min().unwrap_or(0);
+    cache.evict_before(config.chain, min_cursor);
+    let lag = active
+        .iter()
+        .map(|monitor| {
+            let target = monitor
+                .end_block
+                .unwrap_or(finalized_head)
+                .min(finalized_head);
+            target.saturating_sub(*progress.get(&monitor.id).unwrap_or(&target))
+        })
+        .max()
+        .unwrap_or(0);
+    metrics.set_worker_lag(config.chain.id, lag);
+    Ok(PollResult {
+        finalized_head,
+        decoded,
+    })
+}
+
+struct PreparedBlock {
+    block_number: i64,
+    monitor_ids: Vec<i64>,
+    monitors: Vec<super::monitor::Monitor>,
+    results: Vec<DecodedResult>,
+}
+
+async fn prepare_block(
+    chain: Chain,
+    block_number: i64,
+    covering: Vec<super::monitor::Monitor>,
+    source: &dyn BlockSource,
+    cache: &dyn BlockCache,
+    metrics: &Metrics,
+) -> anyhow::Result<PreparedBlock> {
+    let _in_flight = metrics.in_flight(chain.id, "block");
+
+    let call_monitors = covering
+        .iter()
+        .filter(|m| matches!(&m.target, Target::Call(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let event_monitors = covering
+        .iter()
+        .filter(|m| matches!(&m.target, Target::Event(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let calls = async {
         let mut results = Vec::new();
         if !call_monitors.is_empty() {
-            let block = match cache.get(config.chain, block_number) {
-                Some(block) => block,
+            let block = match cache.get(chain, block_number) {
+                Some(block) => {
+                    metrics.record_cache(chain.id, true);
+                    block
+                }
                 None => {
+                    metrics.record_cache(chain.id, false);
                     let block = source.fetch_block(block_number).await?;
-                    cache.put(config.chain, block.clone());
+                    cache.put(chain, block.clone());
                     block
                 }
             };
@@ -144,13 +255,19 @@ pub async fn run_once(
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            let executed = source.fetch_receipts(&candidates).await?;
+            let executed = source
+                .fetch_executed_transactions(&block, &candidates)
+                .await?;
             results.extend(
                 indexer::decode_calls(&block, &call_monitors, executed)
                     .into_iter()
                     .map(DecodedResult::Call),
             );
         }
+        Ok::<_, anyhow::Error>(results)
+    };
+    let events = async {
+        let mut results = Vec::new();
         if !event_monitors.is_empty() {
             let mut addresses = Vec::new();
             let mut topic0s = Vec::new();
@@ -173,25 +290,15 @@ pub async fn run_once(
                     .map(DecodedResult::Event),
             );
         }
-        decoded += storage
-            .commit_block(BlockCommit {
-                chain: config.chain,
-                block_number,
-                monitors: covering,
-                results,
-            })
-            .await?;
-    }
-
-    let min_cursor = active
-        .iter()
-        .map(|monitor| monitor.cursor.0.unwrap_or(monitor.start_block - 1))
-        .min()
-        .unwrap_or(0);
-    cache.evict_before(config.chain, min_cursor);
-    Ok(PollResult {
-        finalized_head,
-        decoded,
+        Ok::<_, anyhow::Error>(results)
+    };
+    let (mut calls, events) = tokio::try_join!(calls, events)?;
+    calls.extend(events);
+    Ok(PreparedBlock {
+        block_number,
+        monitor_ids: covering.iter().map(|monitor| monitor.id).collect(),
+        monitors: covering,
+        results: calls,
     })
 }
 
@@ -199,6 +306,7 @@ pub async fn run_once(
 mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use alloy::primitives::Address;
     use async_trait::async_trait;
@@ -235,6 +343,22 @@ mod tests {
     struct FakeSource;
 
     struct UnsupportedFinalizedSource;
+
+    struct ParallelSource {
+        current: AtomicUsize,
+        maximum: AtomicUsize,
+        fail_at: Option<i64>,
+    }
+
+    impl ParallelSource {
+        fn new(fail_at: Option<i64>) -> Self {
+            Self {
+                current: AtomicUsize::new(0),
+                maximum: AtomicUsize::new(0),
+                fail_at,
+            }
+        }
+    }
 
     #[derive(Default)]
     struct FakeCache {
@@ -282,8 +406,9 @@ mod tests {
             })
         }
 
-        async fn fetch_receipts(
+        async fn fetch_executed_transactions(
             &self,
+            _block: &SourceBlock,
             _transactions: &[BlockTransaction],
         ) -> anyhow::Result<Vec<ExecutedTransaction>> {
             Ok(Vec::new())
@@ -304,11 +429,45 @@ mod tests {
             unreachable!()
         }
 
-        async fn fetch_receipts(
+        async fn fetch_executed_transactions(
             &self,
+            _block: &SourceBlock,
             _transactions: &[BlockTransaction],
         ) -> anyhow::Result<Vec<ExecutedTransaction>> {
             unreachable!()
+        }
+    }
+
+    #[async_trait]
+    impl BlockSource for ParallelSource {
+        async fn chain_id(&self) -> anyhow::Result<u64> {
+            Ok(1)
+        }
+
+        async fn finalized_head(&self) -> anyhow::Result<i64> {
+            Ok(12)
+        }
+
+        async fn fetch_block(&self, block_number: i64) -> anyhow::Result<SourceBlock> {
+            let in_flight = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum.fetch_max(in_flight, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis((13 - block_number) as u64 * 5)).await;
+            self.current.fetch_sub(1, Ordering::SeqCst);
+            if self.fail_at == Some(block_number) {
+                anyhow::bail!("block {block_number} failed")
+            }
+            Ok(SourceBlock {
+                number: block_number,
+                transactions: Vec::new(),
+            })
+        }
+
+        async fn fetch_executed_transactions(
+            &self,
+            _block: &SourceBlock,
+            _transactions: &[BlockTransaction],
+        ) -> anyhow::Result<Vec<ExecutedTransaction>> {
+            Ok(Vec::new())
         }
     }
 
@@ -354,13 +513,18 @@ mod tests {
         let config = WorkerConfig {
             chain: Chain::new(1).unwrap(),
             batch_size: 1,
+            block_concurrency: 1,
             poll_interval: Duration::from_millis(100),
         };
+        let db_writes = Semaphore::new(1);
+        let metrics = Metrics::default();
         let poll = run_once(
             &config,
             &storage,
             &FakeSource,
             &FakeCache::default(),
+            &db_writes,
+            &metrics,
             &CancellationToken::new(),
         )
         .await
@@ -398,14 +562,19 @@ mod tests {
         let config = WorkerConfig {
             chain: Chain::new(1).unwrap(),
             batch_size: 1,
+            block_concurrency: 1,
             poll_interval: Duration::from_millis(100),
         };
+        let db_writes = Semaphore::new(1);
+        let metrics = Metrics::default();
 
         let poll = run_once(
             &config,
             &storage,
             &FakeSource,
             &FakeCache::default(),
+            &db_writes,
+            &metrics,
             &CancellationToken::new(),
         )
         .await
@@ -440,14 +609,19 @@ mod tests {
         let config = WorkerConfig {
             chain: Chain::new(1).unwrap(),
             batch_size: 1,
+            block_concurrency: 1,
             poll_interval: Duration::from_millis(100),
         };
+        let db_writes = Semaphore::new(1);
+        let metrics = Metrics::default();
 
         let poll = run_once(
             &config,
             &storage,
             &FakeSource,
             &FakeCache::default(),
+            &db_writes,
+            &metrics,
             &CancellationToken::new(),
         )
         .await
@@ -459,6 +633,8 @@ mod tests {
             &storage,
             &UnsupportedFinalizedSource,
             &FakeCache::default(),
+            &db_writes,
+            &metrics,
             &CancellationToken::new(),
         )
         .await
@@ -472,5 +648,109 @@ mod tests {
             super::super::status::WorkerState::Degraded
         );
         assert!(snapshot.last_error.unwrap().contains("invalid argument"));
+    }
+
+    #[tokio::test]
+    async fn prepares_concurrently_but_commits_in_block_order() {
+        let storage = FakeStorage {
+            monitor: Monitor {
+                id: 7,
+                chain: Chain::new(1).unwrap(),
+                target: Target::Call(CallTarget {
+                    address: Address::ZERO,
+                    selector: [1, 2, 3, 4],
+                    signature: "f(uint256)".into(),
+                    inputs: Vec::new(),
+                }),
+                start_block: 10,
+                end_block: Some(12),
+                cursor: Cursor(None),
+                completed: false,
+                enabled: true,
+                filter: Filter::All,
+            },
+            commits: Mutex::new(Vec::new()),
+        };
+        let source = ParallelSource::new(None);
+        let config = WorkerConfig {
+            chain: Chain::new(1).unwrap(),
+            batch_size: 3,
+            block_concurrency: 3,
+            poll_interval: Duration::from_millis(100),
+        };
+
+        run_once(
+            &config,
+            &storage,
+            &source,
+            &FakeCache::default(),
+            &Semaphore::new(1),
+            &Metrics::default(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(source.maximum.load(Ordering::SeqCst), 3);
+        let committed = storage
+            .commits
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|commit| commit.block_number)
+            .collect::<Vec<_>>();
+        assert_eq!(committed, [10, 11, 12]);
+    }
+
+    #[tokio::test]
+    async fn never_commits_past_a_failed_block() {
+        let storage = FakeStorage {
+            monitor: Monitor {
+                id: 7,
+                chain: Chain::new(1).unwrap(),
+                target: Target::Call(CallTarget {
+                    address: Address::ZERO,
+                    selector: [1, 2, 3, 4],
+                    signature: "f(uint256)".into(),
+                    inputs: Vec::new(),
+                }),
+                start_block: 10,
+                end_block: Some(12),
+                cursor: Cursor(None),
+                completed: false,
+                enabled: true,
+                filter: Filter::All,
+            },
+            commits: Mutex::new(Vec::new()),
+        };
+        let source = ParallelSource::new(Some(11));
+        let config = WorkerConfig {
+            chain: Chain::new(1).unwrap(),
+            batch_size: 3,
+            block_concurrency: 3,
+            poll_interval: Duration::from_millis(100),
+        };
+
+        let error = run_once(
+            &config,
+            &storage,
+            &source,
+            &FakeCache::default(),
+            &Semaphore::new(1),
+            &Metrics::default(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("block 11 failed"));
+        let committed = storage
+            .commits
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|commit| commit.block_number)
+            .collect::<Vec<_>>();
+        assert_eq!(committed, [10]);
     }
 }

@@ -8,6 +8,7 @@ pub fn health_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(handlers::healthz))
         .routes(routes!(handlers::status))
+        .routes(routes!(handlers::metrics))
 }
 
 pub fn monitor_routes() -> OpenApiRouter<AppState> {

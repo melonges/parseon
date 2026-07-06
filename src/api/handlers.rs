@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
+use axum::response::IntoResponse;
 
 use crate::api::AppState;
 use crate::api::dto::{
@@ -49,6 +50,30 @@ pub async fn status(State(state): State<AppState>) -> Json<Status> {
             .map(Into::into)
             .collect(),
     })
+}
+
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    tag = "health",
+    responses(
+        (status = OK, description = "Prometheus metrics", body = String, content_type = "text/plain"),
+        (status = INTERNAL_SERVER_ERROR, description = "Metrics encoding error", body = ErrorResponse)
+    )
+)]
+pub async fn metrics(State(state): State<AppState>) -> AppResult<axum::response::Response> {
+    let body = state
+        .metrics
+        .render()
+        .map_err(|error| AppError::Internal(error.into()))?;
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response())
 }
 
 // ----- Chains -----

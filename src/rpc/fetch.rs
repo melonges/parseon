@@ -3,6 +3,7 @@ use alloy::eips::BlockNumberOrTag;
 use alloy::network::primitives::BlockTransactionsKind;
 use alloy::network::{BlockResponse, ReceiptResponse, TransactionResponse};
 use alloy::providers::Provider;
+use alloy_rpc_types_any::AnyTransactionReceipt;
 
 use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
 use crate::error::{AppError, AppResult};
@@ -68,17 +69,42 @@ pub async fn fetch_logs(
         .collect()
 }
 
-/// Fetch receipts only for transactions that matched a monitor. Base's public
-/// RPC does not expose `eth_getBlockReceipts`, so this avoids one receipt call
-/// per unrelated transaction in the block.
-pub async fn fetch_receipts(
+pub async fn fetch_receipt(
+    provider: &HttpProvider,
+    tx: &BlockTransaction,
+) -> AppResult<ExecutedTransaction> {
+    let receipt = provider
+        .get_transaction_receipt(tx.hash)
+        .await
+        .map_err(AppError::Rpc)?
+        .ok_or_else(|| AppError::NotFound(format!("receipt for {}", tx.hash)))?;
+    Ok(ExecutedTransaction {
+        transaction: tx.clone(),
+        succeeded: receipt.status(),
+    })
+}
+
+pub async fn fetch_receipt_batch(
     provider: &HttpProvider,
     txs: &[BlockTransaction],
 ) -> AppResult<Vec<ExecutedTransaction>> {
+    let mut batch = alloy::rpc::client::BatchRequest::new(provider.client());
+    let waiters = txs
+        .iter()
+        .map(|tx| {
+            batch
+                .add_call::<_, Option<AnyTransactionReceipt>>(
+                    "eth_getTransactionReceipt",
+                    &(tx.hash,),
+                )
+                .map_err(AppError::Rpc)
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    batch.send().await.map_err(AppError::Rpc)?;
+
     let mut out = Vec::with_capacity(txs.len());
-    for tx in txs {
-        let receipt = provider
-            .get_transaction_receipt(tx.hash)
+    for (tx, waiter) in txs.iter().zip(waiters) {
+        let receipt = waiter
             .await
             .map_err(AppError::Rpc)?
             .ok_or_else(|| AppError::NotFound(format!("receipt for {}", tx.hash)))?;
@@ -88,4 +114,31 @@ pub async fn fetch_receipts(
         });
     }
     Ok(out)
+}
+
+pub async fn fetch_block_receipts(
+    provider: &HttpProvider,
+    block_number: u64,
+    txs: &[BlockTransaction],
+) -> AppResult<Vec<ExecutedTransaction>> {
+    let receipts = provider
+        .get_block_receipts(BlockNumberOrTag::Number(block_number).into())
+        .await
+        .map_err(AppError::Rpc)?
+        .ok_or_else(|| AppError::NotFound(format!("receipts for block {block_number}")))?;
+    let mut statuses = receipts
+        .into_iter()
+        .map(|receipt| (receipt.transaction_hash(), receipt.status()))
+        .collect::<std::collections::HashMap<_, _>>();
+    txs.iter()
+        .map(|tx| {
+            let succeeded = statuses
+                .remove(&tx.hash)
+                .ok_or_else(|| AppError::NotFound(format!("receipt for {}", tx.hash)))?;
+            Ok(ExecutedTransaction {
+                transaction: tx.clone(),
+                succeeded,
+            })
+        })
+        .collect()
 }
