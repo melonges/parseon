@@ -24,31 +24,6 @@ Parseon is being built to make focused onchain indexing simple: describe the cal
 
 The project is moving quickly. Issues, ideas, and early contributions are welcome.
 
-## Register a chain and monitor
-
-Parseon starts without an RPC endpoint. Register each EVM chain through the API; Parseon discovers its EIP-155 chain ID, verifies finalized-block support, and starts an isolated worker. RPC URLs are write-only and are never returned or logged.
-
-```bash
-curl -X POST http://127.0.0.1:8080/chains \
-  -H 'content-type: application/json' \
-  -d '{"rpc_url":"https://mainnet.base.org","enabled":true}'
-```
-
-Create a monitor using the discovered `chain_id`:
-
-```bash
-curl -X POST http://127.0.0.1:8080/monitors \
-  -H 'content-type: application/json' \
-  -d '{
-    "chain_id":8453,
-    "address":"0x0000000000000000000000000000000000000000",
-    "signature":"function transfer(address to, uint256 value)",
-    "start_block":0
-  }'
-```
-
-Use `GET /status` for per-chain worker state and `GET /monitors?chain_id=8453` to list one chain's monitors. All indexing is finalized-only.
-
 See the [roadmap](./roadmap.md) for planned milestones, the [terminology guide](./terminology.md) for domain language, and the [changelog](./CHANGELOG.md) for completed work.
 
 ## License
