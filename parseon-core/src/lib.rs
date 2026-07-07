@@ -1,15 +1,18 @@
 use alloy::primitives::{Address, B256, I256, U256};
 
 pub mod abi;
+pub mod commands;
 pub mod filter;
 pub mod indexer;
 pub mod monitor;
 pub mod pipeline;
 pub mod ports;
 pub mod scheduler;
+pub mod services;
 pub mod status;
 pub mod supervisor;
 pub mod worker;
+pub mod views;
 
 use self::abi::AbiParam;
 

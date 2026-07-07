@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::Chain;
 use super::ports::{
-    BlockCacheFactory, BlockSource, BlockSourceFactory, ChainRegistry, RegisteredChain, Storage,
+    BlockCacheFactory, BlockSource, BlockSourceFactory, ChainRepository, RegisteredChain, IndexStorage,
     Telemetry,
 };
 use super::status::{ChainStatus, RuntimeStatus};
@@ -30,8 +30,8 @@ struct WorkerRuntime {
 
 pub struct Supervisor {
     config: SupervisorConfig,
-    registry: Arc<dyn ChainRegistry>,
-    storage: Arc<dyn Storage>,
+    registry: Arc<dyn ChainRepository>,
+    storage: Arc<dyn IndexStorage>,
     source_factory: Arc<dyn BlockSourceFactory>,
     cache_factory: Arc<dyn BlockCacheFactory>,
     statuses: RuntimeStatus,
@@ -43,8 +43,8 @@ pub struct Supervisor {
 impl Supervisor {
     pub fn new(
         config: SupervisorConfig,
-        registry: Arc<dyn ChainRegistry>,
-        storage: Arc<dyn Storage>,
+        registry: Arc<dyn ChainRepository>,
+        storage: Arc<dyn IndexStorage>,
         source_factory: Arc<dyn BlockSourceFactory>,
         cache_factory: Arc<dyn BlockCacheFactory>,
         statuses: RuntimeStatus,
@@ -245,7 +245,7 @@ mod tests {
     struct FakeRegistry(RwLock<Vec<RegisteredChain>>);
 
     #[async_trait]
-    impl ChainRegistry for FakeRegistry {
+    impl ChainRepository for FakeRegistry {
         async fn list_registered_chains(&self) -> anyhow::Result<Vec<RegisteredChain>> {
             Ok(self.0.read().unwrap().clone())
         }
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Storage for EmptyStorage {
+    impl IndexStorage for EmptyStorage {
         async fn load_monitors(
             &self,
             _chain: Chain,

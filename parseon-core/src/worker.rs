@@ -6,7 +6,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::indexer;
-use super::ports::{BlockCache, BlockCommit, BlockSource, InFlightGuard, Storage, Telemetry};
+use super::ports::{BlockCache, BlockCommit, BlockSource, InFlightGuard, IndexStorage, Telemetry};
 use super::status::ChainStatus;
 use super::{Chain, DecodedResult, Target, scheduler};
 
@@ -20,7 +20,7 @@ pub struct WorkerConfig {
 
 pub async fn run(
     config: WorkerConfig,
-    storage: Arc<dyn Storage>,
+    storage: Arc<dyn IndexStorage>,
     source: Arc<dyn BlockSource>,
     cache: Arc<dyn BlockCache>,
     db_writes: Arc<Semaphore>,
@@ -83,7 +83,7 @@ pub async fn probe_source(source: &dyn BlockSource) -> anyhow::Result<SourceStat
 
 pub async fn run_once(
     config: &WorkerConfig,
-    storage: &dyn Storage,
+    storage: &dyn IndexStorage,
     source: &dyn BlockSource,
     cache: &dyn BlockCache,
     db_writes: &Semaphore,
@@ -312,7 +312,7 @@ mod tests {
     use super::*;
     use crate::filter::Filter;
     use crate::monitor::Monitor;
-    use crate::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry, Storage};
+    use crate::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry, IndexStorage};
     use crate::{
         BlockTransaction, CallTarget, Cursor, ExecutedTransaction, SourceBlock, Target,
     };
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Storage for FakeStorage {
+    impl IndexStorage for FakeStorage {
         async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>> {
             Ok((self.monitor.chain == chain)
                 .then(|| self.monitor.clone())

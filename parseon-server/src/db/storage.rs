@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use parseon_core::abi::parse_selector;
 use parseon_core::filter::Filter;
 use parseon_core::monitor::Monitor;
-use parseon_core::ports::{BlockCommit, ChainRegistry, RegisteredChain, Storage};
+use parseon_core::ports::{BlockCommit, ChainRepository, RegisteredChain, IndexStorage};
 use parseon_core::{CallTarget, Chain, Cursor, DecodedResult, EventTarget, Target};
 use crate::error::AppResult;
 
@@ -143,7 +143,7 @@ impl PostgresStorage {
 }
 
 #[async_trait]
-impl Storage for PostgresStorage {
+impl IndexStorage for PostgresStorage {
     async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>> {
         monitor_repo::list(&self.pool, Some(chain.id))
             .await?
@@ -236,7 +236,7 @@ impl Storage for PostgresStorage {
 }
 
 #[async_trait]
-impl ChainRegistry for PostgresStorage {
+impl ChainRepository for PostgresStorage {
     async fn list_registered_chains(&self) -> anyhow::Result<Vec<RegisteredChain>> {
         chain_repo::list(&self.pool)
             .await?

@@ -2,6 +2,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
 use super::monitor::Monitor;
 use super::{BlockTransaction, Chain, DecodedResult, ExecutedTransaction, SourceBlock, SourceLog};
 use alloy::primitives::{Address, B256};
@@ -14,7 +17,7 @@ pub struct BlockCommit {
 }
 
 #[async_trait]
-pub trait Storage: Send + Sync {
+pub trait IndexStorage: Send + Sync {
     async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>>;
     async fn commit_block(&self, commit: BlockCommit) -> anyhow::Result<usize>;
 }
@@ -27,8 +30,124 @@ pub struct RegisteredChain {
 }
 
 #[async_trait]
-pub trait ChainRegistry: Send + Sync {
+pub trait ChainRepository: Send + Sync {
     async fn list_registered_chains(&self) -> anyhow::Result<Vec<RegisteredChain>>;
+    async fn create_chain(&self, _: NewChain) -> anyhow::Result<ChainRecord> { anyhow::bail!("create_chain is not implemented") }
+    async fn list_chains(&self) -> anyhow::Result<Vec<ChainRecord>> { anyhow::bail!("list_chains is not implemented") }
+    async fn get_chain(&self, _: Chain) -> anyhow::Result<ChainRecord> { anyhow::bail!("get_chain is not implemented") }
+    async fn update_chain(&self, _: Chain, _: ChainUpdate) -> anyhow::Result<ChainRecord> { anyhow::bail!("update_chain is not implemented") }
+    async fn delete_chain(&self, _: Chain) -> anyhow::Result<()> { anyhow::bail!("delete_chain is not implemented") }
+}
+
+#[derive(Debug, Clone)]
+pub struct NewChain {
+    pub chain: Chain,
+    pub rpc_url: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChainUpdate {
+    pub rpc_url: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChainRecord {
+    pub chain: Chain,
+    pub rpc_url: String,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorKind {
+    Call,
+    Event,
+}
+
+impl MonitorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Call => "call",
+            Self::Event => "event",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ParamSchema {
+    pub name: String,
+    pub sol_type: String,
+    #[serde(default)]
+    pub indexed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewMonitor {
+    pub chain: Chain,
+    pub address: String,
+    pub signature: String,
+    pub kind: MonitorKind,
+    pub signature_hash: String,
+    pub param_schema: Vec<ParamSchema>,
+    pub start_block: i64,
+    pub end_block: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonitorUpdate {
+    pub start_block: i64,
+    pub end_block: Option<i64>,
+    pub cursor: Option<i64>,
+    pub completed: bool,
+    pub enabled: bool,
+    pub reindex: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonitorRecord {
+    pub id: i64,
+    pub chain: Chain,
+    pub address: String,
+    pub signature: String,
+    pub kind: MonitorKind,
+    pub signature_hash: String,
+    pub param_schema: Vec<ParamSchema>,
+    pub start_block: i64,
+    pub end_block: Option<i64>,
+    pub cursor: Option<i64>,
+    pub completed: bool,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ResultRecord {
+    Call { tx_hash: String, block_number: i64, params: serde_json::Value },
+    Event { tx_hash: String, log_index: i64, block_number: i64, params: serde_json::Value },
+}
+
+#[async_trait]
+pub trait MonitorRepository: Send + Sync {
+    async fn count_monitors(&self) -> anyhow::Result<usize>;
+    async fn create_monitor(&self, monitor: NewMonitor) -> anyhow::Result<MonitorRecord>;
+    async fn list_monitors(&self, chain: Option<Chain>) -> anyhow::Result<Vec<MonitorRecord>>;
+    async fn get_monitor(&self, id: i64) -> anyhow::Result<MonitorRecord>;
+    async fn update_monitor(&self, id: i64, update: MonitorUpdate) -> anyhow::Result<MonitorRecord>;
+    async fn delete_monitor(&self, id: i64) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait ResultRepository: Send + Sync {
+    async fn query_results(
+        &self,
+        monitor: &MonitorRecord,
+        query: crate::commands::ResultQuery,
+    ) -> anyhow::Result<Vec<ResultRecord>>;
 }
 
 pub trait BlockSourceFactory: Send + Sync {
