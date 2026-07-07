@@ -1,0 +1,15 @@
+[package]
+name = "parseon-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+parseon-core = { path = "../parseon-core" }
+alloy = { version = "2.1", features = ["rpc-types-eth", "provider-http", "providers", "essentials", "reqwest"] }
+alloy-rpc-types-any = "2.1"
+anyhow = "1.0"
+async-trait = "0.1"
+futures-util = "0.3"
+tokio = { version = "1.52", features = ["sync"] }
+tracing = "0.1"

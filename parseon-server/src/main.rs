@@ -3,7 +3,6 @@ mod config;
 mod db;
 mod error;
 mod metrics;
-mod rpc;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,8 +36,8 @@ async fn main() -> anyhow::Result<()> {
     };
     let storage = Arc::new(db::storage::PostgresStorage::new(pool.clone()));
     let telemetry = Arc::new(metrics::Metrics::default());
-    let source_factory = Arc::new(rpc::provider::JsonRpcBlockSourceFactory::new(
-        rpc::provider::RpcConfig {
+    let source_factory = Arc::new(parseon_rpc::JsonRpcBlockSourceFactory::new(
+        parseon_rpc::RpcConfig {
             request_concurrency: config.rpc_request_concurrency.max(1),
             batch_size: config.rpc_batch_size.max(1),
         },

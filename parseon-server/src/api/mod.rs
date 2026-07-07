@@ -65,7 +65,7 @@ mod tests {
     use super::{AppState, router};
     use parseon_core::status::{ChainStatus, RuntimeStatus};
     use crate::db::storage::PostgresStorage;
-    use crate::rpc::provider::JsonRpcBlockSourceFactory;
+    use parseon_rpc::JsonRpcBlockSourceFactory;
 
     fn test_router() -> axum::Router {
         let pool = PgPoolOptions::new()

@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 parseon-core = { path = "../parseon-core" }
 parseon-memory-cache = { path = "../parseon-memory-cache" }
+parseon-rpc = { path = "../parseon-rpc" }
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 alloy = { version = "2.1", features = ["rpc-types-eth", "provider-http", "providers", "dyn-abi", "sol-types", "essentials", "reqwest"] }

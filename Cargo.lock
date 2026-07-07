@@ -3155,6 +3155,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "parseon-rpc"
+version = "0.6.1"
+dependencies = [
+ "alloy",
+ "alloy-rpc-types-any",
+ "anyhow",
+ "async-trait",
+ "futures-util",
+ "parseon-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "parseon-server"
 version = "0.6.1"
 dependencies = [
@@ -3169,6 +3183,7 @@ dependencies = [
  "futures-util",
  "parseon-core",
  "parseon-memory-cache",
+ "parseon-rpc",
  "prometheus-client",
  "serde",
  "serde_json",

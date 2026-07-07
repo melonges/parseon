@@ -12,11 +12,11 @@ use alloy::transports::http::reqwest::Client;
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use anyhow::Context;
 
 use parseon_core::ports::{BlockSource, BlockSourceFactory, InFlightGuard, NoopTelemetry, Telemetry};
 use parseon_core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
-use crate::error::{AppError, AppResult};
-use crate::rpc::fetch;
+use crate::fetch;
 
 pub type HttpProvider = RootProvider<AnyNetwork>;
 
@@ -83,7 +83,7 @@ impl JsonRpcBlockSource {
         rpc_url: &str,
         config: RpcConfig,
         telemetry: Arc<dyn Telemetry>,
-    ) -> AppResult<Self> {
+    ) -> anyhow::Result<Self> {
         let request_concurrency = config.request_concurrency.max(1);
         Ok(Self {
             provider: build(rpc_url)?,
@@ -314,27 +314,24 @@ fn unsupported_batch(error: &anyhow::Error) -> bool {
             || message.contains("invalid request"))
 }
 
-pub fn build(rpc_url: &str) -> AppResult<HttpProvider> {
-    let url = rpc_url
-        .parse()
-        .map_err(|e| AppError::BadRequest(format!("invalid rpc_url: {e}")))?;
+pub fn build(rpc_url: &str) -> anyhow::Result<HttpProvider> {
+    let url = rpc_url.parse().context("invalid rpc_url")?;
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("http client: {e}")))?;
+        .context("build HTTP client")?;
     let rpc_client = alloy::rpc::client::ClientBuilder::default().http_with_client(client, url);
     Ok(RootProvider::<AnyNetwork>::new(rpc_client))
 }
 
-pub async fn chain_id(provider: &HttpProvider) -> AppResult<u64> {
-    provider.get_chain_id().await.map_err(AppError::Rpc)
+pub async fn chain_id(provider: &HttpProvider) -> anyhow::Result<u64> {
+    Ok(provider.get_chain_id().await?)
 }
 
-pub async fn finalized_number(provider: &HttpProvider) -> AppResult<u64> {
+pub async fn finalized_number(provider: &HttpProvider) -> anyhow::Result<u64> {
     let block = provider
         .get_block_by_number(BlockNumberOrTag::Finalized)
-        .await
-        .map_err(AppError::Rpc)?
-        .ok_or_else(|| AppError::NotFound("finalized block".to_string()))?;
+        .await?
+        .context("finalized block not found")?;
     Ok(block.header().number)
 }
