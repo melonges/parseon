@@ -4,6 +4,8 @@ All notable changes to Parseon are documented in this file.
 
 ## Unreleased
 
+## 0.6.4 - 2026-07-08
+
 ### Changed
 
 - Carry chain IDs, block numbers, monitor IDs, addresses, selectors, topics, and transaction hashes as validated unsigned or fixed-size domain types.
