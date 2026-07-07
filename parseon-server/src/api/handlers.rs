@@ -8,9 +8,10 @@ use crate::api::dto::{
     ChainRow, CreateChain, CreateMonitor, ErrorResponse, Health, MonitorResult, MonitorRow,
     ResultsQuery, Status, UpdateChain, UpdateMonitor,
 };
-use parseon_core::Chain;
-use parseon_postgres::dyn_table::SearchParams;
-use parseon_postgres::monitor_repo::MonitorInput;
+use parseon_core::commands::{
+    CreateChain as CreateChainCommand, CreateMonitor as CreateMonitorCommand, ResultQuery,
+    UpdateChain as UpdateChainCommand, UpdateMonitor as UpdateMonitorCommand,
+};
 use crate::error::{AppError, AppResult};
 
 // ----- Health -----
@@ -25,7 +26,7 @@ use crate::error::{AppError, AppResult};
     )
 )]
 pub async fn healthz(State(state): State<AppState>) -> AppResult<Json<Health>> {
-    let monitors = state.storage.monitor_count().await?;
+    let monitors = state.monitors.count().await?;
     Ok(Json(Health {
         status: "ok",
         monitors,
@@ -65,7 +66,7 @@ pub async fn metrics(State(state): State<AppState>) -> AppResult<axum::response:
     let body = state
         .telemetry
         .render()
-        .map_err(|error| AppError::Internal(error.into()))?;
+        ?;
     Ok((
         [(
             axum::http::header::CONTENT_TYPE,
@@ -86,7 +87,6 @@ pub async fn metrics(State(state): State<AppState>) -> AppResult<axum::response:
     responses(
         (status = CREATED, description = "Chain registered", body = ChainRow),
         (status = BAD_REQUEST, description = "Invalid RPC endpoint or finalized support", body = ErrorResponse),
-        (status = CONFLICT, description = "Chain already registered", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -95,17 +95,10 @@ pub async fn create_chain(
     body: Result<Json<CreateChain>, JsonRejection>,
 ) -> AppResult<(axum::http::StatusCode, Json<ChainRow>)> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let (chain, _) = parseon_core::supervisor::validate_source(
-        state.source_factory.as_ref(),
-        &body.rpc_url,
-        None,
-    )
-    .await
-    .map_err(|message| AppError::BadRequest(message.to_string()))?;
-    let row = state
-        .storage
-        .create_chain(chain, &body.rpc_url, body.enabled)
-        .await?;
+    let row = state.chains.create(CreateChainCommand {
+        rpc_url: body.rpc_url,
+        enabled: body.enabled,
+    }).await?;
     Ok((axum::http::StatusCode::CREATED, Json(row.into())))
 }
 
@@ -119,7 +112,7 @@ pub async fn create_chain(
     )
 )]
 pub async fn list_chains(State(state): State<AppState>) -> AppResult<Json<Vec<ChainRow>>> {
-    let rows = state.storage.list_chain_records().await?;
+    let rows = state.chains.list().await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
@@ -130,7 +123,6 @@ pub async fn list_chains(State(state): State<AppState>) -> AppResult<Json<Vec<Ch
     params(("chain_id" = i64, Path, description = "EIP-155 chain ID")),
     responses(
         (status = OK, description = "Chain found", body = ChainRow),
-        (status = NOT_FOUND, description = "Chain not found", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -138,7 +130,7 @@ pub async fn get_chain(
     State(state): State<AppState>,
     Path(chain_id): Path<i64>,
 ) -> AppResult<Json<ChainRow>> {
-    Ok(Json(state.storage.get_chain(chain_id).await?.into()))
+    Ok(Json(state.chains.get(chain_id).await?.into()))
 }
 
 #[utoipa::path(
@@ -150,7 +142,6 @@ pub async fn get_chain(
     responses(
         (status = OK, description = "Chain updated", body = ChainRow),
         (status = BAD_REQUEST, description = "Invalid update or RPC endpoint", body = ErrorResponse),
-        (status = NOT_FOUND, description = "Chain not found", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -160,26 +151,10 @@ pub async fn update_chain(
     body: Result<Json<UpdateChain>, JsonRejection>,
 ) -> AppResult<Json<ChainRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    if body.rpc_url.is_none() && body.enabled.is_none() {
-        return Err(AppError::BadRequest(
-            "at least one of rpc_url or enabled is required".to_string(),
-        ));
-    }
-    state.storage.get_chain(chain_id).await?;
-    if let Some(rpc_url) = body.rpc_url.as_deref() {
-        let expected = Chain::new(chain_id).map_err(AppError::Internal)?;
-        parseon_core::supervisor::validate_source(
-            state.source_factory.as_ref(),
-            rpc_url,
-            Some(expected),
-        )
-        .await
-        .map_err(|message| AppError::BadRequest(message.to_string()))?;
-    }
-    let row = state
-        .storage
-        .update_chain(chain_id, body.rpc_url.as_deref(), body.enabled)
-        .await?;
+    let row = state.chains.update(chain_id, UpdateChainCommand {
+        rpc_url: body.rpc_url,
+        enabled: body.enabled,
+    }).await?;
     Ok(Json(row.into()))
 }
 
@@ -190,7 +165,6 @@ pub async fn update_chain(
     params(("chain_id" = i64, Path, description = "EIP-155 chain ID")),
     responses(
         (status = NO_CONTENT, description = "Chain, monitors, and result tables deleted"),
-        (status = NOT_FOUND, description = "Chain not found", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -198,7 +172,7 @@ pub async fn delete_chain(
     State(state): State<AppState>,
     Path(chain_id): Path<i64>,
 ) -> AppResult<axum::http::StatusCode> {
-    state.storage.delete_chain(chain_id).await?;
+    state.chains.delete(chain_id).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -212,7 +186,6 @@ pub async fn delete_chain(
     responses(
         (status = OK, description = "Monitor created", body = MonitorRow),
         (status = BAD_REQUEST, description = "Invalid request or ABI signature", body = ErrorResponse),
-        (status = CONFLICT, description = "A monitor already exists for the kind, address, and signature hash", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -221,14 +194,13 @@ pub async fn create_monitor(
     body: Result<Json<CreateMonitor>, JsonRejection>,
 ) -> AppResult<Json<MonitorRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let input = MonitorInput {
+    let row = state.monitors.create(CreateMonitorCommand {
         chain_id: body.chain_id,
         address: body.address,
         signature: body.signature,
         start_block: body.start_block,
         end_block: body.end_block,
-    };
-    let row = state.storage.create_monitor(&input).await?;
+    }).await?;
     Ok(Json(row.into()))
 }
 
@@ -252,7 +224,7 @@ pub async fn list_monitors(
     State(state): State<AppState>,
     Query(query): Query<MonitorListQuery>,
 ) -> AppResult<Json<Vec<MonitorRow>>> {
-    let rows = state.storage.list_monitor_records(query.chain_id).await?;
+    let rows = state.monitors.list(query.chain_id).await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
@@ -263,7 +235,6 @@ pub async fn list_monitors(
     params(("id" = i64, Path, description = "Monitor ID")),
     responses(
         (status = OK, description = "Monitor found", body = MonitorRow),
-        (status = NOT_FOUND, description = "Monitor not found", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -271,7 +242,7 @@ pub async fn get_monitor(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<MonitorRow>> {
-    let row = state.storage.get_monitor(id).await?;
+    let row = state.monitors.get(id).await?;
     Ok(Json(row.into()))
 }
 
@@ -284,7 +255,6 @@ pub async fn get_monitor(
     responses(
         (status = OK, description = "Monitor updated", body = MonitorRow),
         (status = BAD_REQUEST, description = "Invalid request or block range", body = ErrorResponse),
-        (status = NOT_FOUND, description = "Monitor not found", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -294,10 +264,11 @@ pub async fn update_monitor(
     body: Result<Json<UpdateMonitor>, JsonRejection>,
 ) -> AppResult<Json<MonitorRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let row = state
-        .storage
-        .update_monitor(id, body.start_block, body.end_block, body.enabled)
-        .await?;
+    let row = state.monitors.update(id, UpdateMonitorCommand {
+        start_block: body.start_block,
+        end_block: body.end_block,
+        enabled: body.enabled,
+    }).await?;
     Ok(Json(row.into()))
 }
 
@@ -308,7 +279,6 @@ pub async fn update_monitor(
     params(("id" = i64, Path, description = "Monitor ID")),
     responses(
         (status = NO_CONTENT, description = "Monitor deleted"),
-        (status = NOT_FOUND, description = "Monitor not found", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -316,7 +286,7 @@ pub async fn delete_monitor(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<axum::http::StatusCode> {
-    state.storage.delete_monitor(id).await?;
+    state.monitors.delete(id).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -334,7 +304,6 @@ pub async fn delete_monitor(
     responses(
         (status = OK, description = "Decoded results ordered by block_number descending", body = [MonitorResult]),
         (status = BAD_REQUEST, description = "Invalid query parameter", body = ErrorResponse),
-        (status = NOT_FOUND, description = "Monitor not found", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -343,11 +312,9 @@ pub async fn list_monitor_results(
     Path(id): Path<i64>,
     Query(query): Query<ResultsQuery>,
 ) -> AppResult<Json<Vec<MonitorResult>>> {
-    let monitor = state.storage.get_monitor(id).await?;
-    let search = SearchParams {
-        limit: query.limit.clamp(1, 200),
-        offset: query.offset.max(0),
-    };
-    let rows = state.storage.query_results(&monitor, &search).await?;
+    let rows = state.monitors.results(id, ResultQuery {
+        limit: query.limit,
+        offset: query.offset,
+    }).await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }

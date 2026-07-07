@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use alloy::primitives::Address;
+use anyhow::Context;
 
 use crate::abi::{AbiParam, TargetSpec, parse_target_signature};
 use crate::commands::{CreateChain, CreateMonitor, ResultQuery, UpdateChain, UpdateMonitor};
@@ -58,15 +59,16 @@ impl ChainService {
 
     pub async fn create(&self, command: CreateChain) -> anyhow::Result<ChainView> {
         let chain = self.validate_source(&command.rpc_url, None).await?;
-        self.repository.create_chain(NewChain { chain, rpc_url: command.rpc_url, enabled: command.enabled }).await.map(Into::into)
+        self.repository.create_chain(NewChain { chain, rpc_url: command.rpc_url, enabled: command.enabled }).await.context("create chain").map(Into::into)
     }
 
     pub async fn list(&self) -> anyhow::Result<Vec<ChainView>> {
-        Ok(self.repository.list_chains().await?.into_iter().map(Into::into).collect())
+        Ok(self.repository.list_chains().await.context("list chains")?.into_iter().map(Into::into).collect())
     }
 
     pub async fn get(&self, chain_id: i64) -> anyhow::Result<ChainView> {
-        self.repository.get_chain(Chain::new(chain_id)?).await.map(Into::into)
+        let chain = Chain::new(chain_id).map_err(|error| invalid(error.to_string()))?;
+        self.repository.get_chain(chain).await.context("get chain").map(Into::into)
     }
 
     pub async fn update(&self, chain_id: i64, command: UpdateChain) -> anyhow::Result<ChainView> {
@@ -74,15 +76,16 @@ impl ChainService {
             return Err(invalid("at least one of rpc_url or enabled is required"));
         }
         let chain = Chain::new(chain_id).map_err(|error| invalid(error.to_string()))?;
-        self.repository.get_chain(chain).await?;
+        self.repository.get_chain(chain).await.context("get chain before update")?;
         if let Some(url) = command.rpc_url.as_deref() {
             self.validate_source(url, Some(chain)).await?;
         }
-        self.repository.update_chain(chain, ChainUpdate { rpc_url: command.rpc_url, enabled: command.enabled }).await.map(Into::into)
+        self.repository.update_chain(chain, ChainUpdate { rpc_url: command.rpc_url, enabled: command.enabled }).await.context("update chain").map(Into::into)
     }
 
     pub async fn delete(&self, chain_id: i64) -> anyhow::Result<()> {
-        self.repository.delete_chain(Chain::new(chain_id)?).await
+        let chain = Chain::new(chain_id).map_err(|error| invalid(error.to_string()))?;
+        self.repository.delete_chain(chain).await.context("delete chain")
     }
 }
 
@@ -99,14 +102,14 @@ impl MonitorService {
     }
 
     pub async fn count(&self) -> anyhow::Result<usize> {
-        self.monitors.count_monitors().await
+        self.monitors.count_monitors().await.context("count monitors")
     }
 
     pub async fn create(&self, command: CreateMonitor) -> anyhow::Result<MonitorView> {
         validate_range(command.start_block, command.end_block)?;
         let chain = Chain::new(command.chain_id).map_err(|error| invalid(error.to_string()))?;
-        self.chains.get_chain(chain).await?;
-        let address: Address = command.address.parse().map_err(|error| invalid(format!("invalid address: {error}")))?;
+        self.chains.get_chain(chain).await.context("get monitor chain")?;
+        let address = normalize_address(&command.address)?;
         let spec = parse_target_signature(&command.signature).map_err(|error| invalid(error.to_string()))?;
         let (kind, signature_hash, params) = match spec {
             TargetSpec::Call(spec) => (MonitorKind::Call, format!("0x{}", alloy::hex::encode(spec.selector)), spec.params),
@@ -114,30 +117,32 @@ impl MonitorService {
         };
         self.monitors.create_monitor(NewMonitor {
             chain,
-            address: address.to_string().to_ascii_lowercase(),
+            address,
             signature: command.signature,
             kind,
             signature_hash,
             param_schema: params.iter().map(param_schema).collect(),
             start_block: command.start_block,
             end_block: command.end_block,
-        }).await.map(Into::into)
+        }).await.context("create monitor").map(Into::into)
     }
 
     pub async fn list(&self, chain_id: Option<i64>) -> anyhow::Result<Vec<MonitorView>> {
         let chain = chain_id.map(Chain::new).transpose().map_err(|error| invalid(error.to_string()))?;
-        Ok(self.monitors.list_monitors(chain).await?.into_iter().map(Into::into).collect())
+        Ok(self.monitors.list_monitors(chain).await.context("list monitors")?.into_iter().map(Into::into).collect())
     }
 
     pub async fn get(&self, id: i64) -> anyhow::Result<MonitorView> {
-        self.monitors.get_monitor(id).await.map(Into::into)
+        validate_monitor_id(id)?;
+        self.monitors.get_monitor(id).await.context("get monitor").map(Into::into)
     }
 
     pub async fn update(&self, id: i64, command: UpdateMonitor) -> anyhow::Result<MonitorView> {
         if command.start_block.is_none() && command.end_block.is_none() && command.enabled.is_none() {
             return Err(invalid("at least one monitor field is required"));
         }
-        let current = self.monitors.get_monitor(id).await?;
+        validate_monitor_id(id)?;
+        let current = self.monitors.get_monitor(id).await.context("get monitor before update")?;
         let start_block = command.start_block.unwrap_or(current.start_block);
         let end_block = command.end_block.unwrap_or(current.end_block);
         validate_range(start_block, end_block)?;
@@ -151,17 +156,19 @@ impl MonitorService {
             completed,
             enabled: command.enabled.unwrap_or(current.enabled),
             reindex,
-        }).await.map(Into::into)
+        }).await.context("update monitor").map(Into::into)
     }
 
     pub async fn delete(&self, id: i64) -> anyhow::Result<()> {
-        self.monitors.delete_monitor(id).await
+        validate_monitor_id(id)?;
+        self.monitors.delete_monitor(id).await.context("delete monitor")
     }
 
     pub async fn results(&self, id: i64, query: ResultQuery) -> anyhow::Result<Vec<MonitorResultView>> {
-        let monitor = self.monitors.get_monitor(id).await?;
+        validate_monitor_id(id)?;
+        let monitor = self.monitors.get_monitor(id).await.context("get monitor for result query")?;
         let query = ResultQuery { limit: query.limit.clamp(1, 200), offset: query.offset.max(0) };
-        Ok(self.results.query_results(&monitor, query).await?.into_iter().map(Into::into).collect())
+        Ok(self.results.query_results(&monitor, query).await.context("query monitor results")?.into_iter().map(Into::into).collect())
     }
 }
 
@@ -175,6 +182,37 @@ fn validate_range(start_block: i64, end_block: Option<i64>) -> anyhow::Result<()
     Ok(())
 }
 
+fn normalize_address(value: &str) -> anyhow::Result<String> {
+    let address: Address = value.parse().map_err(|error| invalid(format!("invalid address: {error}")))?;
+    Ok(address.to_string().to_ascii_lowercase())
+}
+
+fn validate_monitor_id(id: i64) -> anyhow::Result<()> {
+    if id <= 0 {
+        return Err(invalid("monitor id must be positive"));
+    }
+    Ok(())
+}
+
 fn param_schema(param: &AbiParam) -> ParamSchema {
     ParamSchema { name: param.name.clone(), sol_type: param.sol_type(), indexed: param.indexed }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_address, validate_range};
+
+    #[test]
+    fn validates_and_normalizes_addresses() {
+        assert_eq!(normalize_address("0x000000000000000000000000000000000000000A").unwrap(), "0x000000000000000000000000000000000000000a");
+        assert!(normalize_address("not-an-address").is_err());
+    }
+
+    #[test]
+    fn validates_monitor_ranges() {
+        assert!(validate_range(0, None).is_ok());
+        assert!(validate_range(10, Some(10)).is_ok());
+        assert!(validate_range(-1, None).is_err());
+        assert!(validate_range(10, Some(9)).is_err());
+    }
 }

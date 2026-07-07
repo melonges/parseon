@@ -16,33 +16,39 @@ async fn main() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.rust_log)),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.server.rust_log)),
         )
         .try_init();
 
     tracing::info!("starting parseon");
 
     // Database.
-    let pool = parseon_postgres::pool::connect(&config.database_url).await?;
+    let pool = parseon_postgres::pool::connect(&config.database.database_url).await?;
 
     // Cancellation token shared by the supervisor and API.
     let cancel = CancellationToken::new();
     let supervisor_config = parseon_core::supervisor::SupervisorConfig {
-        batch_size: i64::try_from(config.default_batch_size).unwrap_or(i64::MAX),
-        poll_interval: Duration::from_millis(config.poll_interval_ms.max(100)),
-        block_concurrency: config.block_concurrency.max(1),
-        db_write_concurrency: config.db_write_concurrency.max(1),
+        batch_size: i64::try_from(config.indexing.default_batch_size).unwrap_or(i64::MAX),
+        poll_interval: Duration::from_millis(config.indexing.poll_interval_ms.max(100)),
+        block_concurrency: config.indexing.block_concurrency.max(1),
+        db_write_concurrency: config.indexing.db_write_concurrency.max(1),
     };
     let storage = Arc::new(parseon_postgres::PostgresStorage::new(pool.clone()));
     let telemetry = Arc::new(metrics::Metrics::default());
     let source_factory = Arc::new(parseon_rpc::JsonRpcBlockSourceFactory::new(
         parseon_rpc::RpcConfig {
-            request_concurrency: config.rpc_request_concurrency.max(1),
-            batch_size: config.rpc_batch_size.max(1),
+            request_concurrency: config.rpc.request_concurrency.max(1),
+            batch_size: config.rpc.batch_size.max(1),
         },
         telemetry.clone(),
     ));
     let runtime_status = parseon_core::status::RuntimeStatus::default();
+    let chains = parseon_core::services::ChainService::new(storage.clone(), source_factory.clone());
+    let monitors = parseon_core::services::MonitorService::new(
+        storage.clone(),
+        storage.clone(),
+        storage.clone(),
+    );
 
     // Reconciles the database registry and runs one isolated worker per enabled chain.
     let supervisor_handle = tokio::spawn({
@@ -53,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
             storage.clone(),
             source_factory.clone(),
             Arc::new(parseon_memory_cache::MemoryBlockCacheFactory::new(
-                config.block_cache_size,
+                config.indexing.block_cache_size,
             )),
             runtime_status.clone(),
             telemetry.clone(),
@@ -65,14 +71,14 @@ async fn main() -> anyhow::Result<()> {
 
     // HTTP API.
     let state = api::AppState::new(
-        (*storage).clone(),
+        chains,
+        monitors,
         runtime_status,
-        source_factory,
         telemetry,
     );
     let app = api::router(state);
-    let listener = tokio::net::TcpListener::bind(&config.http_listen).await?;
-    tracing::info!(listen = %config.http_listen, "http API listening");
+    let listener = tokio::net::TcpListener::bind(&config.server.http_listen).await?;
+    tracing::info!(listen = %config.server.http_listen, "http API listening");
     let server_handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             tracing::error!("http server: {e}");

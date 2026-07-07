@@ -32,11 +32,11 @@ pub struct RegisteredChain {
 #[async_trait]
 pub trait ChainRepository: Send + Sync {
     async fn list_registered_chains(&self) -> anyhow::Result<Vec<RegisteredChain>>;
-    async fn create_chain(&self, _: NewChain) -> anyhow::Result<ChainRecord> { anyhow::bail!("create_chain is not implemented") }
-    async fn list_chains(&self) -> anyhow::Result<Vec<ChainRecord>> { anyhow::bail!("list_chains is not implemented") }
-    async fn get_chain(&self, _: Chain) -> anyhow::Result<ChainRecord> { anyhow::bail!("get_chain is not implemented") }
-    async fn update_chain(&self, _: Chain, _: ChainUpdate) -> anyhow::Result<ChainRecord> { anyhow::bail!("update_chain is not implemented") }
-    async fn delete_chain(&self, _: Chain) -> anyhow::Result<()> { anyhow::bail!("delete_chain is not implemented") }
+    async fn create_chain(&self, chain: NewChain) -> anyhow::Result<ChainRecord>;
+    async fn list_chains(&self) -> anyhow::Result<Vec<ChainRecord>>;
+    async fn get_chain(&self, chain: Chain) -> anyhow::Result<ChainRecord>;
+    async fn update_chain(&self, chain: Chain, update: ChainUpdate) -> anyhow::Result<ChainRecord>;
+    async fn delete_chain(&self, chain: Chain) -> anyhow::Result<()>;
 }
 
 #[derive(Debug, Clone)]

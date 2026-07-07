@@ -3188,15 +3188,11 @@ dependencies = [
 name = "parseon-server"
 version = "0.6.1"
 dependencies = [
- "alloy",
- "alloy-rpc-types-any",
  "anyhow",
- "async-trait",
  "axum",
  "chrono",
  "clap",
  "dotenvy",
- "futures-util",
  "parseon-core",
  "parseon-memory-cache",
  "parseon-postgres",

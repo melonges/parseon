@@ -211,26 +211,6 @@ impl Supervisor {
     }
 }
 
-pub async fn validate_source(
-    factory: &dyn BlockSourceFactory,
-    rpc_url: &str,
-    expected_chain: Option<Chain>,
-) -> Result<(Chain, i64), &'static str> {
-    let source = factory
-        .connect(rpc_url)
-        .map_err(|_| "RPC endpoint configuration is invalid")?;
-    let probe = worker::probe_source(source.as_ref())
-        .await
-        .map_err(|_| "RPC endpoint validation failed")?;
-    let chain_id = i64::try_from(probe.chain_id)
-        .map_err(|_| "RPC endpoint returned an unsupported chain ID")?;
-    let chain = Chain::new(chain_id).map_err(|_| "RPC endpoint returned an invalid chain ID")?;
-    if expected_chain.is_some_and(|expected| expected != chain) {
-        return Err("RPC endpoint returned a different chain ID");
-    }
-    Ok((chain, probe.finalized_head))
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, RwLock};
@@ -238,7 +218,9 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry};
+    use crate::ports::{
+        BlockCache, BlockCommit, BlockSource, ChainRecord, ChainUpdate, NewChain, NoopTelemetry,
+    };
     use crate::{BlockTransaction, ExecutedTransaction, SourceBlock};
 
     #[derive(Default)]
@@ -249,6 +231,11 @@ mod tests {
         async fn list_registered_chains(&self) -> anyhow::Result<Vec<RegisteredChain>> {
             Ok(self.0.read().unwrap().clone())
         }
+        async fn create_chain(&self, _: NewChain) -> anyhow::Result<ChainRecord> { unreachable!() }
+        async fn list_chains(&self) -> anyhow::Result<Vec<ChainRecord>> { unreachable!() }
+        async fn get_chain(&self, _: Chain) -> anyhow::Result<ChainRecord> { unreachable!() }
+        async fn update_chain(&self, _: Chain, _: ChainUpdate) -> anyhow::Result<ChainRecord> { unreachable!() }
+        async fn delete_chain(&self, _: Chain) -> anyhow::Result<()> { unreachable!() }
     }
 
     struct EmptyStorage;

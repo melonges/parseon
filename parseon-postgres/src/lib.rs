@@ -1,7 +1,7 @@
-pub mod chain_repo;
-pub mod dyn_table;
-pub mod monitor_repo;
+mod chain_repo;
+mod dyn_table;
+mod monitor_repo;
 pub mod pool;
-pub mod storage;
+mod storage;
 
 pub use storage::PostgresStorage;

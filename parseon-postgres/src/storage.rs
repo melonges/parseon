@@ -12,7 +12,6 @@ use parseon_core::ports::{
     NewMonitor, ParamSchema, RegisteredChain, ResultRecord as CoreResultRecord, ResultRepository,
 };
 use parseon_core::{CallTarget, Chain, Cursor, DecodedResult, EventTarget, Target};
-type AppResult<T> = anyhow::Result<T>;
 
 use super::dyn_table::{CallResultInput, EventResultInput, ResultRecord, SearchParams};
 use super::{chain_repo, dyn_table, monitor_repo};
@@ -25,87 +24,6 @@ pub struct PostgresStorage {
 impl PostgresStorage {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
-    }
-
-    pub async fn monitor_count(&self) -> AppResult<usize> {
-        monitor_repo::count(&self.pool).await
-    }
-
-    pub async fn create_monitor(
-        &self,
-        input: &monitor_repo::MonitorInput,
-    ) -> AppResult<monitor_repo::MonitorRecord> {
-        monitor_repo::create(&self.pool, input).await
-    }
-
-    pub async fn list_monitor_records(
-        &self,
-        chain_id: Option<i64>,
-    ) -> AppResult<Vec<monitor_repo::MonitorRecord>> {
-        monitor_repo::list(&self.pool, chain_id).await
-    }
-
-    pub async fn get_monitor(&self, id: i64) -> AppResult<monitor_repo::MonitorRecord> {
-        monitor_repo::get(&self.pool, id).await
-    }
-
-    pub async fn update_monitor(
-        &self,
-        id: i64,
-        start_block: Option<i64>,
-        end_block: Option<Option<i64>>,
-        enabled: Option<bool>,
-    ) -> AppResult<monitor_repo::MonitorRecord> {
-        monitor_repo::update(&self.pool, id, start_block, end_block, enabled).await
-    }
-
-    pub async fn delete_monitor(&self, id: i64) -> AppResult<()> {
-        monitor_repo::delete(&self.pool, id).await
-    }
-
-    pub async fn create_chain(
-        &self,
-        chain: Chain,
-        rpc_url: &str,
-        enabled: bool,
-    ) -> AppResult<chain_repo::ChainRecord> {
-        chain_repo::create(&self.pool, chain, rpc_url, enabled).await
-    }
-
-    pub async fn list_chain_records(&self) -> AppResult<Vec<chain_repo::ChainRecord>> {
-        chain_repo::list(&self.pool).await
-    }
-
-    pub async fn get_chain(&self, chain_id: i64) -> AppResult<chain_repo::ChainRecord> {
-        chain_repo::get(&self.pool, chain_id).await
-    }
-
-    pub async fn update_chain(
-        &self,
-        chain_id: i64,
-        rpc_url: Option<&str>,
-        enabled: Option<bool>,
-    ) -> AppResult<chain_repo::ChainRecord> {
-        chain_repo::update(&self.pool, chain_id, rpc_url, enabled).await
-    }
-
-    pub async fn delete_chain(&self, chain_id: i64) -> AppResult<()> {
-        chain_repo::delete(&self.pool, chain_id).await
-    }
-
-    pub async fn query_results(
-        &self,
-        monitor: &monitor_repo::MonitorRecord,
-        search: &SearchParams,
-    ) -> AppResult<Vec<ResultRecord>> {
-        dyn_table::query_results(
-            &self.pool,
-            monitor.id,
-            &monitor.kind,
-            &monitor.param_schema.0,
-            search,
-        )
-        .await
     }
 
     fn to_monitor(row: &monitor_repo::MonitorRecord) -> anyhow::Result<Monitor> {

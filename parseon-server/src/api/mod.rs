@@ -10,30 +10,30 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::openapi::ApiDoc;
-use parseon_core::ports::{BlockSourceFactory, Telemetry};
+use parseon_core::ports::Telemetry;
+use parseon_core::services::{ChainService, MonitorService};
 use parseon_core::status::RuntimeStatus;
-use parseon_postgres::PostgresStorage;
 
 /// Shared state passed to all handlers.
 #[derive(Clone)]
 pub struct AppState {
-    pub storage: PostgresStorage,
+    pub chains: ChainService,
+    pub monitors: MonitorService,
     pub runtime_status: RuntimeStatus,
-    pub source_factory: std::sync::Arc<dyn BlockSourceFactory>,
     pub telemetry: std::sync::Arc<dyn Telemetry>,
 }
 
 impl AppState {
     pub fn new(
-        storage: PostgresStorage,
+        chains: ChainService,
+        monitors: MonitorService,
         runtime_status: RuntimeStatus,
-        source_factory: std::sync::Arc<dyn BlockSourceFactory>,
         telemetry: std::sync::Arc<dyn Telemetry>,
     ) -> Self {
         Self {
-            storage,
+            chains,
+            monitors,
             runtime_status,
-            source_factory,
             telemetry,
         }
     }
@@ -63,8 +63,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{AppState, router};
+    use parseon_core::services::{ChainService, MonitorService};
     use parseon_core::status::{ChainStatus, RuntimeStatus};
-    use parseon_postgres::PostgresStorage;
     use parseon_rpc::JsonRpcBlockSourceFactory;
 
     fn test_router() -> axum::Router {
@@ -76,10 +76,12 @@ mod tests {
         running.record_success(20_000_000);
         statuses.replace(running);
         statuses.replace(ChainStatus::disabled(8453));
+        let storage = std::sync::Arc::new(parseon_postgres::PostgresStorage::new(pool));
+        let sources = std::sync::Arc::new(JsonRpcBlockSourceFactory::default());
         router(AppState::new(
-            PostgresStorage::new(pool),
+            ChainService::new(storage.clone(), sources),
+            MonitorService::new(storage.clone(), storage.clone(), storage),
             statuses,
-            std::sync::Arc::new(JsonRpcBlockSourceFactory::default()),
             std::sync::Arc::new(crate::metrics::Metrics::default()),
         ))
     }
@@ -111,23 +113,23 @@ mod tests {
             ("/status", "get", &["200"][..]),
             ("/metrics", "get", &["200", "500"][..]),
             ("/chains", "get", &["200", "500"][..]),
-            ("/chains", "post", &["201", "400", "409", "500"][..]),
-            ("/chains/{chain_id}", "get", &["200", "404", "500"][..]),
+            ("/chains", "post", &["201", "400", "500"][..]),
+            ("/chains/{chain_id}", "get", &["200", "500"][..]),
             (
                 "/chains/{chain_id}",
                 "patch",
-                &["200", "400", "404", "500"][..],
+                &["200", "400", "500"][..],
             ),
-            ("/chains/{chain_id}", "delete", &["204", "404", "500"][..]),
+            ("/chains/{chain_id}", "delete", &["204", "500"][..]),
             ("/monitors", "get", &["200", "500"][..]),
-            ("/monitors", "post", &["200", "400", "409", "500"][..]),
-            ("/monitors/{id}", "get", &["200", "404", "500"][..]),
-            ("/monitors/{id}", "patch", &["200", "400", "404", "500"][..]),
-            ("/monitors/{id}", "delete", &["204", "404", "500"][..]),
+            ("/monitors", "post", &["200", "400", "500"][..]),
+            ("/monitors/{id}", "get", &["200", "500"][..]),
+            ("/monitors/{id}", "patch", &["200", "400", "500"][..]),
+            ("/monitors/{id}", "delete", &["204", "500"][..]),
             (
                 "/monitors/{id}/results",
                 "get",
-                &["200", "400", "404", "500"][..],
+                &["200", "400", "500"][..],
             ),
         ];
 

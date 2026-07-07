@@ -6,54 +6,32 @@ use crate::api::dto::ErrorResponse;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("not found: {0}")]
-    NotFound(String),
-
-    #[error("bad request: {0}")]
+    #[error("{0}")]
     BadRequest(String),
-
-    #[error("conflict: {0}")]
-    #[allow(dead_code)]
-    Conflict(String),
-
-    #[error("database error: {0}")]
-    Db(#[from] sqlx::Error),
-
-    #[error("abi error: {0}")]
-    Abi(#[from] parseon_core::abi::AbiError),
-
-    #[error("rpc error: {0}")]
-    Rpc(#[from] alloy::transports::TransportError),
-
-    #[error("internal error: {0}")]
-    Internal(#[from] anyhow::Error),
+    #[error(transparent)]
+    Internal(anyhow::Error),
 }
 
-impl AppError {
-    fn status(&self) -> StatusCode {
-        match self {
-            AppError::NotFound(_) => StatusCode::NOT_FOUND,
-            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::Db(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
-            AppError::Db(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-                StatusCode::CONFLICT
-            }
-            AppError::Db(_) | AppError::Rpc(_) | AppError::Internal(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-            AppError::Abi(_) => StatusCode::BAD_REQUEST,
+impl From<anyhow::Error> for AppError {
+    fn from(error: anyhow::Error) -> Self {
+        if parseon_core::services::is_invalid_command(&error) {
+            Self::BadRequest(error.to_string())
+        } else {
+            Self::Internal(error)
         }
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let status = self.status();
-        let body = Json(ErrorResponse {
-            error: self.to_string(),
-        });
-        (status, body).into_response()
+        let (status, error) = match self {
+            Self::BadRequest(error) => (StatusCode::BAD_REQUEST, error),
+            Self::Internal(error) => {
+                tracing::error!(error = %error, "request failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".into())
+            }
+        };
+        (status, Json(ErrorResponse { error })).into_response()
     }
 }
 

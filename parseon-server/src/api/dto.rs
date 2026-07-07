@@ -3,9 +3,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use parseon_core::status::{ChainStatusSnapshot, WorkerState};
-use parseon_postgres::chain_repo::ChainRecord;
-use parseon_postgres::dyn_table::ResultRecord;
-use parseon_postgres::monitor_repo::{MonitorRecord, StoredParam};
+use parseon_core::ports::ParamSchema;
+use parseon_core::views::{ChainView, MonitorResultView, MonitorView};
 
 // ----- Chains -----
 
@@ -34,8 +33,8 @@ pub struct ChainRow {
     pub updated_at: DateTime<Utc>,
 }
 
-impl From<ChainRecord> for ChainRow {
-    fn from(record: ChainRecord) -> Self {
+impl From<ChainView> for ChainRow {
+    fn from(record: ChainView) -> Self {
         Self {
             chain_id: record.chain_id,
             enabled: record.enabled,
@@ -74,8 +73,8 @@ pub struct AbiParamSchema {
     pub indexed: bool,
 }
 
-impl From<StoredParam> for AbiParamSchema {
-    fn from(param: StoredParam) -> Self {
+impl From<ParamSchema> for AbiParamSchema {
+    fn from(param: ParamSchema) -> Self {
         Self {
             name: param.name,
             sol_type: param.sol_type,
@@ -105,17 +104,17 @@ pub struct MonitorRow {
     pub updated_at: DateTime<Utc>,
 }
 
-impl From<MonitorRecord> for MonitorRow {
-    fn from(record: MonitorRecord) -> Self {
+impl From<MonitorView> for MonitorRow {
+    fn from(record: MonitorView) -> Self {
         Self {
             id: record.id,
             chain_id: record.chain_id,
             address: record.address,
             signature: record.signature,
-            kind: record.kind.clone(),
-            selector: (record.kind == "call").then(|| record.signature_hash.clone()),
-            topic0: (record.kind == "event").then(|| record.signature_hash.clone()),
-            param_schema: record.param_schema.0.into_iter().map(Into::into).collect(),
+            kind: record.kind.as_str().into(),
+            selector: record.selector,
+            topic0: record.topic0,
+            param_schema: record.param_schema.into_iter().map(Into::into).collect(),
             start_block: record.start_block,
             end_block: record.end_block,
             cursor: record.cursor,
@@ -210,19 +209,19 @@ pub enum MonitorResult {
     Event(EventMonitorResult),
 }
 
-impl From<ResultRecord> for MonitorResult {
-    fn from(record: ResultRecord) -> Self {
+impl From<MonitorResultView> for MonitorResult {
+    fn from(record: MonitorResultView) -> Self {
         match record {
-            ResultRecord::Call(record) => Self::Call(CallMonitorResult {
-                tx_hash: record.tx_hash,
-                block_number: record.block_number,
-                params: record.params,
+            MonitorResultView::Call { tx_hash, block_number, params } => Self::Call(CallMonitorResult {
+                tx_hash,
+                block_number,
+                params,
             }),
-            ResultRecord::Event(record) => Self::Event(EventMonitorResult {
-                tx_hash: record.tx_hash,
-                log_index: record.log_index,
-                block_number: record.block_number,
-                params: record.params,
+            MonitorResultView::Event { tx_hash, log_index, block_number, params } => Self::Event(EventMonitorResult {
+                tx_hash,
+                log_index,
+                block_number,
+                params,
             }),
         }
     }
@@ -239,7 +238,6 @@ fn default_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parseon_postgres::dyn_table::{CallResultRecord, EventResultRecord};
 
     #[test]
     fn chain_rpc_url_is_write_only() {
@@ -262,11 +260,11 @@ mod tests {
 
     #[test]
     fn serializes_minimal_call_result() {
-        let result = MonitorResult::from(ResultRecord::Call(CallResultRecord {
+        let result = MonitorResult::from(MonitorResultView::Call {
             tx_hash: "0xcall".into(),
             block_number: 10,
             params: serde_json::json!({"value": "42"}),
-        }));
+        });
         assert_eq!(
             serde_json::to_value(result).unwrap(),
             serde_json::json!({
@@ -280,12 +278,12 @@ mod tests {
 
     #[test]
     fn serializes_minimal_event_result() {
-        let result = MonitorResult::from(ResultRecord::Event(EventResultRecord {
+        let result = MonitorResult::from(MonitorResultView::Event {
             tx_hash: "0xevent".into(),
             log_index: 3,
             block_number: 11,
             params: serde_json::json!({"owner": "0x1"}),
-        }));
+        });
         assert_eq!(
             serde_json::to_value(result).unwrap(),
             serde_json::json!({
