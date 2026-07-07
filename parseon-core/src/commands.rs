@@ -1,12 +1,14 @@
+use crate::Url;
+
 #[derive(Debug, Clone)]
 pub struct CreateChain {
-    pub rpc_url: String,
+    pub rpc_url: Url,
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct UpdateChain {
-    pub rpc_url: Option<String>,
+    pub rpc_url: Option<Url>,
     pub enabled: Option<bool>,
 }
 

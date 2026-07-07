@@ -11,7 +11,7 @@ use crate::ports::{
     MonitorUpdate, NewChain, NewMonitor, ParamSchema, ResultRepository,
 };
 use crate::views::{ChainView, MonitorResultView, MonitorView};
-use crate::{Chain, worker};
+use crate::{Chain, Url, worker};
 
 #[derive(Debug)]
 pub struct InvalidCommand(String);
@@ -43,10 +43,7 @@ impl ChainService {
         Self { repository, sources }
     }
 
-    async fn validate_source(&self, rpc_url: &str, expected: Option<Chain>) -> anyhow::Result<Chain> {
-        if rpc_url.trim().is_empty() {
-            return Err(invalid("rpc_url must not be empty"));
-        }
+    async fn validate_source(&self, rpc_url: &Url, expected: Option<Chain>) -> anyhow::Result<Chain> {
         let source = self.sources.connect(rpc_url).map_err(|_| invalid("RPC endpoint configuration is invalid"))?;
         let probe = worker::probe_source(source.as_ref()).await.map_err(|_| invalid("RPC endpoint validation failed"))?;
         let chain_id = i64::try_from(probe.chain_id).map_err(|_| invalid("RPC endpoint returned an unsupported chain ID"))?;
@@ -77,7 +74,7 @@ impl ChainService {
         }
         let chain = Chain::new(chain_id).map_err(|error| invalid(error.to_string()))?;
         self.repository.get_chain(chain).await.context("get chain before update")?;
-        if let Some(url) = command.rpc_url.as_deref() {
+        if let Some(url) = command.rpc_url.as_ref() {
             self.validate_source(url, Some(chain)).await?;
         }
         self.repository.update_chain(chain, ChainUpdate { rpc_url: command.rpc_url, enabled: command.enabled }).await.context("update chain").map(Into::into)

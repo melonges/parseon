@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::monitor::Monitor;
-use super::{BlockTransaction, Chain, DecodedResult, ExecutedTransaction, SourceBlock, SourceLog};
+use super::{BlockTransaction, Chain, DecodedResult, ExecutedTransaction, SourceBlock, SourceLog, Url};
 use alloy::primitives::{Address, B256};
 
 pub struct BlockCommit {
@@ -25,7 +25,7 @@ pub trait IndexStorage: Send + Sync {
 #[derive(Clone, PartialEq, Eq)]
 pub struct RegisteredChain {
     pub chain: Chain,
-    pub rpc_url: String,
+    pub rpc_url: Url,
     pub enabled: bool,
 }
 
@@ -42,20 +42,20 @@ pub trait ChainRepository: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct NewChain {
     pub chain: Chain,
-    pub rpc_url: String,
+    pub rpc_url: Url,
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ChainUpdate {
-    pub rpc_url: Option<String>,
+    pub rpc_url: Option<Url>,
     pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ChainRecord {
     pub chain: Chain,
-    pub rpc_url: String,
+    pub rpc_url: Url,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -151,7 +151,7 @@ pub trait ResultRepository: Send + Sync {
 }
 
 pub trait BlockSourceFactory: Send + Sync {
-    fn connect(&self, rpc_url: &str) -> anyhow::Result<Arc<dyn BlockSource>>;
+    fn connect(&self, rpc_url: &Url) -> anyhow::Result<Arc<dyn BlockSource>>;
 }
 
 #[async_trait]

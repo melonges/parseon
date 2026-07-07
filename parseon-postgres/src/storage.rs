@@ -65,9 +65,10 @@ impl PostgresStorage {
     }
 
     fn chain_record(row: chain_repo::ChainRecord) -> anyhow::Result<CoreChainRecord> {
+        let rpc_url = row.rpc_url()?;
         Ok(CoreChainRecord {
             chain: Chain::new(row.chain_id)?,
-            rpc_url: row.rpc_url,
+            rpc_url,
             enabled: row.enabled,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -223,7 +224,7 @@ impl ChainRepository for PostgresStorage {
     }
 
     async fn update_chain(&self, chain: Chain, update: ChainUpdate) -> anyhow::Result<CoreChainRecord> {
-        Self::chain_record(chain_repo::update(&self.pool, chain.id, update.rpc_url.as_deref(), update.enabled).await?)
+        Self::chain_record(chain_repo::update(&self.pool, chain.id, update.rpc_url.as_ref(), update.enabled).await?)
     }
 
     async fn delete_chain(&self, chain: Chain) -> anyhow::Result<()> {

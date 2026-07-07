@@ -173,6 +173,7 @@ mod tests {
             schemas["CreateChain"]["properties"]["rpc_url"]["writeOnly"],
             true
         );
+        assert_eq!(schemas["CreateChain"]["properties"]["rpc_url"]["format"], "uri");
         assert!(
             schemas["MonitorRow"]["properties"]
                 .get("chain_id")

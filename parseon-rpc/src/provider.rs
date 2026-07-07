@@ -15,7 +15,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use anyhow::Context;
 
 use parseon_core::ports::{BlockSource, BlockSourceFactory, InFlightGuard, NoopTelemetry, Telemetry};
-use parseon_core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
+use parseon_core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog, Url};
 use crate::fetch;
 
 pub type HttpProvider = RootProvider<AnyNetwork>;
@@ -69,7 +69,7 @@ impl JsonRpcBlockSourceFactory {
 }
 
 impl BlockSourceFactory for JsonRpcBlockSourceFactory {
-    fn connect(&self, rpc_url: &str) -> anyhow::Result<Arc<dyn BlockSource>> {
+    fn connect(&self, rpc_url: &Url) -> anyhow::Result<Arc<dyn BlockSource>> {
         Ok(Arc::new(JsonRpcBlockSource::connect(
             rpc_url,
             self.config,
@@ -80,7 +80,7 @@ impl BlockSourceFactory for JsonRpcBlockSourceFactory {
 
 impl JsonRpcBlockSource {
     pub fn connect(
-        rpc_url: &str,
+        rpc_url: &Url,
         config: RpcConfig,
         telemetry: Arc<dyn Telemetry>,
     ) -> anyhow::Result<Self> {
@@ -314,13 +314,12 @@ fn unsupported_batch(error: &anyhow::Error) -> bool {
             || message.contains("invalid request"))
 }
 
-pub fn build(rpc_url: &str) -> anyhow::Result<HttpProvider> {
-    let url = rpc_url.parse().context("invalid rpc_url")?;
+pub fn build(rpc_url: &Url) -> anyhow::Result<HttpProvider> {
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .context("build HTTP client")?;
-    let rpc_client = alloy::rpc::client::ClientBuilder::default().http_with_client(client, url);
+    let rpc_client = alloy::rpc::client::ClientBuilder::default().http_with_client(client, rpc_url.clone());
     Ok(RootProvider::<AnyNetwork>::new(rpc_client))
 }
 

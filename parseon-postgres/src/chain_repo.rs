@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
 
-use parseon_core::Chain;
+use parseon_core::{Chain, Url};
 use parseon_core::ports::RegisteredChain;
 use crate::dyn_table;
 type AppResult<T> = anyhow::Result<T>;
@@ -16,10 +16,14 @@ pub struct ChainRecord {
 }
 
 impl ChainRecord {
+    pub fn rpc_url(&self) -> anyhow::Result<Url> {
+        Ok(self.rpc_url.parse()?)
+    }
+
     pub fn registered(&self) -> anyhow::Result<RegisteredChain> {
         Ok(RegisteredChain {
             chain: Chain::new(self.chain_id)?,
-            rpc_url: self.rpc_url.clone(),
+            rpc_url: self.rpc_url()?,
             enabled: self.enabled,
         })
     }
@@ -28,7 +32,7 @@ impl ChainRecord {
 pub async fn create(
     pool: &PgPool,
     chain: Chain,
-    rpc_url: &str,
+    rpc_url: &Url,
     enabled: bool,
 ) -> AppResult<ChainRecord> {
     Ok(sqlx::query_as::<_, ChainRecord>(
@@ -37,7 +41,7 @@ pub async fn create(
            RETURNING *"#,
     )
     .bind(chain.id)
-    .bind(rpc_url)
+    .bind(rpc_url.as_str())
     .bind(enabled)
     .fetch_one(pool)
     .await?)
@@ -62,7 +66,7 @@ pub async fn get(pool: &PgPool, chain_id: i64) -> AppResult<ChainRecord> {
 pub async fn update(
     pool: &PgPool,
     chain_id: i64,
-    rpc_url: Option<&str>,
+    rpc_url: Option<&Url>,
     enabled: Option<bool>,
 ) -> AppResult<ChainRecord> {
     sqlx::query_as::<_, ChainRecord>(
@@ -73,7 +77,7 @@ pub async fn update(
            WHERE chain_id = $3
            RETURNING *"#,
     )
-    .bind(rpc_url)
+    .bind(rpc_url.map(Url::as_str))
     .bind(enabled)
     .bind(chain_id)
     .fetch_optional(pool)

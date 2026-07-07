@@ -5,6 +5,7 @@ use utoipa::ToSchema;
 use parseon_core::status::{ChainStatusSnapshot, WorkerState};
 use parseon_core::ports::ParamSchema;
 use parseon_core::views::{ChainView, MonitorResultView, MonitorView};
+use parseon_core::Url;
 
 // ----- Chains -----
 
@@ -12,7 +13,7 @@ use parseon_core::views::{ChainView, MonitorResultView, MonitorView};
 #[serde(deny_unknown_fields)]
 pub struct CreateChain {
     #[schema(write_only)]
-    pub rpc_url: String,
+    pub rpc_url: Url,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -21,7 +22,7 @@ pub struct CreateChain {
 #[serde(deny_unknown_fields)]
 pub struct UpdateChain {
     #[schema(write_only)]
-    pub rpc_url: Option<String>,
+    pub rpc_url: Option<Url>,
     pub enabled: Option<bool>,
 }
 
@@ -246,6 +247,9 @@ mod tests {
         }))
         .unwrap();
         assert!(create.enabled);
+        assert!(serde_json::from_value::<CreateChain>(serde_json::json!({
+            "rpc_url": "not a URL"
+        })).is_err());
 
         let row = ChainRow {
             chain_id: 1,

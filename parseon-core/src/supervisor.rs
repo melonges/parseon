@@ -6,7 +6,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::Chain;
+use super::Url;
 use super::ports::{
     BlockCacheFactory, BlockSource, BlockSourceFactory, ChainRepository, RegisteredChain, IndexStorage,
     Telemetry,
@@ -23,7 +23,7 @@ pub struct SupervisorConfig {
 }
 
 struct WorkerRuntime {
-    rpc_url: String,
+    rpc_url: Url,
     cancel: CancellationToken,
     handle: JoinHandle<()>,
 }
@@ -221,7 +221,7 @@ mod tests {
     use crate::ports::{
         BlockCache, BlockCommit, BlockSource, ChainRecord, ChainUpdate, NewChain, NoopTelemetry,
     };
-    use crate::{BlockTransaction, ExecutedTransaction, SourceBlock};
+    use crate::{BlockTransaction, Chain, ExecutedTransaction, SourceBlock};
 
     #[derive(Default)]
     struct FakeRegistry(RwLock<Vec<RegisteredChain>>);
@@ -310,16 +310,16 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct FakeFactory(Mutex<HashMap<String, (u64, bool)>>);
+    struct FakeFactory(Mutex<HashMap<Url, (u64, bool)>>);
 
     impl FakeFactory {
         fn set(&self, url: &str, chain_id: u64, fail: bool) {
-            self.0.lock().unwrap().insert(url.into(), (chain_id, fail));
+            self.0.lock().unwrap().insert(url.parse().unwrap(), (chain_id, fail));
         }
     }
 
     impl BlockSourceFactory for FakeFactory {
-        fn connect(&self, rpc_url: &str) -> anyhow::Result<Arc<dyn BlockSource>> {
+        fn connect(&self, rpc_url: &Url) -> anyhow::Result<Arc<dyn BlockSource>> {
             let (chain_id, fail) = self
                 .0
                 .lock()
@@ -334,7 +334,7 @@ mod tests {
     fn registered(chain_id: i64, url: &str, enabled: bool) -> RegisteredChain {
         RegisteredChain {
             chain: Chain::new(chain_id).unwrap(),
-            rpc_url: url.into(),
+            rpc_url: url.parse().unwrap(),
             enabled,
         }
     }
@@ -364,16 +364,16 @@ mod tests {
     async fn reconciles_start_disable_reenable_replace_and_delete() {
         let registry = Arc::new(FakeRegistry::default());
         let factory = Arc::new(FakeFactory::default());
-        factory.set("first", 1, false);
-        factory.set("replacement", 1, false);
+        factory.set("https://first.example", 1, false);
+        factory.set("https://replacement.example", 1, false);
         let statuses = RuntimeStatus::default();
         let mut supervisor = supervisor(registry.clone(), factory, statuses.clone());
 
-        *registry.0.write().unwrap() = vec![registered(1, "first", true)];
+        *registry.0.write().unwrap() = vec![registered(1, "https://first.example", true)];
         supervisor.reconcile().await.unwrap();
         assert!(supervisor.has_worker(1));
 
-        *registry.0.write().unwrap() = vec![registered(1, "first", false)];
+        *registry.0.write().unwrap() = vec![registered(1, "https://first.example", false)];
         supervisor.reconcile().await.unwrap();
         assert!(!supervisor.has_worker(1));
         assert_eq!(
@@ -381,7 +381,7 @@ mod tests {
             crate::status::WorkerState::Disabled
         );
 
-        *registry.0.write().unwrap() = vec![registered(1, "replacement", true)];
+        *registry.0.write().unwrap() = vec![registered(1, "https://replacement.example", true)];
         supervisor.reconcile().await.unwrap();
         assert!(supervisor.has_worker(1));
 
@@ -395,12 +395,12 @@ mod tests {
     async fn isolates_failed_chains_and_retries() {
         let registry = Arc::new(FakeRegistry::default());
         *registry.0.write().unwrap() = vec![
-            registered(1, "healthy", true),
-            registered(2, "failing", true),
+            registered(1, "https://healthy.example", true),
+            registered(2, "https://failing.example", true),
         ];
         let factory = Arc::new(FakeFactory::default());
-        factory.set("healthy", 1, false);
-        factory.set("failing", 2, true);
+        factory.set("https://healthy.example", 1, false);
+        factory.set("https://failing.example", 2, true);
         let statuses = RuntimeStatus::default();
         let mut supervisor = supervisor(registry, factory.clone(), statuses.clone());
 
@@ -412,7 +412,7 @@ mod tests {
             crate::status::WorkerState::Degraded
         );
 
-        factory.set("failing", 2, false);
+        factory.set("https://failing.example", 2, false);
         supervisor.reconcile().await.unwrap();
         assert!(supervisor.has_worker(2));
     }
@@ -421,16 +421,16 @@ mod tests {
     async fn rejects_replacement_for_another_chain_without_stopping_worker() {
         let registry = Arc::new(FakeRegistry::default());
         let factory = Arc::new(FakeFactory::default());
-        factory.set("first", 1, false);
-        factory.set("wrong", 2, false);
+        factory.set("https://first.example", 1, false);
+        factory.set("https://wrong.example", 2, false);
         let statuses = RuntimeStatus::default();
         let mut supervisor = supervisor(registry.clone(), factory, statuses);
 
-        *registry.0.write().unwrap() = vec![registered(1, "first", true)];
+        *registry.0.write().unwrap() = vec![registered(1, "https://first.example", true)];
         supervisor.reconcile().await.unwrap();
-        *registry.0.write().unwrap() = vec![registered(1, "wrong", true)];
+        *registry.0.write().unwrap() = vec![registered(1, "https://wrong.example", true)];
         supervisor.reconcile().await.unwrap();
         assert!(supervisor.has_worker(1));
-        assert_eq!(supervisor.workers[&1].rpc_url, "first");
+        assert_eq!(supervisor.workers[&1].rpc_url.as_str(), "https://first.example/");
     }
 }

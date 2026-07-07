@@ -1,4 +1,5 @@
 use clap::{Args, Parser};
+use parseon_core::Url;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "parseon", about = "Parseon — EVM indexer with runtime ABI decoding")]
@@ -17,7 +18,7 @@ pub struct Config {
 pub struct DatabaseConfig {
     /// PostgreSQL connection string
     #[arg(long, env = "DATABASE_URL")]
-    pub database_url: String,
+    pub database_url: Url,
 }
 
 #[derive(Debug, Clone, Args)]

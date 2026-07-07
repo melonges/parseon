@@ -16,6 +16,7 @@ tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "ti
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 thiserror = "2.0"
+url.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["async_tokio"] }
