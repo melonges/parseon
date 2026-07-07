@@ -1,5 +1,4 @@
 mod api;
-mod cache;
 mod config;
 mod db;
 mod error;
@@ -55,7 +54,9 @@ async fn main() -> anyhow::Result<()> {
             storage.clone(),
             storage.clone(),
             source_factory.clone(),
-            Arc::new(cache::MemoryBlockCacheFactory::new(config.block_cache_size)),
+            Arc::new(parseon_memory_cache::MemoryBlockCacheFactory::new(
+                config.block_cache_size,
+            )),
             runtime_status.clone(),
             telemetry.clone(),
         );

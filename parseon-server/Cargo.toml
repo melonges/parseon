@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 parseon-core = { path = "../parseon-core" }
+parseon-memory-cache = { path = "../parseon-memory-cache" }
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 alloy = { version = "2.1", features = ["rpc-types-eth", "provider-http", "providers", "dyn-abi", "sol-types", "essentials", "reqwest"] }
@@ -30,7 +31,6 @@ anyhow = "1.0"
 async-trait = "0.1"
 clap = { version = "4.6", features = ["derive", "env"] }
 dotenvy = "0.15"
-lru = "0.18"
 futures-util = "0.3"
 prometheus-client = "0.23"
 

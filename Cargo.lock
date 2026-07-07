@@ -3147,6 +3147,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "parseon-memory-cache"
+version = "0.6.1"
+dependencies = [
+ "lru 0.18.0",
+ "parseon-core",
+]
+
+[[package]]
 name = "parseon-server"
 version = "0.6.1"
 dependencies = [
@@ -3159,8 +3167,8 @@ dependencies = [
  "clap",
  "dotenvy",
  "futures-util",
- "lru 0.18.0",
  "parseon-core",
+ "parseon-memory-cache",
  "prometheus-client",
  "serde",
  "serde_json",
