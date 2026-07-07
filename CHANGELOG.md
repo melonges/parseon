@@ -2,6 +2,12 @@
 
 All notable changes to Parseon are documented in this file.
 
+## 0.6.3 - 2026-07-07
+
+### Changed
+
+- Replace the mutex-protected LRU block cache with Moka's concurrent cache using its default admission policy and predicate-based cursor eviction.
+
 ## 0.6.2 - 2026-07-07
 
 ### Added

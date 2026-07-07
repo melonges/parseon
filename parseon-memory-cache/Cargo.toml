@@ -6,4 +6,4 @@ license.workspace = true
 
 [dependencies]
 parseon-core = { path = "../parseon-core" }
-lru = "0.18"
+moka = { version = "0.12", default-features = false, features = ["sync"] }
