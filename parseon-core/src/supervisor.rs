@@ -238,8 +238,8 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::core::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry};
-    use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock};
+    use crate::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry};
+    use crate::{BlockTransaction, ExecutedTransaction, SourceBlock};
 
     #[derive(Default)]
     struct FakeRegistry(RwLock<Vec<RegisteredChain>>);
@@ -276,7 +276,7 @@ mod tests {
         async fn load_monitors(
             &self,
             _chain: Chain,
-        ) -> anyhow::Result<Vec<super::super::monitor::Monitor>> {
+        ) -> anyhow::Result<Vec<crate::monitor::Monitor>> {
             Ok(Vec::new())
         }
 
@@ -391,7 +391,7 @@ mod tests {
         assert!(!supervisor.has_worker(1));
         assert_eq!(
             statuses.snapshot()[0].worker_state,
-            super::super::status::WorkerState::Disabled
+            crate::status::WorkerState::Disabled
         );
 
         *registry.0.write().unwrap() = vec![registered(1, "replacement", true)];
@@ -422,7 +422,7 @@ mod tests {
         assert!(!supervisor.has_worker(2));
         assert_eq!(
             statuses.snapshot()[1].worker_state,
-            super::super::status::WorkerState::Degraded
+            crate::status::WorkerState::Degraded
         );
 
         factory.set("failing", 2, false);

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 use sqlx::{FromRow, PgConnection, PgPool};
 
-use crate::core::abi::{AbiParam, TargetSpec, parse_abi_type, parse_target_signature};
+use parseon_core::abi::{AbiParam, TargetSpec, parse_abi_type, parse_target_signature};
 use crate::db::dyn_table;
 use crate::error::{AppError, AppResult};
 
@@ -26,7 +26,7 @@ impl StoredParam {
         }
     }
 
-    pub fn to_abi(&self) -> Result<AbiParam, crate::core::abi::AbiError> {
+    pub fn to_abi(&self) -> Result<AbiParam, parseon_core::abi::AbiError> {
         Ok(
             AbiParam::new(self.name.clone(), parse_abi_type(&self.sol_type)?)?
                 .with_indexed(self.indexed),

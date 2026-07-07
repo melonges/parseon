@@ -3129,7 +3129,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "parseon"
+name = "parseon-core"
+version = "0.6.1"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "criterion",
+ "futures-util",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "parseon-server"
 version = "0.6.1"
 dependencies = [
  "alloy",
@@ -3139,10 +3155,10 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
- "criterion",
  "dotenvy",
  "futures-util",
  "lru 0.18.0",
+ "parseon-core",
  "prometheus-client",
  "serde",
  "serde_json",

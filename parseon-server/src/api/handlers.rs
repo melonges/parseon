@@ -8,7 +8,7 @@ use crate::api::dto::{
     ChainRow, CreateChain, CreateMonitor, ErrorResponse, Health, MonitorResult, MonitorRow,
     ResultsQuery, Status, UpdateChain, UpdateMonitor,
 };
-use crate::core::Chain;
+use parseon_core::Chain;
 use crate::db::dyn_table::SearchParams;
 use crate::db::monitor_repo::MonitorInput;
 use crate::error::{AppError, AppResult};
@@ -95,7 +95,7 @@ pub async fn create_chain(
     body: Result<Json<CreateChain>, JsonRejection>,
 ) -> AppResult<(axum::http::StatusCode, Json<ChainRow>)> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let (chain, _) = crate::core::supervisor::validate_source(
+    let (chain, _) = parseon_core::supervisor::validate_source(
         state.source_factory.as_ref(),
         &body.rpc_url,
         None,
@@ -168,7 +168,7 @@ pub async fn update_chain(
     state.storage.get_chain(chain_id).await?;
     if let Some(rpc_url) = body.rpc_url.as_deref() {
         let expected = Chain::new(chain_id).map_err(AppError::Internal)?;
-        crate::core::supervisor::validate_source(
+        parseon_core::supervisor::validate_source(
             state.source_factory.as_ref(),
             rpc_url,
             Some(expected),

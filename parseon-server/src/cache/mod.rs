@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use lru::LruCache;
 
-use crate::core::ports::{BlockCache, BlockCacheFactory};
-use crate::core::{Chain, SourceBlock};
+use parseon_core::ports::{BlockCache, BlockCacheFactory};
+use parseon_core::{Chain, SourceBlock};
 
 pub struct MemoryBlockCache {
     inner: Mutex<LruCache<(i64, i64), SourceBlock>>,

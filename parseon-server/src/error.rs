@@ -20,7 +20,7 @@ pub enum AppError {
     Db(#[from] sqlx::Error),
 
     #[error("abi error: {0}")]
-    Abi(#[from] crate::core::abi::AbiError),
+    Abi(#[from] parseon_core::abi::AbiError),
 
     #[error("rpc error: {0}")]
     Rpc(#[from] alloy::transports::TransportError),

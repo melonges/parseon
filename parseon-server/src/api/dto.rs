@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::core::status::{ChainStatusSnapshot, WorkerState};
+use parseon_core::status::{ChainStatusSnapshot, WorkerState};
 use crate::db::chain_repo::ChainRecord;
 use crate::db::dyn_table::ResultRecord;
 use crate::db::monitor_repo::{MonitorRecord, StoredParam};

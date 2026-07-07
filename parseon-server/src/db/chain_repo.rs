@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
 
-use crate::core::Chain;
-use crate::core::ports::RegisteredChain;
+use parseon_core::Chain;
+use parseon_core::ports::RegisteredChain;
 use crate::db::dyn_table;
 use crate::error::{AppError, AppResult};
 

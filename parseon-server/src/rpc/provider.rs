@@ -13,8 +13,8 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::core::ports::{BlockSource, BlockSourceFactory, InFlightGuard, NoopTelemetry, Telemetry};
-use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
+use parseon_core::ports::{BlockSource, BlockSourceFactory, InFlightGuard, NoopTelemetry, Telemetry};
+use parseon_core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
 use crate::error::{AppError, AppResult};
 use crate::rpc::fetch;
 

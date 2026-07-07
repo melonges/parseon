@@ -110,10 +110,10 @@ mod tests {
     use alloy::sol_types::SolCall;
 
     use super::*;
-    use crate::core::abi::AbiParam;
-    use crate::core::filter::Filter;
-    use crate::core::monitor::Monitor;
-    use crate::core::{BlockTransaction, CallTarget, Cursor, DecodedValue, Target};
+    use crate::abi::AbiParam;
+    use crate::filter::Filter;
+    use crate::monitor::Monitor;
+    use crate::{BlockTransaction, CallTarget, Cursor, DecodedValue, Target};
 
     alloy::sol! {
         function transfer(address to, uint256 value) external returns (bool);
@@ -133,7 +133,7 @@ mod tests {
         };
         let monitor = Monitor {
             id: 9,
-            chain: crate::core::Chain::new(1).unwrap(),
+            chain: crate::Chain::new(1).unwrap(),
             target: Target::Call(CallTarget {
                 address: contract,
                 selector: transferCall::SELECTOR,

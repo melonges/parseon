@@ -5,7 +5,7 @@ use alloy::network::{BlockResponse, ReceiptResponse, TransactionResponse};
 use alloy::providers::Provider;
 use alloy_rpc_types_any::AnyTransactionReceipt;
 
-use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
+use parseon_core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
 use crate::error::{AppError, AppResult};
 use crate::rpc::provider::HttpProvider;
 use alloy::primitives::{Address, B256};

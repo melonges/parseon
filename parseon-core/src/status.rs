@@ -135,11 +135,8 @@ impl RuntimeStatus {
 fn safe_error_message(error: &anyhow::Error) -> String {
     if error.chain().any(|cause| {
         cause
-            .downcast_ref::<crate::error::AppError>()
-            .is_some_and(|error| matches!(error, crate::error::AppError::Rpc(_)))
-            || cause
-                .downcast_ref::<alloy::transports::TransportError>()
-                .is_some()
+            .downcast_ref::<alloy::transports::TransportError>()
+            .is_some()
     }) {
         "RPC request failed".to_string()
     } else {

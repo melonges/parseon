@@ -310,10 +310,10 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::core::filter::Filter;
-    use crate::core::monitor::Monitor;
-    use crate::core::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry, Storage};
-    use crate::core::{
+    use crate::filter::Filter;
+    use crate::monitor::Monitor;
+    use crate::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry, Storage};
+    use crate::{
         BlockTransaction, CallTarget, Cursor, ExecutedTransaction, SourceBlock, Target,
     };
 
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(snapshot.finalized_head, Some(10));
         assert_eq!(
             snapshot.worker_state,
-            super::super::status::WorkerState::Degraded
+            crate::status::WorkerState::Degraded
         );
         assert!(snapshot.last_error.unwrap().contains("invalid argument"));
     }

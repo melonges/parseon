@@ -1,0 +1,38 @@
+[package]
+name = "parseon-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "parseon"
+path = "src/main.rs"
+
+[dependencies]
+parseon-core = { path = "../parseon-core" }
+tokio = { version = "1.52", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+alloy = { version = "2.1", features = ["rpc-types-eth", "provider-http", "providers", "dyn-abi", "sol-types", "essentials", "reqwest"] }
+alloy-rpc-types-any = "2.1"
+sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "tls-rustls", "macros", "migrate", "chrono", "json", "bigdecimal"] }
+chrono = { version = "0.4", features = ["serde"] }
+axum = "0.8"
+tower-http = { version = "0.7", features = ["cors", "trace"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+utoipa = { version = "5.5", features = ["chrono"] }
+utoipa-axum = "0.2"
+utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2.0"
+anyhow = "1.0"
+async-trait = "0.1"
+clap = { version = "4.6", features = ["derive", "env"] }
+dotenvy = "0.15"
+lru = "0.18"
+futures-util = "0.3"
+prometheus-client = "0.23"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

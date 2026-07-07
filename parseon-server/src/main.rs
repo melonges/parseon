@@ -1,7 +1,6 @@
 mod api;
 mod cache;
 mod config;
-mod core;
 mod db;
 mod error;
 mod metrics;
@@ -31,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Cancellation token shared by the supervisor and API.
     let cancel = CancellationToken::new();
-    let supervisor_config = core::supervisor::SupervisorConfig {
+    let supervisor_config = parseon_core::supervisor::SupervisorConfig {
         batch_size: i64::try_from(config.default_batch_size).unwrap_or(i64::MAX),
         poll_interval: Duration::from_millis(config.poll_interval_ms.max(100)),
         block_concurrency: config.block_concurrency.max(1),
@@ -46,12 +45,12 @@ async fn main() -> anyhow::Result<()> {
         },
         telemetry.clone(),
     ));
-    let runtime_status = core::status::RuntimeStatus::default();
+    let runtime_status = parseon_core::status::RuntimeStatus::default();
 
     // Reconciles the database registry and runs one isolated worker per enabled chain.
     let supervisor_handle = tokio::spawn({
         let cancel = cancel.clone();
-        let supervisor = core::supervisor::Supervisor::new(
+        let supervisor = parseon_core::supervisor::Supervisor::new(
             supervisor_config,
             storage.clone(),
             storage.clone(),

@@ -1,10 +1,8 @@
-#[path = "../src/core/pipeline.rs"]
-mod pipeline;
-
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use futures_util::StreamExt;
+use parseon_core::pipeline;
 
 async fn run_pipeline(concurrency: usize) {
     let preparations = (0..20).map(|_| async {

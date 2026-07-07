@@ -43,13 +43,13 @@ mod tests {
     use alloy::primitives::Address;
 
     use super::*;
-    use crate::core::abi::AbiParam;
+    use crate::abi::AbiParam;
 
     fn monitor() -> Monitor {
         Monitor {
             id: 1,
             chain: Chain::new(1).unwrap(),
-            target: Target::Call(crate::core::CallTarget {
+            target: Target::Call(crate::CallTarget {
                 address: Address::ZERO,
                 selector: [1, 2, 3, 4],
                 signature: "f(uint256)".into(),

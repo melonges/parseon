@@ -25,14 +25,14 @@ mod tests {
     use alloy::primitives::Address;
 
     use super::*;
-    use crate::core::filter::Filter;
-    use crate::core::monitor::Monitor;
-    use crate::core::{CallTarget, Cursor, Target};
+    use crate::filter::Filter;
+    use crate::monitor::Monitor;
+    use crate::{CallTarget, Cursor, Target};
 
     fn monitor(id: i64, start: i64, cursor: Option<i64>, end: Option<i64>) -> Monitor {
         Monitor {
             id,
-            chain: crate::core::Chain::new(1).unwrap(),
+            chain: crate::Chain::new(1).unwrap(),
             target: Target::Call(CallTarget {
                 address: Address::ZERO,
                 selector: [0; 4],

@@ -10,8 +10,8 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::openapi::ApiDoc;
-use crate::core::ports::{BlockSourceFactory, Telemetry};
-use crate::core::status::RuntimeStatus;
+use parseon_core::ports::{BlockSourceFactory, Telemetry};
+use parseon_core::status::RuntimeStatus;
 use crate::db::storage::PostgresStorage;
 
 /// Shared state passed to all handlers.
@@ -63,7 +63,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{AppState, router};
-    use crate::core::status::{ChainStatus, RuntimeStatus};
+    use parseon_core::status::{ChainStatus, RuntimeStatus};
     use crate::db::storage::PostgresStorage;
     use crate::rpc::provider::JsonRpcBlockSourceFactory;
 
@@ -72,7 +72,9 @@ mod tests {
             .connect_lazy("postgres://postgres:postgres@localhost/parseon")
             .expect("test database URL should be valid");
         let statuses = RuntimeStatus::default();
-        statuses.replace(ChainStatus::running(42, 20_000_000));
+        let running = ChainStatus::starting(42, None);
+        running.record_success(20_000_000);
+        statuses.replace(running);
         statuses.replace(ChainStatus::disabled(8453));
         router(AppState::new(
             PostgresStorage::new(pool),
