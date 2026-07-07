@@ -8,18 +8,15 @@ pub fn decode_calls(
     transactions: Vec<ExecutedTransaction>,
 ) -> Vec<DecodedCall> {
     let mut calls = Vec::new();
-    for transaction in transactions {
-        if !transaction.succeeded {
-            continue;
-        }
-        let selector = transaction.transaction.input.get(..4).unwrap_or_default();
+    for tx in transactions.into_iter().filter_map(|tx| tx.succeeded.then(|| tx.transaction)) {
+        let selector = tx.input.get(..4).unwrap_or_default();
         let Some(monitor) = monitors
             .iter()
-            .find(|monitor| monitor.matches_call(transaction.transaction.to, selector))
+            .find(|monitor| monitor.matches_call(tx.to, selector))
         else {
             continue;
         };
-        let calldata = transaction.transaction.input.get(4..).unwrap_or_default();
+        let calldata = tx.input.get(4..).unwrap_or_default();
         let Target::Call(target) = &monitor.target else {
             continue;
         };
@@ -29,7 +26,7 @@ pub fn decode_calls(
                 tracing::warn!(
                     monitor = monitor.id,
                     signature = %target.signature,
-                    tx = %transaction.transaction.hash,
+                    tx = %tx.hash,
                     "decode error: {error}"
                 );
                 continue;
@@ -38,7 +35,7 @@ pub fn decode_calls(
         let call = DecodedCall {
             monitor_id: monitor.id,
             block_number: block.number,
-            transaction,
+            transaction: ExecutedTransaction { transaction: tx, succeeded: true },
             params,
         };
         if monitor.filter.matches(&call) {
