@@ -5,8 +5,9 @@ use sqlx::types::Json;
 use sqlx::{FromRow, PgConnection, PgPool};
 
 use parseon_core::abi::{AbiParam, TargetSpec, parse_abi_type, parse_target_signature};
-use crate::db::dyn_table;
-use crate::error::{AppError, AppResult};
+use parseon_core::ports::{MonitorUpdate, NewMonitor};
+use crate::dyn_table;
+type AppResult<T> = anyhow::Result<T>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -85,7 +86,7 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRec
             .fetch_optional(&mut *tx)
             .await?;
     if chain_exists.is_none() {
-        return Err(AppError::NotFound(format!("chain {}", input.chain_id)));
+        anyhow::bail!("chain {} not found", input.chain_id);
     }
 
     let row = sqlx::query_as::<_, MonitorRecord>(
@@ -116,6 +117,44 @@ pub async fn create(pool: &PgPool, input: &MonitorInput) -> AppResult<MonitorRec
     Ok(row)
 }
 
+pub async fn create_prepared(pool: &PgPool, input: &NewMonitor) -> AppResult<MonitorRecord> {
+    let params = input
+        .param_schema
+        .iter()
+        .map(|param| StoredParam {
+            name: param.name.clone(),
+            sol_type: param.sol_type.clone(),
+            indexed: param.indexed,
+        })
+        .collect::<Vec<_>>();
+    let mut tx = pool.begin().await?;
+    let chain_exists: Option<i64> =
+        sqlx::query_scalar("SELECT chain_id FROM chains WHERE chain_id = $1 FOR KEY SHARE")
+            .bind(input.chain.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    anyhow::ensure!(chain_exists.is_some(), "chain {} not found", input.chain.id);
+    let row = sqlx::query_as::<_, MonitorRecord>(
+        r#"INSERT INTO monitors
+             (chain_id, address, signature, kind, signature_hash, param_schema, start_block, end_block)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING *"#,
+    )
+    .bind(input.chain.id)
+    .bind(&input.address)
+    .bind(&input.signature)
+    .bind(input.kind.as_str())
+    .bind(&input.signature_hash)
+    .bind(Json(params.clone()))
+    .bind(input.start_block)
+    .bind(input.end_block)
+    .fetch_one(&mut *tx)
+    .await?;
+    dyn_table::create_result_table(&mut tx, row.id, &row.kind, &params).await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
 pub async fn list(pool: &PgPool, chain_id: Option<i64>) -> AppResult<Vec<MonitorRecord>> {
     let rows = sqlx::query_as::<_, MonitorRecord>(
         "SELECT * FROM monitors WHERE ($1::BIGINT IS NULL OR chain_id = $1) ORDER BY id",
@@ -130,7 +169,7 @@ pub async fn count(pool: &PgPool) -> AppResult<usize> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM monitors")
         .fetch_one(pool)
         .await?;
-    usize::try_from(count).map_err(|e| AppError::Internal(e.into()))
+    Ok(usize::try_from(count)?)
 }
 
 pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRecord> {
@@ -148,7 +187,7 @@ pub async fn delete(pool: &PgPool, id: i64) -> AppResult<()> {
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("monitor {id}")))?;
+            .ok_or_else(|| anyhow::anyhow!("monitor {id} not found"))?;
 
     dyn_table::drop_result_table(&mut tx, current.id).await?;
     let res = sqlx::query("DELETE FROM monitors WHERE id = $1")
@@ -173,7 +212,7 @@ pub async fn update(
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("monitor {id}")))?;
+            .ok_or_else(|| anyhow::anyhow!("monitor {id} not found"))?;
 
     let new_start = start_block.unwrap_or(current.start_block);
     let new_end = end_block.unwrap_or(current.end_block);
@@ -226,6 +265,41 @@ pub async fn update(
     Ok(row)
 }
 
+pub async fn update_prepared(
+    pool: &PgPool,
+    id: i64,
+    update: &MonitorUpdate,
+) -> AppResult<MonitorRecord> {
+    let mut tx = pool.begin().await?;
+    let current = sqlx::query_as::<_, MonitorRecord>(
+        "SELECT * FROM monitors WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("monitor {id} not found"))?;
+    if update.reindex {
+        dyn_table::truncate_result_table(&mut tx, current.id).await?;
+    }
+    let row = sqlx::query_as::<_, MonitorRecord>(
+        r#"UPDATE monitors
+             SET start_block = $1, end_block = $2, enabled = $3,
+                 cursor = $4, completed = $5, updated_at = NOW()
+           WHERE id = $6
+           RETURNING *"#,
+    )
+    .bind(update.start_block)
+    .bind(update.end_block)
+    .bind(update.enabled)
+    .bind(update.cursor)
+    .bind(update.completed)
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
 pub async fn set_cursor(
     conn: &mut PgConnection,
     id: i64,
@@ -247,14 +321,10 @@ pub async fn set_cursor(
 
 fn validate_range(start_block: i64, end_block: Option<i64>) -> AppResult<()> {
     if start_block < 0 {
-        return Err(AppError::BadRequest(
-            "start_block must be non-negative".to_string(),
-        ));
+        anyhow::bail!("start_block must be non-negative");
     }
     if end_block.is_some_and(|end| end < start_block) {
-        return Err(AppError::BadRequest(
-            "end_block must be greater than or equal to start_block".to_string(),
-        ));
+        anyhow::bail!("end_block must be greater than or equal to start_block");
     }
     Ok(())
 }
@@ -262,7 +332,7 @@ fn validate_range(start_block: i64, end_block: Option<i64>) -> AppResult<()> {
 fn validate_address(value: &str) -> AppResult<String> {
     let address: Address = value
         .parse()
-        .map_err(|e| AppError::BadRequest(format!("invalid address: {e}")))?;
+        .map_err(|e| anyhow::anyhow!("invalid address: {e}"))?;
     Ok(address.to_string().to_ascii_lowercase())
 }
 

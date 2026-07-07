@@ -12,7 +12,7 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::api::openapi::ApiDoc;
 use parseon_core::ports::{BlockSourceFactory, Telemetry};
 use parseon_core::status::RuntimeStatus;
-use crate::db::storage::PostgresStorage;
+use parseon_postgres::PostgresStorage;
 
 /// Shared state passed to all handlers.
 #[derive(Clone)]
@@ -64,7 +64,7 @@ mod tests {
 
     use super::{AppState, router};
     use parseon_core::status::{ChainStatus, RuntimeStatus};
-    use crate::db::storage::PostgresStorage;
+    use parseon_postgres::PostgresStorage;
     use parseon_rpc::JsonRpcBlockSourceFactory;
 
     fn test_router() -> axum::Router {

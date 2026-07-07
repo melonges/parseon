@@ -3,11 +3,16 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 
 use parseon_core::abi::parse_selector;
+use parseon_core::commands::ResultQuery;
 use parseon_core::filter::Filter;
 use parseon_core::monitor::Monitor;
-use parseon_core::ports::{BlockCommit, ChainRepository, RegisteredChain, IndexStorage};
+use parseon_core::ports::{
+    BlockCommit, ChainRecord as CoreChainRecord, ChainRepository, ChainUpdate, IndexStorage,
+    MonitorKind, MonitorRecord as CoreMonitorRecord, MonitorRepository, MonitorUpdate, NewChain,
+    NewMonitor, ParamSchema, RegisteredChain, ResultRecord as CoreResultRecord, ResultRepository,
+};
 use parseon_core::{CallTarget, Chain, Cursor, DecodedResult, EventTarget, Target};
-use crate::error::AppResult;
+type AppResult<T> = anyhow::Result<T>;
 
 use super::dyn_table::{CallResultInput, EventResultInput, ResultRecord, SearchParams};
 use super::{chain_repo, dyn_table, monitor_repo};
@@ -140,6 +145,48 @@ impl PostgresStorage {
             filter: Filter::All,
         })
     }
+
+    fn chain_record(row: chain_repo::ChainRecord) -> anyhow::Result<CoreChainRecord> {
+        Ok(CoreChainRecord {
+            chain: Chain::new(row.chain_id)?,
+            rpc_url: row.rpc_url,
+            enabled: row.enabled,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
+    }
+
+    fn monitor_record(row: monitor_repo::MonitorRecord) -> anyhow::Result<CoreMonitorRecord> {
+        Ok(CoreMonitorRecord {
+            id: row.id,
+            chain: Chain::new(row.chain_id)?,
+            address: row.address,
+            signature: row.signature,
+            kind: match row.kind.as_str() {
+                "call" => MonitorKind::Call,
+                "event" => MonitorKind::Event,
+                kind => anyhow::bail!("invalid monitor kind {kind}"),
+            },
+            signature_hash: row.signature_hash,
+            param_schema: row
+                .param_schema
+                .0
+                .into_iter()
+                .map(|param| ParamSchema {
+                    name: param.name,
+                    sol_type: param.sol_type,
+                    indexed: param.indexed,
+                })
+                .collect(),
+            start_block: row.start_block,
+            end_block: row.end_block,
+            cursor: row.cursor,
+            completed: row.completed,
+            enabled: row.enabled,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
+    }
 }
 
 #[async_trait]
@@ -243,6 +290,66 @@ impl ChainRepository for PostgresStorage {
             .iter()
             .map(chain_repo::ChainRecord::registered)
             .collect()
+    }
+
+    async fn create_chain(&self, input: NewChain) -> anyhow::Result<CoreChainRecord> {
+        Self::chain_record(chain_repo::create(&self.pool, input.chain, &input.rpc_url, input.enabled).await?)
+    }
+
+    async fn list_chains(&self) -> anyhow::Result<Vec<CoreChainRecord>> {
+        chain_repo::list(&self.pool).await?.into_iter().map(Self::chain_record).collect()
+    }
+
+    async fn get_chain(&self, chain: Chain) -> anyhow::Result<CoreChainRecord> {
+        Self::chain_record(chain_repo::get(&self.pool, chain.id).await?)
+    }
+
+    async fn update_chain(&self, chain: Chain, update: ChainUpdate) -> anyhow::Result<CoreChainRecord> {
+        Self::chain_record(chain_repo::update(&self.pool, chain.id, update.rpc_url.as_deref(), update.enabled).await?)
+    }
+
+    async fn delete_chain(&self, chain: Chain) -> anyhow::Result<()> {
+        chain_repo::delete(&self.pool, chain.id).await
+    }
+}
+
+#[async_trait]
+impl MonitorRepository for PostgresStorage {
+    async fn count_monitors(&self) -> anyhow::Result<usize> {
+        monitor_repo::count(&self.pool).await
+    }
+
+    async fn create_monitor(&self, monitor: NewMonitor) -> anyhow::Result<CoreMonitorRecord> {
+        Self::monitor_record(monitor_repo::create_prepared(&self.pool, &monitor).await?)
+    }
+
+    async fn list_monitors(&self, chain: Option<Chain>) -> anyhow::Result<Vec<CoreMonitorRecord>> {
+        monitor_repo::list(&self.pool, chain.map(|chain| chain.id)).await?.into_iter().map(Self::monitor_record).collect()
+    }
+
+    async fn get_monitor(&self, id: i64) -> anyhow::Result<CoreMonitorRecord> {
+        Self::monitor_record(monitor_repo::get(&self.pool, id).await?)
+    }
+
+    async fn update_monitor(&self, id: i64, update: MonitorUpdate) -> anyhow::Result<CoreMonitorRecord> {
+        Self::monitor_record(monitor_repo::update_prepared(&self.pool, id, &update).await?)
+    }
+
+    async fn delete_monitor(&self, id: i64) -> anyhow::Result<()> {
+        monitor_repo::delete(&self.pool, id).await
+    }
+}
+
+#[async_trait]
+impl ResultRepository for PostgresStorage {
+    async fn query_results(&self, monitor: &CoreMonitorRecord, query: ResultQuery) -> anyhow::Result<Vec<CoreResultRecord>> {
+        let schema = monitor.param_schema.iter().map(|param| monitor_repo::StoredParam {
+            name: param.name.clone(), sol_type: param.sol_type.clone(), indexed: param.indexed,
+        }).collect::<Vec<_>>();
+        Ok(dyn_table::query_results(&self.pool, monitor.id, monitor.kind.as_str(), &schema, &SearchParams { limit: query.limit, offset: query.offset }).await?.into_iter().map(|record| match record {
+            ResultRecord::Call(record) => CoreResultRecord::Call { tx_hash: record.tx_hash, block_number: record.block_number, params: record.params },
+            ResultRecord::Event(record) => CoreResultRecord::Event { tx_hash: record.tx_hash, log_index: record.log_index, block_number: record.block_number, params: record.params },
+        }).collect())
     }
 }
 

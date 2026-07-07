@@ -9,8 +9,8 @@ use crate::api::dto::{
     ResultsQuery, Status, UpdateChain, UpdateMonitor,
 };
 use parseon_core::Chain;
-use crate::db::dyn_table::SearchParams;
-use crate::db::monitor_repo::MonitorInput;
+use parseon_postgres::dyn_table::SearchParams;
+use parseon_postgres::monitor_repo::MonitorInput;
 use crate::error::{AppError, AppResult};
 
 // ----- Health -----

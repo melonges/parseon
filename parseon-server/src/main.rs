@@ -1,6 +1,5 @@
 mod api;
 mod config;
-mod db;
 mod error;
 mod metrics;
 
@@ -24,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("starting parseon");
 
     // Database.
-    let pool = db::pool::connect(&config.database_url).await?;
+    let pool = parseon_postgres::pool::connect(&config.database_url).await?;
 
     // Cancellation token shared by the supervisor and API.
     let cancel = CancellationToken::new();
@@ -34,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
         block_concurrency: config.block_concurrency.max(1),
         db_write_concurrency: config.db_write_concurrency.max(1),
     };
-    let storage = Arc::new(db::storage::PostgresStorage::new(pool.clone()));
+    let storage = Arc::new(parseon_postgres::PostgresStorage::new(pool.clone()));
     let telemetry = Arc::new(metrics::Metrics::default());
     let source_factory = Arc::new(parseon_rpc::JsonRpcBlockSourceFactory::new(
         parseon_rpc::RpcConfig {

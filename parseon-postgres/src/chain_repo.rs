@@ -3,8 +3,8 @@ use sqlx::{FromRow, PgPool};
 
 use parseon_core::Chain;
 use parseon_core::ports::RegisteredChain;
-use crate::db::dyn_table;
-use crate::error::{AppError, AppResult};
+use crate::dyn_table;
+type AppResult<T> = anyhow::Result<T>;
 
 #[derive(Clone, FromRow)]
 pub struct ChainRecord {
@@ -56,7 +56,7 @@ pub async fn get(pool: &PgPool, chain_id: i64) -> AppResult<ChainRecord> {
         .bind(chain_id)
         .fetch_optional(pool)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("chain {chain_id}")))
+        .ok_or_else(|| anyhow::anyhow!("chain {chain_id} not found"))
 }
 
 pub async fn update(
@@ -78,7 +78,7 @@ pub async fn update(
     .bind(chain_id)
     .fetch_optional(pool)
     .await?
-    .ok_or_else(|| AppError::NotFound(format!("chain {chain_id}")))
+    .ok_or_else(|| anyhow::anyhow!("chain {chain_id} not found"))
 }
 
 pub async fn delete(pool: &PgPool, chain_id: i64) -> AppResult<()> {
@@ -89,7 +89,7 @@ pub async fn delete(pool: &PgPool, chain_id: i64) -> AppResult<()> {
             .fetch_optional(&mut *tx)
             .await?;
     if exists.is_none() {
-        return Err(AppError::NotFound(format!("chain {chain_id}")));
+        anyhow::bail!("chain {chain_id} not found");
     }
 
     let monitor_ids: Vec<i64> =

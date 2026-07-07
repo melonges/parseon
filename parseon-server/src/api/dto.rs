@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use parseon_core::status::{ChainStatusSnapshot, WorkerState};
-use crate::db::chain_repo::ChainRecord;
-use crate::db::dyn_table::ResultRecord;
-use crate::db::monitor_repo::{MonitorRecord, StoredParam};
+use parseon_postgres::chain_repo::ChainRecord;
+use parseon_postgres::dyn_table::ResultRecord;
+use parseon_postgres::monitor_repo::{MonitorRecord, StoredParam};
 
 // ----- Chains -----
 
@@ -239,7 +239,7 @@ fn default_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::dyn_table::{CallResultRecord, EventResultRecord};
+    use parseon_postgres::dyn_table::{CallResultRecord, EventResultRecord};
 
     #[test]
     fn chain_rpc_url_is_write_only() {

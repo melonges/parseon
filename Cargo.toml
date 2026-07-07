@@ -1,5 +1,5 @@
 [workspace]
-members = ["parseon-core", "parseon-memory-cache", "parseon-rpc", "parseon-server"]
+members = ["parseon-core", "parseon-memory-cache", "parseon-postgres", "parseon-rpc", "parseon-server"]
 resolver = "3"
 
 [workspace.package]

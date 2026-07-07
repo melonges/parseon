@@ -8,8 +8,8 @@ use sqlx::{PgConnection, PgPool, QueryBuilder, Row, Transaction};
 
 use parseon_core::DecodedValue;
 use parseon_core::abi::parse_abi_type;
-use crate::db::monitor_repo::StoredParam;
-use crate::error::{AppError, AppResult};
+use crate::monitor_repo::StoredParam;
+type AppResult<T> = anyhow::Result<T>;
 
 const CALL_COLUMNS: &[(&str, &str)] = &[
     ("tx_hash", "TEXT NOT NULL PRIMARY KEY"),
@@ -64,7 +64,7 @@ fn postgres_params(kind: &str, params: &[StoredParam]) -> AppResult<Vec<PgParam>
     let reserved = match kind {
         "call" => CALL_RESERVED,
         "event" => EVENT_RESERVED,
-        _ => return Err(AppError::Internal(anyhow::anyhow!("invalid monitor kind"))),
+        _ => anyhow::bail!("invalid monitor kind"),
     };
     let mut used = std::collections::HashSet::new();
     params
@@ -92,7 +92,7 @@ fn postgres_params(kind: &str, params: &[StoredParam]) -> AppResult<Vec<PgParam>
 
 pub fn result_table_name(id: i64) -> AppResult<String> {
     if id <= 0 {
-        return Err(AppError::Internal(anyhow::anyhow!("invalid monitor id")));
+        anyhow::bail!("invalid monitor id");
     }
     Ok(format!("monitor_{id}_results"))
 }
@@ -108,7 +108,7 @@ pub async fn create_result_table(
     let cols = match kind {
         "call" => CALL_COLUMNS,
         "event" => EVENT_COLUMNS,
-        _ => return Err(AppError::Internal(anyhow::anyhow!("invalid monitor kind"))),
+        _ => anyhow::bail!("invalid monitor kind"),
     };
     let mut qb = QueryBuilder::new("CREATE TABLE ");
     qb.push(table.clone()).push(" (");
@@ -175,10 +175,10 @@ fn push_values(qb: &mut QueryBuilder<sqlx::Postgres>, values: &[DecodedValue]) -
         qb.push(", ");
         match v {
             DecodedValue::Uint(v) => qb.push_bind(
-                BigDecimal::from_str(&v.to_string()).map_err(|e| AppError::Internal(e.into()))?,
+                BigDecimal::from_str(&v.to_string()).map_err(anyhow::Error::from)?,
             ),
             DecodedValue::Int(v) => qb.push_bind(
-                BigDecimal::from_str(&v.to_string()).map_err(|e| AppError::Internal(e.into()))?,
+                BigDecimal::from_str(&v.to_string()).map_err(anyhow::Error::from)?,
             ),
             DecodedValue::Bool(v) => qb.push_bind(*v),
             DecodedValue::Address(v) => qb.push_bind(v.to_string()),
@@ -203,9 +203,7 @@ pub async fn insert_call(
 ) -> AppResult<()> {
     let params = postgres_params("call", schema)?;
     if params.len() != input.params.len() {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "parameter count mismatch"
-        )));
+        anyhow::bail!("parameter count mismatch");
     }
     let mut qb = QueryBuilder::new("INSERT INTO ");
     qb.push(Identifier::new(result_table_name(id)?)?)
@@ -228,9 +226,7 @@ pub async fn insert_event(
 ) -> AppResult<()> {
     let params = postgres_params("event", schema)?;
     if params.len() != input.params.len() {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "parameter count mismatch"
-        )));
+        anyhow::bail!("parameter count mismatch");
     }
     let mut qb = QueryBuilder::new("INSERT INTO ");
     qb.push(Identifier::new(result_table_name(id)?)?)
@@ -339,9 +335,7 @@ impl Identifier {
     fn new(v: impl Into<String>) -> AppResult<Self> {
         let v = v.into();
         if v.is_empty() || v.contains('\0') {
-            return Err(AppError::Internal(anyhow::anyhow!(
-                "invalid SQL identifier"
-            )));
+            anyhow::bail!("invalid SQL identifier");
         }
         Ok(Self(v))
     }
