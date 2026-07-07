@@ -2,6 +2,19 @@
 
 All notable changes to Parseon are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Carry chain IDs, block numbers, monitor IDs, addresses, selectors, topics, and transaction hashes as validated unsigned or fixed-size domain types.
+- Store monitor addresses, selectors, topics, result transaction hashes, and decoded ABI addresses as binary PostgreSQL values.
+- Validate listen addresses, poll intervals, batch sizes, cache capacity, and concurrency limits during configuration parsing.
+
+### Breaking
+
+- Reject negative numeric API values, zero monitor IDs, malformed addresses, and invalid fixed-size hashes during request decoding.
+- Reset monitors and dynamic result tables when applying the typed-value migration; registered chains are retained.
+
 ## 0.6.3 - 2026-07-07
 
 ### Changed

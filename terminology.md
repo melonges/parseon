@@ -54,6 +54,10 @@ Monitor behavior lives in `core::monitor`; runtime execution belongs to `core::w
 
 A monitor target defines what onchain call should be matched.
 
+The human-readable ABI `signature` remains text. A function `selector` is the
+fixed four-byte dispatch value derived from that signature, while an event
+`topic0` is its fixed 32-byte signature hash.
+
 Typical target fields:
 
 ```text

@@ -145,7 +145,7 @@ impl Default for Metrics {
 }
 
 impl Metrics {
-    fn chain_labels(chain_id: i64) -> ChainLabels {
+    fn chain_labels(chain_id: u64) -> ChainLabels {
         ChainLabels {
             chain_id: chain_id.to_string(),
         }
@@ -156,7 +156,7 @@ impl Metrics {
 impl Telemetry for Metrics {
     fn record_rpc(
         &self,
-        chain_id: i64,
+        chain_id: u64,
         operation: &'static str,
         strategy: &'static str,
         outcome: &'static str,
@@ -181,7 +181,7 @@ impl Telemetry for Metrics {
             .observe(elapsed.as_secs_f64());
     }
 
-    fn record_cache(&self, chain_id: i64, hit: bool) {
+    fn record_cache(&self, chain_id: u64, hit: bool) {
         self.inner
             .cache_access
             .get_or_create(&CacheLabels {
@@ -193,7 +193,7 @@ impl Telemetry for Metrics {
 
     fn record_commit(
         &self,
-        chain_id: i64,
+        chain_id: u64,
         calls: u64,
         events: u64,
         outcome: &'static str,
@@ -226,14 +226,14 @@ impl Telemetry for Metrics {
         }
     }
 
-    fn set_worker_lag(&self, chain_id: i64, lag: i64) {
+    fn set_worker_lag(&self, chain_id: u64, lag: u64) {
         self.inner
             .worker_lag
             .get_or_create(&Self::chain_labels(chain_id))
-            .set(lag.max(0));
+            .set(i64::try_from(lag).unwrap_or(i64::MAX));
     }
 
-    fn adjust_in_flight(&self, chain_id: i64, stage: &'static str, delta: i64) {
+    fn adjust_in_flight(&self, chain_id: u64, stage: &'static str, delta: i64) {
         let gauge = self.inner.in_flight.get_or_create(&StageLabels {
             chain_id: chain_id.to_string(),
             stage,

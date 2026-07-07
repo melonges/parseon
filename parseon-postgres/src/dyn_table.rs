@@ -6,19 +6,20 @@ use sqlx::postgres::PgRow;
 use sqlx::types::BigDecimal;
 use sqlx::{PgConnection, PgPool, QueryBuilder, Row, Transaction};
 
-use parseon_core::DecodedValue;
+use parseon_core::commands::PageLimit;
+use parseon_core::{BlockNumber, DecodedValue, TxHash};
 use parseon_core::abi::parse_abi_type;
-use crate::monitor_repo::StoredParam;
+use crate::{monitor_repo::StoredParam, pg_types};
 type AppResult<T> = anyhow::Result<T>;
 
 const CALL_COLUMNS: &[(&str, &str)] = &[
-    ("tx_hash", "TEXT NOT NULL PRIMARY KEY"),
-    ("block_number", "BIGINT NOT NULL"),
+    ("tx_hash", "BYTEA NOT NULL PRIMARY KEY CHECK (octet_length(tx_hash) = 32)"),
+    ("block_number", "BIGINT NOT NULL CHECK (block_number >= 0)"),
 ];
 const EVENT_COLUMNS: &[(&str, &str)] = &[
-    ("tx_hash", "TEXT NOT NULL"),
-    ("log_index", "BIGINT NOT NULL"),
-    ("block_number", "BIGINT NOT NULL"),
+    ("tx_hash", "BYTEA NOT NULL CHECK (octet_length(tx_hash) = 32)"),
+    ("log_index", "BIGINT NOT NULL CHECK (log_index >= 0)"),
+    ("block_number", "BIGINT NOT NULL CHECK (block_number >= 0)"),
     ("PRIMARY KEY", "(tx_hash, log_index)"),
 ];
 const CALL_RESERVED: &[&str] = &["tx_hash", "block_number"];
@@ -40,7 +41,8 @@ impl PgColumnType {
         Ok(match ty {
             DynSolType::Uint(_) | DynSolType::Int(_) => Self::Numeric,
             DynSolType::Bool => Self::Bool,
-            DynSolType::Address | DynSolType::String => Self::Text,
+            DynSolType::Address => Self::Bytea,
+            DynSolType::String => Self::Text,
             DynSolType::Bytes | DynSolType::FixedBytes(_) | DynSolType::Function => Self::Bytea,
             _ => unreachable!(),
         })
@@ -159,14 +161,14 @@ pub async fn truncate_result_table(
 }
 
 pub struct CallResultInput {
-    pub tx_hash: String,
-    pub block_number: i64,
+    pub tx_hash: TxHash,
+    pub block_number: BlockNumber,
     pub params: Vec<DecodedValue>,
 }
 pub struct EventResultInput {
-    pub tx_hash: String,
-    pub log_index: i64,
-    pub block_number: i64,
+    pub tx_hash: TxHash,
+    pub log_index: u64,
+    pub block_number: BlockNumber,
     pub params: Vec<DecodedValue>,
 }
 
@@ -181,7 +183,7 @@ fn push_values(qb: &mut QueryBuilder<sqlx::Postgres>, values: &[DecodedValue]) -
                 BigDecimal::from_str(&v.to_string()).map_err(anyhow::Error::from)?,
             ),
             DecodedValue::Bool(v) => qb.push_bind(*v),
-            DecodedValue::Address(v) => qb.push_bind(v.to_string()),
+            DecodedValue::Address(v) => qb.push_bind(v.as_slice()),
             DecodedValue::String(v) => qb.push_bind(v),
             DecodedValue::Bytes(v) => qb.push_bind(v),
         };
@@ -210,9 +212,9 @@ pub async fn insert_call(
         .push(" (tx_hash,block_number");
     push_param_columns(&mut qb, &params)?;
     qb.push(") VALUES (")
-        .push_bind(&input.tx_hash)
+        .push_bind(input.tx_hash.as_slice())
         .push(",")
-        .push_bind(input.block_number);
+        .push_bind(pg_types::to_i64(input.block_number, "block number")?);
     push_values(&mut qb, &input.params)?;
     qb.push(") ON CONFLICT DO NOTHING");
     qb.build().execute(conn).await?;
@@ -233,11 +235,11 @@ pub async fn insert_event(
         .push(" (tx_hash,log_index,block_number");
     push_param_columns(&mut qb, &params)?;
     qb.push(") VALUES (")
-        .push_bind(&input.tx_hash)
+        .push_bind(input.tx_hash.as_slice())
         .push(",")
-        .push_bind(input.log_index)
+        .push_bind(pg_types::to_i64(input.log_index, "log index")?)
         .push(",")
-        .push_bind(input.block_number);
+        .push_bind(pg_types::to_i64(input.block_number, "block number")?);
     push_values(&mut qb, &input.params)?;
     qb.push(") ON CONFLICT DO NOTHING");
     qb.build().execute(conn).await?;
@@ -245,20 +247,20 @@ pub async fn insert_event(
 }
 
 pub struct SearchParams {
-    pub limit: i64,
-    pub offset: i64,
+    pub limit: PageLimit,
+    pub offset: u64,
 }
 #[derive(Debug)]
 pub struct CallResultRecord {
-    pub tx_hash: String,
-    pub block_number: i64,
+    pub tx_hash: TxHash,
+    pub block_number: BlockNumber,
     pub params: serde_json::Value,
 }
 #[derive(Debug)]
 pub struct EventResultRecord {
-    pub tx_hash: String,
-    pub log_index: i64,
-    pub block_number: i64,
+    pub tx_hash: TxHash,
+    pub log_index: u64,
+    pub block_number: BlockNumber,
     pub params: serde_json::Value,
 }
 #[derive(Debug)]
@@ -304,24 +306,24 @@ pub async fn query_results(
         qb.push(" ORDER BY block_number DESC, log_index DESC");
     }
     qb.push(" LIMIT ")
-        .push_bind(search.limit)
+        .push_bind(i64::from(search.limit.get()))
         .push(" OFFSET ")
-        .push_bind(search.offset);
+        .push_bind(pg_types::to_i64(search.offset, "result offset")?);
     let rows = qb.build().fetch_all(pool).await?;
     rows.into_iter()
         .map(|row| {
             let decoded = read_params(&row, &params)?;
             Ok(if kind == "call" {
                 ResultRecord::Call(CallResultRecord {
-                    tx_hash: row.try_get("tx_hash")?,
-                    block_number: row.try_get("block_number")?,
+                    tx_hash: pg_types::b256(&row.try_get::<Vec<u8>, _>("tx_hash")?, "transaction hash")?,
+                    block_number: pg_types::from_i64(row.try_get("block_number")?, "block number")?,
                     params: decoded,
                 })
             } else {
                 ResultRecord::Event(EventResultRecord {
-                    tx_hash: row.try_get("tx_hash")?,
-                    log_index: row.try_get("log_index")?,
-                    block_number: row.try_get("block_number")?,
+                    tx_hash: pg_types::b256(&row.try_get::<Vec<u8>, _>("tx_hash")?, "transaction hash")?,
+                    log_index: pg_types::from_i64(row.try_get("log_index")?, "log index")?,
+                    block_number: pg_types::from_i64(row.try_get("block_number")?, "block number")?,
                     params: decoded,
                 })
             })

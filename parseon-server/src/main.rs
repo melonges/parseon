@@ -4,7 +4,6 @@ mod error;
 mod metrics;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
@@ -28,17 +27,17 @@ async fn main() -> anyhow::Result<()> {
     // Cancellation token shared by the supervisor and API.
     let cancel = CancellationToken::new();
     let supervisor_config = parseon_core::supervisor::SupervisorConfig {
-        batch_size: i64::try_from(config.indexing.default_batch_size).unwrap_or(i64::MAX),
-        poll_interval: Duration::from_millis(config.indexing.poll_interval_ms.max(100)),
-        block_concurrency: config.indexing.block_concurrency.max(1),
-        db_write_concurrency: config.indexing.db_write_concurrency.max(1),
+        batch_size: config.indexing.default_batch_size,
+        poll_interval: config.indexing.poll_interval,
+        block_concurrency: config.indexing.block_concurrency,
+        db_write_concurrency: config.indexing.db_write_concurrency,
     };
     let storage = Arc::new(parseon_postgres::PostgresStorage::new(pool.clone()));
     let telemetry = Arc::new(metrics::Metrics::default());
     let source_factory = Arc::new(parseon_rpc::JsonRpcBlockSourceFactory::new(
         parseon_rpc::RpcConfig {
-            request_concurrency: config.rpc.request_concurrency.max(1),
-            batch_size: config.rpc.batch_size.max(1),
+            request_concurrency: config.rpc.request_concurrency,
+            batch_size: config.rpc.batch_size,
         },
         telemetry.clone(),
     ));

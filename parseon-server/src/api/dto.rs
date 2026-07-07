@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use parseon_core::status::{ChainStatusSnapshot, WorkerState};
-use parseon_core::ports::ParamSchema;
+use parseon_core::abi::AbiParam;
 use parseon_core::views::{ChainView, MonitorResultView, MonitorView};
-use parseon_core::Url;
+use parseon_core::{Address, B256, Selector, TxHash, Url};
 
 // ----- Chains -----
 
@@ -28,7 +28,7 @@ pub struct UpdateChain {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChainRow {
-    pub chain_id: i64,
+    pub chain_id: u64,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -49,21 +49,22 @@ impl From<ChainView> for ChainRow {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateMonitor {
-    pub chain_id: i64,
-    pub address: String,
+    pub chain_id: u64,
+    #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{40}$")]
+    pub address: Address,
     /// Human-readable function or event signature, e.g. `function transfer(address to,
     /// uint256 value)` or `event Transfer(address indexed from, address indexed to, uint256 value)`.
     pub signature: String,
-    pub start_block: i64,
+    pub start_block: u64,
     #[serde(default)]
-    pub end_block: Option<i64>,
+    pub end_block: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateMonitor {
-    pub start_block: Option<i64>,
+    pub start_block: Option<u64>,
     /// `null` clears end_block (open-ended/live); a number sets a finite end.
-    pub end_block: Option<Option<i64>>,
+    pub end_block: Option<Option<u64>>,
     pub enabled: Option<bool>,
 }
 
@@ -74,11 +75,12 @@ pub struct AbiParamSchema {
     pub indexed: bool,
 }
 
-impl From<ParamSchema> for AbiParamSchema {
-    fn from(param: ParamSchema) -> Self {
+impl From<AbiParam> for AbiParamSchema {
+    fn from(param: AbiParam) -> Self {
+        let sol_type = param.sol_type();
         Self {
             name: param.name,
-            sol_type: param.sol_type,
+            sol_type,
             indexed: param.indexed,
         }
     }
@@ -86,19 +88,22 @@ impl From<ParamSchema> for AbiParamSchema {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MonitorRow {
-    pub id: i64,
-    pub chain_id: i64,
-    pub address: String,
+    pub id: u64,
+    pub chain_id: u64,
+    #[schema(value_type = String, pattern = "^0x[0-9a-f]{40}$")]
+    pub address: Address,
     pub signature: String,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub selector: Option<String>,
+    #[schema(value_type = Option<String>, pattern = "^0x[0-9a-f]{8}$")]
+    pub selector: Option<Selector>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub topic0: Option<String>,
+    #[schema(value_type = Option<String>, pattern = "^0x[0-9a-f]{64}$")]
+    pub topic0: Option<B256>,
     pub param_schema: Vec<AbiParamSchema>,
-    pub start_block: i64,
-    pub end_block: Option<i64>,
-    pub cursor: Option<i64>,
+    pub start_block: u64,
+    pub end_block: Option<u64>,
+    pub cursor: Option<u64>,
     pub completed: bool,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
@@ -108,7 +113,7 @@ pub struct MonitorRow {
 impl From<MonitorView> for MonitorRow {
     fn from(record: MonitorView) -> Self {
         Self {
-            id: record.id,
+            id: record.id.get(),
             chain_id: record.chain_id,
             address: record.address,
             signature: record.signature,
@@ -141,11 +146,11 @@ pub struct Status {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChainStatusRow {
-    pub chain_id: i64,
+    pub chain_id: u64,
     pub enabled: bool,
     pub worker_state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub finalized_head: Option<i64>,
+    pub finalized_head: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_successful_poll_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
@@ -180,25 +185,27 @@ pub struct ErrorResponse {
 pub struct ResultsQuery {
     /// Maximum number of results (default 50, clamped to 200).
     #[serde(default = "default_limit")]
-    pub limit: i64,
+    pub limit: u64,
     /// Pagination offset (default 0).
     #[serde(default)]
-    pub offset: i64,
+    pub offset: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CallMonitorResult {
-    pub tx_hash: String,
-    pub block_number: i64,
+    #[schema(value_type = String, pattern = "^0x[0-9a-f]{64}$")]
+    pub tx_hash: TxHash,
+    pub block_number: u64,
     #[schema(value_type = Object)]
     pub params: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EventMonitorResult {
-    pub tx_hash: String,
-    pub log_index: i64,
-    pub block_number: i64,
+    #[schema(value_type = String, pattern = "^0x[0-9a-f]{64}$")]
+    pub tx_hash: TxHash,
+    pub log_index: u64,
+    pub block_number: u64,
     #[schema(value_type = Object)]
     pub params: serde_json::Value,
 }
@@ -228,7 +235,7 @@ impl From<MonitorResultView> for MonitorResult {
     }
 }
 
-fn default_limit() -> i64 {
+fn default_limit() -> u64 {
     50
 }
 
@@ -263,9 +270,33 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_typed_monitor_fields() {
+        let base = serde_json::json!({
+            "chain_id": 1,
+            "address": "0x0000000000000000000000000000000000000001",
+            "signature": "function transfer(address to, uint256 value)",
+            "start_block": 0
+        });
+        assert!(serde_json::from_value::<CreateMonitor>(base).is_ok());
+        assert!(serde_json::from_value::<CreateMonitor>(serde_json::json!({
+            "chain_id": -1,
+            "address": "0x0000000000000000000000000000000000000001",
+            "signature": "function transfer(address to, uint256 value)",
+            "start_block": 0
+        })).is_err());
+        assert!(serde_json::from_value::<CreateMonitor>(serde_json::json!({
+            "chain_id": 1,
+            "address": "not-an-address",
+            "signature": "function transfer(address to, uint256 value)",
+            "start_block": 0
+        })).is_err());
+    }
+
+    #[test]
     fn serializes_minimal_call_result() {
+        let tx_hash = TxHash::repeat_byte(0x11);
         let result = MonitorResult::from(MonitorResultView::Call {
-            tx_hash: "0xcall".into(),
+            tx_hash,
             block_number: 10,
             params: serde_json::json!({"value": "42"}),
         });
@@ -273,7 +304,7 @@ mod tests {
             serde_json::to_value(result).unwrap(),
             serde_json::json!({
                 "kind": "call",
-                "tx_hash": "0xcall",
+                "tx_hash": tx_hash.to_string(),
                 "block_number": 10,
                 "params": {"value": "42"}
             })
@@ -282,8 +313,9 @@ mod tests {
 
     #[test]
     fn serializes_minimal_event_result() {
+        let tx_hash = TxHash::repeat_byte(0x22);
         let result = MonitorResult::from(MonitorResultView::Event {
-            tx_hash: "0xevent".into(),
+            tx_hash,
             log_index: 3,
             block_number: 11,
             params: serde_json::json!({"owner": "0x1"}),
@@ -292,7 +324,7 @@ mod tests {
             serde_json::to_value(result).unwrap(),
             serde_json::json!({
                 "kind": "event",
-                "tx_hash": "0xevent",
+                "tx_hash": tx_hash.to_string(),
                 "log_index": 3,
                 "block_number": 11,
                 "params": {"owner": "0x1"}

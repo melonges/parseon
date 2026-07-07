@@ -1,6 +1,7 @@
 use std::future::Future;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+use std::num::NonZeroUsize;
+use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 
 use alloy::eips::BlockNumberOrTag;
@@ -15,7 +16,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use anyhow::Context;
 
 use parseon_core::ports::{BlockSource, BlockSourceFactory, InFlightGuard, NoopTelemetry, Telemetry};
-use parseon_core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog, Url};
+use parseon_core::{BlockNumber, BlockTransaction, ChainId, ExecutedTransaction, SourceBlock, SourceLog, Url};
 use crate::fetch;
 
 pub type HttpProvider = RootProvider<AnyNetwork>;
@@ -26,15 +27,15 @@ const CAPABILITY_UNSUPPORTED: u8 = 2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RpcConfig {
-    pub request_concurrency: usize,
-    pub batch_size: usize,
+    pub request_concurrency: NonZeroUsize,
+    pub batch_size: NonZeroUsize,
 }
 
 impl Default for RpcConfig {
     fn default() -> Self {
         Self {
-            request_concurrency: 16,
-            batch_size: 20,
+            request_concurrency: NonZeroUsize::new(16).unwrap(),
+            batch_size: NonZeroUsize::new(20).unwrap(),
         }
     }
 }
@@ -44,7 +45,7 @@ pub struct JsonRpcBlockSource {
     request_concurrency: usize,
     batch_size: usize,
     permits: Arc<Semaphore>,
-    chain_id: AtomicI64,
+    chain_id: OnceLock<ChainId>,
     batch_capability: AtomicU8,
     block_receipts_capability: AtomicU8,
     telemetry: Arc<dyn Telemetry>,
@@ -84,13 +85,13 @@ impl JsonRpcBlockSource {
         config: RpcConfig,
         telemetry: Arc<dyn Telemetry>,
     ) -> anyhow::Result<Self> {
-        let request_concurrency = config.request_concurrency.max(1);
+        let request_concurrency = config.request_concurrency.get();
         Ok(Self {
             provider: build(rpc_url)?,
             request_concurrency,
-            batch_size: config.batch_size.max(1),
+            batch_size: config.batch_size.get(),
             permits: Arc::new(Semaphore::new(request_concurrency)),
-            chain_id: AtomicI64::new(-1),
+            chain_id: OnceLock::new(),
             batch_capability: AtomicU8::new(CAPABILITY_UNKNOWN),
             block_receipts_capability: AtomicU8::new(CAPABILITY_UNKNOWN),
             telemetry,
@@ -111,12 +112,12 @@ impl JsonRpcBlockSource {
         F: Future<Output = anyhow::Result<T>>,
     {
         let _permit = self.acquire().await?;
-        let chain_id = self.chain_id.load(Ordering::Relaxed);
-        let _in_flight =
-            (chain_id >= 0).then(|| InFlightGuard::new(self.telemetry.as_ref(), chain_id, "rpc"));
+        let chain_id = self.chain_id.get().copied();
+        let _in_flight = chain_id
+            .map(|chain_id| InFlightGuard::new(self.telemetry.as_ref(), chain_id, "rpc"));
         let started = Instant::now();
         let result = future.await;
-        if chain_id >= 0 {
+        if let Some(chain_id) = chain_id {
             self.telemetry.record_rpc(
                 chain_id,
                 operation,
@@ -188,7 +189,7 @@ impl JsonRpcBlockSource {
                 .observed("receipts", "block_receipts", async {
                     Ok(fetch::fetch_block_receipts(
                         &self.provider,
-                        u64::try_from(block.number)?,
+                        block.number,
                         transactions,
                     )
                     .await?)
@@ -206,7 +207,7 @@ impl JsonRpcBlockSource {
                             .store(CAPABILITY_UNSUPPORTED, Ordering::Relaxed);
                     }
                     tracing::debug!(
-                        chain_id = self.chain_id.load(Ordering::Relaxed),
+                        chain_id = ?self.chain_id.get(),
                         "block receipt optimization unavailable; falling back"
                     );
                 }
@@ -226,7 +227,7 @@ impl JsonRpcBlockSource {
                             .store(CAPABILITY_UNSUPPORTED, Ordering::Relaxed);
                     }
                     tracing::debug!(
-                        chain_id = self.chain_id.load(Ordering::Relaxed),
+                        chain_id = ?self.chain_id.get(),
                         "RPC batching unavailable; falling back"
                     );
                 }
@@ -244,32 +245,29 @@ impl BlockSource for JsonRpcBlockSource {
         let result = chain_id(&self.provider).await.map_err(anyhow::Error::from);
         match result {
             Ok(chain_id) => {
-                if let Ok(metric_chain_id) = i64::try_from(chain_id) {
-                    self.chain_id.store(metric_chain_id, Ordering::Relaxed);
-                    self.telemetry.record_rpc(
-                        metric_chain_id,
-                        "chain_id",
-                        "single",
-                        "success",
-                        started.elapsed(),
-                    );
-                }
+                let _ = self.chain_id.set(chain_id);
+                self.telemetry.record_rpc(
+                    chain_id,
+                    "chain_id",
+                    "single",
+                    "success",
+                    started.elapsed(),
+                );
                 Ok(chain_id)
             }
             Err(error) => Err(error),
         }
     }
 
-    async fn finalized_head(&self) -> anyhow::Result<i64> {
+    async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
         self.observed("finalized_head", "single", async {
-            Ok(i64::try_from(finalized_number(&self.provider).await?)?)
-        })
-        .await
+            finalized_number(&self.provider).await
+        }).await
     }
 
-    async fn fetch_block(&self, block_number: i64) -> anyhow::Result<SourceBlock> {
+    async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
         self.observed("block", "single", async {
-            Ok(fetch::fetch_block(&self.provider, u64::try_from(block_number)?).await?)
+            fetch::fetch_block(&self.provider, block_number).await
         })
         .await
     }
@@ -284,18 +282,18 @@ impl BlockSource for JsonRpcBlockSource {
 
     async fn fetch_logs(
         &self,
-        block_number: i64,
+        block_number: BlockNumber,
         addresses: &[Address],
         topic0s: &[B256],
     ) -> anyhow::Result<Vec<SourceLog>> {
         self.observed("logs", "single", async {
-            Ok(fetch::fetch_logs(
+            fetch::fetch_logs(
                 &self.provider,
-                u64::try_from(block_number)?,
+                block_number,
                 addresses,
                 topic0s,
             )
-            .await?)
+            .await
         })
         .await
     }

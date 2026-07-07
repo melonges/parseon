@@ -1,17 +1,18 @@
 use std::sync::Arc;
+use std::num::NonZeroUsize;
 
 use moka::sync::Cache;
 
 use parseon_core::ports::{BlockCache, BlockCacheFactory};
-use parseon_core::{Chain, SourceBlock};
+use parseon_core::{BlockNumber, Chain, ChainId, SourceBlock};
 
 pub struct MemoryBlockCache {
-    inner: Cache<(i64, i64), SourceBlock>,
+    inner: Cache<(ChainId, BlockNumber), SourceBlock>,
 }
 
 impl MemoryBlockCache {
-    pub fn new(capacity: usize) -> Self {
-        let max_capacity = u64::try_from(capacity.max(1)).unwrap_or(u64::MAX);
+    pub fn new(capacity: NonZeroUsize) -> Self {
+        let max_capacity = u64::try_from(capacity.get()).unwrap_or(u64::MAX);
         Self {
             inner: Cache::builder()
                 .max_capacity(max_capacity)
@@ -22,7 +23,7 @@ impl MemoryBlockCache {
 }
 
 impl BlockCache for MemoryBlockCache {
-    fn get(&self, chain: Chain, block_number: i64) -> Option<SourceBlock> {
+    fn get(&self, chain: Chain, block_number: BlockNumber) -> Option<SourceBlock> {
         self.inner.get(&(chain.id, block_number))
     }
 
@@ -30,7 +31,7 @@ impl BlockCache for MemoryBlockCache {
         self.inner.insert((chain.id, block.number), block);
     }
 
-    fn evict_before(&self, chain: Chain, block_number: i64) {
+    fn evict_before(&self, chain: Chain, block_number: BlockNumber) {
         self.inner
             .invalidate_entries_if(move |key, _| key.0 == chain.id && key.1 < block_number)
             .expect("invalidation closures are enabled for the block cache");
@@ -38,11 +39,11 @@ impl BlockCache for MemoryBlockCache {
 }
 
 pub struct MemoryBlockCacheFactory {
-    capacity: usize,
+    capacity: NonZeroUsize,
 }
 
 impl MemoryBlockCacheFactory {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: NonZeroUsize) -> Self {
         Self { capacity }
     }
 }
@@ -59,7 +60,7 @@ mod tests {
 
     use super::*;
 
-    fn block(number: i64) -> SourceBlock {
+    fn block(number: BlockNumber) -> SourceBlock {
         SourceBlock {
             number,
             transactions: Vec::new(),
@@ -68,9 +69,9 @@ mod tests {
 
     #[test]
     fn keys_and_evicts_by_chain() {
-        let cache = MemoryBlockCache::new(4);
-        let second_chain = Chain::new(2).unwrap();
-        let mainnet = Chain::new(1).unwrap();
+        let cache = MemoryBlockCache::new(NonZeroUsize::new(4).unwrap());
+        let second_chain = Chain::new(2);
+        let mainnet = Chain::new(1);
         cache.put(second_chain, block(10));
         cache.put(second_chain, block(11));
         cache.put(mainnet, block(10));
@@ -82,30 +83,27 @@ mod tests {
 
     #[test]
     fn stores_and_retrieves_blocks() {
-        let cache = MemoryBlockCache::new(1);
-        let chain = Chain::new(1).unwrap();
+        let cache = MemoryBlockCache::new(NonZeroUsize::new(1).unwrap());
+        let chain = Chain::new(1);
         cache.put(chain, block(10));
         assert_eq!(cache.get(chain, 10).map(|block| block.number), Some(10));
     }
 
     #[test]
     fn configures_entry_capacity() {
-        let cache = MemoryBlockCache::new(2);
+        let cache = MemoryBlockCache::new(NonZeroUsize::new(2).unwrap());
         assert_eq!(cache.inner.policy().max_capacity(), Some(2));
-
-        let minimum = MemoryBlockCache::new(0);
-        assert_eq!(minimum.inner.policy().max_capacity(), Some(1));
     }
 
     #[test]
     fn accepts_parallel_writes() {
-        const THREADS: i64 = 8;
-        const BLOCKS_PER_THREAD: i64 = 32;
+        const THREADS: u64 = 8;
+        const BLOCKS_PER_THREAD: u64 = 32;
 
         let cache = Arc::new(MemoryBlockCache::new(
-            usize::try_from(THREADS * BLOCKS_PER_THREAD).unwrap(),
+            NonZeroUsize::new(usize::try_from(THREADS * BLOCKS_PER_THREAD).unwrap()).unwrap(),
         ));
-        let chain = Chain::new(1).unwrap();
+        let chain = Chain::new(1);
         let handles = (0..THREADS)
             .map(|thread_id| {
                 let cache = cache.clone();

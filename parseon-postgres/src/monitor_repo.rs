@@ -4,8 +4,9 @@ use sqlx::types::Json;
 use sqlx::{FromRow, PgConnection, PgPool};
 
 use parseon_core::abi::{AbiParam, parse_abi_type};
-use parseon_core::ports::{MonitorUpdate, NewMonitor};
-use crate::dyn_table;
+use parseon_core::ports::{MonitorKind, MonitorUpdate, NewMonitor};
+use parseon_core::{BlockNumber, ChainId, MonitorId, Target};
+use crate::{dyn_table, pg_types};
 type AppResult<T> = anyhow::Result<T>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,10 +31,10 @@ impl StoredParam {
 pub struct MonitorRecord {
     pub id: i64,
     pub chain_id: i64,
-    pub address: String,
+    pub address: Vec<u8>,
     pub signature: String,
     pub kind: String,
-    pub signature_hash: String,
+    pub signature_hash: Vec<u8>,
     pub param_schema: Json<Vec<StoredParam>>,
     pub start_block: i64,
     pub end_block: Option<i64>,
@@ -45,19 +46,40 @@ pub struct MonitorRecord {
 }
 
 pub async fn create_prepared(pool: &PgPool, input: &NewMonitor) -> AppResult<MonitorRecord> {
-    let params = input
-        .param_schema
+    let (address, signature, kind, signature_hash, abi_params) = match &input.target {
+        Target::Call(target) => (
+            target.address.as_slice(),
+            &target.signature,
+            MonitorKind::Call,
+            target.selector.as_slice(),
+            &target.inputs,
+        ),
+        Target::Event(target) => (
+            target.address.as_slice(),
+            &target.signature,
+            MonitorKind::Event,
+            target.topic0.as_slice(),
+            &target.params,
+        ),
+    };
+    let params = abi_params
         .iter()
         .map(|param| StoredParam {
             name: param.name.clone(),
-            sol_type: param.sol_type.clone(),
+            sol_type: param.sol_type(),
             indexed: param.indexed,
         })
         .collect::<Vec<_>>();
+    let chain_id = pg_types::to_i64(input.chain.id, "chain id")?;
+    let start_block = pg_types::to_i64(input.start_block, "start block")?;
+    let end_block = input
+        .end_block
+        .map(|block| pg_types::to_i64(block, "end block"))
+        .transpose()?;
     let mut tx = pool.begin().await?;
     let chain_exists: Option<i64> =
         sqlx::query_scalar("SELECT chain_id FROM chains WHERE chain_id = $1 FOR KEY SHARE")
-            .bind(input.chain.id)
+            .bind(chain_id)
             .fetch_optional(&mut *tx)
             .await?;
     anyhow::ensure!(chain_exists.is_some(), "chain {} not found", input.chain.id);
@@ -67,14 +89,14 @@ pub async fn create_prepared(pool: &PgPool, input: &NewMonitor) -> AppResult<Mon
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            RETURNING *"#,
     )
-    .bind(input.chain.id)
-    .bind(&input.address)
-    .bind(&input.signature)
-    .bind(input.kind.as_str())
-    .bind(&input.signature_hash)
+    .bind(chain_id)
+    .bind(address)
+    .bind(signature)
+    .bind(kind.as_str())
+    .bind(signature_hash)
     .bind(Json(params.clone()))
-    .bind(input.start_block)
-    .bind(input.end_block)
+    .bind(start_block)
+    .bind(end_block)
     .fetch_one(&mut *tx)
     .await?;
     dyn_table::create_result_table(&mut tx, row.id, &row.kind, &params).await?;
@@ -82,7 +104,10 @@ pub async fn create_prepared(pool: &PgPool, input: &NewMonitor) -> AppResult<Mon
     Ok(row)
 }
 
-pub async fn list(pool: &PgPool, chain_id: Option<i64>) -> AppResult<Vec<MonitorRecord>> {
+pub async fn list(pool: &PgPool, chain_id: Option<ChainId>) -> AppResult<Vec<MonitorRecord>> {
+    let chain_id = chain_id
+        .map(|id| pg_types::to_i64(id, "chain id"))
+        .transpose()?;
     let rows = sqlx::query_as::<_, MonitorRecord>(
         "SELECT * FROM monitors WHERE ($1::BIGINT IS NULL OR chain_id = $1) ORDER BY id",
     )
@@ -99,7 +124,8 @@ pub async fn count(pool: &PgPool) -> AppResult<usize> {
     Ok(usize::try_from(count)?)
 }
 
-pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRecord> {
+pub async fn get(pool: &PgPool, id: MonitorId) -> AppResult<MonitorRecord> {
+    let id = pg_types::to_monitor_id(id)?;
     let row = sqlx::query_as::<_, MonitorRecord>("SELECT * FROM monitors WHERE id = $1")
         .bind(id)
         .fetch_one(pool)
@@ -107,7 +133,8 @@ pub async fn get(pool: &PgPool, id: i64) -> AppResult<MonitorRecord> {
     Ok(row)
 }
 
-pub async fn delete(pool: &PgPool, id: i64) -> AppResult<()> {
+pub async fn delete(pool: &PgPool, id: MonitorId) -> AppResult<()> {
+    let id = pg_types::to_monitor_id(id)?;
     let mut tx = pool.begin().await?;
     let current =
         sqlx::query_as::<_, MonitorRecord>("SELECT * FROM monitors WHERE id = $1 FOR UPDATE")
@@ -128,9 +155,19 @@ pub async fn delete(pool: &PgPool, id: i64) -> AppResult<()> {
 
 pub async fn update_prepared(
     pool: &PgPool,
-    id: i64,
+    id: MonitorId,
     update: &MonitorUpdate,
 ) -> AppResult<MonitorRecord> {
+    let id = pg_types::to_monitor_id(id)?;
+    let start_block = pg_types::to_i64(update.start_block, "start block")?;
+    let end_block = update
+        .end_block
+        .map(|block| pg_types::to_i64(block, "end block"))
+        .transpose()?;
+    let cursor = update
+        .cursor
+        .map(|block| pg_types::to_i64(block, "cursor"))
+        .transpose()?;
     let mut tx = pool.begin().await?;
     let current = sqlx::query_as::<_, MonitorRecord>(
         "SELECT * FROM monitors WHERE id = $1 FOR UPDATE",
@@ -149,10 +186,10 @@ pub async fn update_prepared(
            WHERE id = $6
            RETURNING *"#,
     )
-    .bind(update.start_block)
-    .bind(update.end_block)
+    .bind(start_block)
+    .bind(end_block)
     .bind(update.enabled)
-    .bind(update.cursor)
+    .bind(cursor)
     .bind(update.completed)
     .bind(id)
     .fetch_one(&mut *tx)
@@ -163,11 +200,14 @@ pub async fn update_prepared(
 
 pub async fn set_cursor(
     conn: &mut PgConnection,
-    id: i64,
-    chain_id: i64,
-    cursor: i64,
+    id: MonitorId,
+    chain_id: ChainId,
+    cursor: BlockNumber,
     completed: bool,
 ) -> AppResult<()> {
+    let id = pg_types::to_monitor_id(id)?;
+    let chain_id = pg_types::to_i64(chain_id, "chain id")?;
+    let cursor = pg_types::to_i64(cursor, "cursor")?;
     sqlx::query(
         "UPDATE monitors SET cursor = $1, completed = $2, updated_at = NOW() WHERE id = $3 AND chain_id = $4",
     )

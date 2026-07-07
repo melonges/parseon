@@ -1,10 +1,12 @@
 use chrono::{DateTime, Utc};
 
+use crate::abi::AbiParam;
 use crate::ports::{ChainRecord, MonitorKind, MonitorRecord, ResultRecord};
+use crate::{Address, B256, BlockNumber, ChainId, MonitorId, Selector, Target, TxHash};
 
 #[derive(Debug, Clone)]
 pub struct ChainView {
-    pub chain_id: i64,
+    pub chain_id: ChainId,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -23,17 +25,17 @@ impl From<ChainRecord> for ChainView {
 
 #[derive(Debug, Clone)]
 pub struct MonitorView {
-    pub id: i64,
-    pub chain_id: i64,
-    pub address: String,
+    pub id: MonitorId,
+    pub chain_id: ChainId,
+    pub address: Address,
     pub signature: String,
     pub kind: MonitorKind,
-    pub selector: Option<String>,
-    pub topic0: Option<String>,
-    pub param_schema: Vec<crate::ports::ParamSchema>,
-    pub start_block: i64,
-    pub end_block: Option<i64>,
-    pub cursor: Option<i64>,
+    pub selector: Option<Selector>,
+    pub topic0: Option<B256>,
+    pub param_schema: Vec<AbiParam>,
+    pub start_block: BlockNumber,
+    pub end_block: Option<BlockNumber>,
+    pub cursor: Option<BlockNumber>,
     pub completed: bool,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
@@ -42,19 +44,33 @@ pub struct MonitorView {
 
 impl From<MonitorRecord> for MonitorView {
     fn from(record: MonitorRecord) -> Self {
-        let (selector, topic0) = match record.kind {
-            MonitorKind::Call => (Some(record.signature_hash.clone()), None),
-            MonitorKind::Event => (None, Some(record.signature_hash.clone())),
+        let (address, signature, kind, selector, topic0, param_schema) = match record.target {
+            Target::Call(target) => (
+                target.address,
+                target.signature,
+                MonitorKind::Call,
+                Some(target.selector),
+                None,
+                target.inputs,
+            ),
+            Target::Event(target) => (
+                target.address,
+                target.signature,
+                MonitorKind::Event,
+                None,
+                Some(target.topic0),
+                target.params,
+            ),
         };
         Self {
             id: record.id,
             chain_id: record.chain.id,
-            address: record.address,
-            signature: record.signature,
-            kind: record.kind,
+            address,
+            signature,
+            kind,
             selector,
             topic0,
-            param_schema: record.param_schema,
+            param_schema,
             start_block: record.start_block,
             end_block: record.end_block,
             cursor: record.cursor,
@@ -69,14 +85,14 @@ impl From<MonitorRecord> for MonitorView {
 #[derive(Debug, Clone)]
 pub enum MonitorResultView {
     Call {
-        tx_hash: String,
-        block_number: i64,
+        tx_hash: TxHash,
+        block_number: BlockNumber,
         params: serde_json::Value,
     },
     Event {
-        tx_hash: String,
-        log_index: i64,
-        block_number: i64,
+        tx_hash: TxHash,
+        log_index: u64,
+        block_number: BlockNumber,
         params: serde_json::Value,
     },
 }

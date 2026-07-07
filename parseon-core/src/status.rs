@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
+use crate::{BlockNumber, ChainId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerState {
@@ -13,9 +14,9 @@ pub enum WorkerState {
 
 #[derive(Debug, Clone)]
 pub struct ChainStatusSnapshot {
-    pub chain_id: i64,
+    pub chain_id: ChainId,
     pub enabled: bool,
-    pub finalized_head: Option<i64>,
+    pub finalized_head: Option<BlockNumber>,
     pub worker_state: WorkerState,
     pub last_successful_poll_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
@@ -27,7 +28,7 @@ pub struct ChainStatus {
 }
 
 impl ChainStatus {
-    pub fn starting(chain_id: i64, finalized_head: Option<i64>) -> Self {
+    pub fn starting(chain_id: ChainId, finalized_head: Option<BlockNumber>) -> Self {
         Self::new(ChainStatusSnapshot {
             chain_id,
             enabled: true,
@@ -39,7 +40,7 @@ impl ChainStatus {
     }
 
     #[cfg(test)]
-    pub fn running(chain_id: i64, finalized_head: i64) -> Self {
+    pub fn running(chain_id: ChainId, finalized_head: BlockNumber) -> Self {
         Self::new(ChainStatusSnapshot {
             chain_id,
             enabled: true,
@@ -50,7 +51,7 @@ impl ChainStatus {
         })
     }
 
-    pub fn disabled(chain_id: i64) -> Self {
+    pub fn disabled(chain_id: ChainId) -> Self {
         Self::new(ChainStatusSnapshot {
             chain_id,
             enabled: false,
@@ -61,7 +62,7 @@ impl ChainStatus {
         })
     }
 
-    pub fn degraded(chain_id: i64, message: impl Into<String>) -> Self {
+    pub fn degraded(chain_id: ChainId, message: impl Into<String>) -> Self {
         Self::new(ChainStatusSnapshot {
             chain_id,
             enabled: true,
@@ -78,7 +79,7 @@ impl ChainStatus {
         }
     }
 
-    pub fn record_success(&self, finalized_head: i64) {
+    pub fn record_success(&self, finalized_head: BlockNumber) {
         let mut status = self.inner.write().expect("runtime status lock poisoned");
         status.finalized_head = Some(finalized_head);
         status.worker_state = WorkerState::Running;
@@ -104,7 +105,7 @@ impl ChainStatus {
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeStatus {
-    inner: Arc<RwLock<BTreeMap<i64, ChainStatus>>>,
+    inner: Arc<RwLock<BTreeMap<ChainId, ChainStatus>>>,
 }
 
 impl RuntimeStatus {
@@ -115,7 +116,7 @@ impl RuntimeStatus {
             .insert(status.snapshot().chain_id, status);
     }
 
-    pub fn remove(&self, chain_id: i64) {
+    pub fn remove(&self, chain_id: ChainId) {
         self.inner
             .write()
             .expect("runtime status registry lock poisoned")

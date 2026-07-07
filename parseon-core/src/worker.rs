@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 use futures_util::StreamExt;
 use tokio::sync::Semaphore;
@@ -8,13 +9,13 @@ use tokio_util::sync::CancellationToken;
 use super::indexer;
 use super::ports::{BlockCache, BlockCommit, BlockSource, InFlightGuard, IndexStorage, Telemetry};
 use super::status::ChainStatus;
-use super::{Chain, DecodedResult, Target, scheduler};
+use super::{BlockNumber, Chain, Cursor, DecodedResult, MonitorId, Target, scheduler};
 
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
     pub chain: Chain,
-    pub batch_size: i64,
-    pub block_concurrency: usize,
+    pub batch_size: NonZeroU64,
+    pub block_concurrency: NonZeroUsize,
     pub poll_interval: Duration,
 }
 
@@ -60,14 +61,14 @@ pub async fn run(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PollResult {
-    pub finalized_head: i64,
+    pub finalized_head: BlockNumber,
     pub decoded: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceStatus {
     pub chain_id: u64,
-    pub finalized_head: i64,
+    pub finalized_head: BlockNumber,
 }
 
 pub async fn probe_source(source: &dyn BlockSource) -> anyhow::Result<SourceStatus> {
@@ -126,7 +127,7 @@ pub async fn run_once(
             .map(|(block_number, covering)| async move {
                 prepare_block(config.chain, block_number, covering, source, cache, telemetry).await
             }),
-        config.block_concurrency,
+        config.block_concurrency.get(),
     );
     let mut decoded = 0;
     let mut progress = active
@@ -134,7 +135,7 @@ pub async fn run_once(
         .map(|monitor| {
             (
                 monitor.id,
-                monitor.cursor.0.unwrap_or(monitor.start_block - 1),
+                monitor.cursor.0,
             )
         })
         .collect::<std::collections::HashMap<_, _>>();
@@ -170,7 +171,7 @@ pub async fn run_once(
                 telemetry.record_commit(config.chain.id, calls, events, "success", started.elapsed());
                 decoded += count;
                 for monitor_id in prepared.monitor_ids {
-                    progress.insert(monitor_id, prepared.block_number);
+                    progress.insert(monitor_id, Some(prepared.block_number));
                 }
             }
             Err(error) => {
@@ -180,8 +181,16 @@ pub async fn run_once(
         }
     }
 
-    let min_cursor = progress.values().copied().min().unwrap_or(0);
-    cache.evict_before(config.chain, min_cursor);
+    if let Some(min_next) = active
+        .iter()
+        .filter_map(|monitor| {
+            Cursor(*progress.get(&monitor.id).unwrap_or(&monitor.cursor.0))
+                .next(monitor.start_block)
+        })
+        .min()
+    {
+        cache.evict_before(config.chain, min_next);
+    }
     let lag = active
         .iter()
         .map(|monitor| {
@@ -189,7 +198,15 @@ pub async fn run_once(
                 .end_block
                 .unwrap_or(finalized_head)
                 .min(finalized_head);
-            target.saturating_sub(*progress.get(&monitor.id).unwrap_or(&target))
+            Cursor(*progress.get(&monitor.id).unwrap_or(&monitor.cursor.0))
+                .next(monitor.start_block)
+                .map_or(0, |next| {
+                    if next > target {
+                        0
+                    } else {
+                        target.saturating_sub(next).saturating_add(1)
+                    }
+                })
         })
         .max()
         .unwrap_or(0);
@@ -201,15 +218,15 @@ pub async fn run_once(
 }
 
 struct PreparedBlock {
-    block_number: i64,
-    monitor_ids: Vec<i64>,
+    block_number: BlockNumber,
+    monitor_ids: Vec<MonitorId>,
     monitors: Vec<super::monitor::Monitor>,
     results: Vec<DecodedResult>,
 }
 
 async fn prepare_block(
     chain: Chain,
-    block_number: i64,
+    block_number: BlockNumber,
     covering: Vec<super::monitor::Monitor>,
     source: &dyn BlockSource,
     cache: &dyn BlockCache,
@@ -246,10 +263,13 @@ async fn prepare_block(
                 .transactions
                 .iter()
                 .filter(|transaction| {
-                    let selector = transaction.input.get(..4).unwrap_or_default();
+                    let selector = transaction
+                        .input
+                        .get(..4)
+                        .and_then(|bytes| super::Selector::try_from(bytes).ok());
                     call_monitors
                         .iter()
-                        .any(|monitor| monitor.matches_call(transaction.to, selector))
+                        .any(|monitor| selector.is_some_and(|selector| monitor.matches_call(transaction.to, selector)))
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -345,11 +365,11 @@ mod tests {
     struct ParallelSource {
         current: AtomicUsize,
         maximum: AtomicUsize,
-        fail_at: Option<i64>,
+        fail_at: Option<BlockNumber>,
     }
 
     impl ParallelSource {
-        fn new(fail_at: Option<i64>) -> Self {
+        fn new(fail_at: Option<BlockNumber>) -> Self {
             Self {
                 current: AtomicUsize::new(0),
                 maximum: AtomicUsize::new(0),
@@ -360,11 +380,11 @@ mod tests {
 
     #[derive(Default)]
     struct FakeCache {
-        blocks: Mutex<HashMap<(i64, i64), SourceBlock>>,
+        blocks: Mutex<HashMap<(u64, BlockNumber), SourceBlock>>,
     }
 
     impl BlockCache for FakeCache {
-        fn get(&self, chain: Chain, block_number: i64) -> Option<SourceBlock> {
+        fn get(&self, chain: Chain, block_number: BlockNumber) -> Option<SourceBlock> {
             self.blocks
                 .lock()
                 .unwrap()
@@ -379,7 +399,7 @@ mod tests {
                 .insert((chain.id, block.number), block);
         }
 
-        fn evict_before(&self, chain: Chain, block_number: i64) {
+        fn evict_before(&self, chain: Chain, block_number: BlockNumber) {
             self.blocks
                 .lock()
                 .unwrap()
@@ -393,11 +413,11 @@ mod tests {
             Ok(1)
         }
 
-        async fn finalized_head(&self) -> anyhow::Result<i64> {
+        async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
             Ok(10)
         }
 
-        async fn fetch_block(&self, block_number: i64) -> anyhow::Result<SourceBlock> {
+        async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
             Ok(SourceBlock {
                 number: block_number,
                 transactions: Vec::new(),
@@ -419,11 +439,11 @@ mod tests {
             Ok(1)
         }
 
-        async fn finalized_head(&self) -> anyhow::Result<i64> {
+        async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
             anyhow::bail!("invalid argument: finalized")
         }
 
-        async fn fetch_block(&self, _block_number: i64) -> anyhow::Result<SourceBlock> {
+        async fn fetch_block(&self, _block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
             unreachable!()
         }
 
@@ -442,14 +462,14 @@ mod tests {
             Ok(1)
         }
 
-        async fn finalized_head(&self) -> anyhow::Result<i64> {
+        async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
             Ok(12)
         }
 
-        async fn fetch_block(&self, block_number: i64) -> anyhow::Result<SourceBlock> {
+        async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
             let in_flight = self.current.fetch_add(1, Ordering::SeqCst) + 1;
             self.maximum.fetch_max(in_flight, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis((13 - block_number) as u64 * 5)).await;
+            tokio::time::sleep(Duration::from_millis((13 - block_number) * 5)).await;
             self.current.fetch_sub(1, Ordering::SeqCst);
             if self.fail_at == Some(block_number) {
                 anyhow::bail!("block {block_number} failed")
@@ -491,11 +511,11 @@ mod tests {
     async fn commits_cursor_progress_when_block_has_no_matches() {
         let storage = FakeStorage {
             monitor: Monitor {
-                id: 7,
-                chain: Chain::new(1).unwrap(),
+                id: MonitorId::new(7).unwrap(),
+                chain: Chain::new(1),
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
-                    selector: [1, 2, 3, 4],
+                    selector: [1, 2, 3, 4].into(),
                     signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
@@ -509,9 +529,9 @@ mod tests {
             commits: Mutex::new(Vec::new()),
         };
         let config = WorkerConfig {
-            chain: Chain::new(1).unwrap(),
-            batch_size: 1,
-            block_concurrency: 1,
+            chain: Chain::new(1),
+            batch_size: NonZeroU64::new(1).unwrap(),
+            block_concurrency: NonZeroUsize::new(1).unwrap(),
             poll_interval: Duration::from_millis(100),
         };
         let db_writes = Semaphore::new(1);
@@ -533,18 +553,18 @@ mod tests {
         let commits = storage.commits.lock().unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].block_number, 10);
-        assert_eq!(commits[0].monitors[0].id, 7);
+        assert_eq!(commits[0].monitors[0].id.get(), 7);
     }
 
     #[tokio::test]
     async fn ignores_monitors_owned_by_another_chain() {
         let storage = FakeStorage {
             monitor: Monitor {
-                id: 7,
-                chain: Chain::new(2).unwrap(),
+                id: MonitorId::new(7).unwrap(),
+                chain: Chain::new(2),
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
-                    selector: [1, 2, 3, 4],
+                    selector: [1, 2, 3, 4].into(),
                     signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
@@ -558,9 +578,9 @@ mod tests {
             commits: Mutex::new(Vec::new()),
         };
         let config = WorkerConfig {
-            chain: Chain::new(1).unwrap(),
-            batch_size: 1,
-            block_concurrency: 1,
+            chain: Chain::new(1),
+            batch_size: NonZeroU64::new(1).unwrap(),
+            block_concurrency: NonZeroUsize::new(1).unwrap(),
             poll_interval: Duration::from_millis(100),
         };
         let db_writes = Semaphore::new(1);
@@ -587,11 +607,11 @@ mod tests {
         let status = ChainStatus::running(1, 9);
         let storage = FakeStorage {
             monitor: Monitor {
-                id: 7,
-                chain: Chain::new(1).unwrap(),
+                id: MonitorId::new(7).unwrap(),
+                chain: Chain::new(1),
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
-                    selector: [1, 2, 3, 4],
+                    selector: [1, 2, 3, 4].into(),
                     signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
@@ -605,9 +625,9 @@ mod tests {
             commits: Mutex::new(Vec::new()),
         };
         let config = WorkerConfig {
-            chain: Chain::new(1).unwrap(),
-            batch_size: 1,
-            block_concurrency: 1,
+            chain: Chain::new(1),
+            batch_size: NonZeroU64::new(1).unwrap(),
+            block_concurrency: NonZeroUsize::new(1).unwrap(),
             poll_interval: Duration::from_millis(100),
         };
         let db_writes = Semaphore::new(1);
@@ -652,11 +672,11 @@ mod tests {
     async fn prepares_concurrently_but_commits_in_block_order() {
         let storage = FakeStorage {
             monitor: Monitor {
-                id: 7,
-                chain: Chain::new(1).unwrap(),
+                id: MonitorId::new(7).unwrap(),
+                chain: Chain::new(1),
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
-                    selector: [1, 2, 3, 4],
+                    selector: [1, 2, 3, 4].into(),
                     signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
@@ -671,9 +691,9 @@ mod tests {
         };
         let source = ParallelSource::new(None);
         let config = WorkerConfig {
-            chain: Chain::new(1).unwrap(),
-            batch_size: 3,
-            block_concurrency: 3,
+            chain: Chain::new(1),
+            batch_size: NonZeroU64::new(3).unwrap(),
+            block_concurrency: NonZeroUsize::new(3).unwrap(),
             poll_interval: Duration::from_millis(100),
         };
 
@@ -704,11 +724,11 @@ mod tests {
     async fn never_commits_past_a_failed_block() {
         let storage = FakeStorage {
             monitor: Monitor {
-                id: 7,
-                chain: Chain::new(1).unwrap(),
+                id: MonitorId::new(7).unwrap(),
+                chain: Chain::new(1),
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
-                    selector: [1, 2, 3, 4],
+                    selector: [1, 2, 3, 4].into(),
                     signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
@@ -723,9 +743,9 @@ mod tests {
         };
         let source = ParallelSource::new(Some(11));
         let config = WorkerConfig {
-            chain: Chain::new(1).unwrap(),
-            batch_size: 3,
-            block_concurrency: 3,
+            chain: Chain::new(1),
+            batch_size: NonZeroU64::new(3).unwrap(),
+            block_concurrency: NonZeroUsize::new(3).unwrap(),
             poll_interval: Duration::from_millis(100),
         };
 

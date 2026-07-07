@@ -9,9 +9,10 @@ use crate::api::dto::{
     ResultsQuery, Status, UpdateChain, UpdateMonitor,
 };
 use parseon_core::commands::{
-    CreateChain as CreateChainCommand, CreateMonitor as CreateMonitorCommand, ResultQuery,
-    UpdateChain as UpdateChainCommand, UpdateMonitor as UpdateMonitorCommand,
+    CreateChain as CreateChainCommand, CreateMonitor as CreateMonitorCommand, PageLimit,
+    ResultQuery, UpdateChain as UpdateChainCommand, UpdateMonitor as UpdateMonitorCommand,
 };
+use parseon_core::MonitorId;
 use crate::error::{AppError, AppResult};
 
 // ----- Health -----
@@ -120,7 +121,7 @@ pub async fn list_chains(State(state): State<AppState>) -> AppResult<Json<Vec<Ch
     get,
     path = "/chains/{chain_id}",
     tag = "chains",
-    params(("chain_id" = i64, Path, description = "EIP-155 chain ID")),
+    params(("chain_id" = u64, Path, description = "EIP-155 chain ID")),
     responses(
         (status = OK, description = "Chain found", body = ChainRow),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
@@ -128,7 +129,7 @@ pub async fn list_chains(State(state): State<AppState>) -> AppResult<Json<Vec<Ch
 )]
 pub async fn get_chain(
     State(state): State<AppState>,
-    Path(chain_id): Path<i64>,
+    Path(chain_id): Path<u64>,
 ) -> AppResult<Json<ChainRow>> {
     Ok(Json(state.chains.get(chain_id).await?.into()))
 }
@@ -137,7 +138,7 @@ pub async fn get_chain(
     patch,
     path = "/chains/{chain_id}",
     tag = "chains",
-    params(("chain_id" = i64, Path, description = "EIP-155 chain ID")),
+    params(("chain_id" = u64, Path, description = "EIP-155 chain ID")),
     request_body = UpdateChain,
     responses(
         (status = OK, description = "Chain updated", body = ChainRow),
@@ -147,7 +148,7 @@ pub async fn get_chain(
 )]
 pub async fn update_chain(
     State(state): State<AppState>,
-    Path(chain_id): Path<i64>,
+    Path(chain_id): Path<u64>,
     body: Result<Json<UpdateChain>, JsonRejection>,
 ) -> AppResult<Json<ChainRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
@@ -162,7 +163,7 @@ pub async fn update_chain(
     delete,
     path = "/chains/{chain_id}",
     tag = "chains",
-    params(("chain_id" = i64, Path, description = "EIP-155 chain ID")),
+    params(("chain_id" = u64, Path, description = "EIP-155 chain ID")),
     responses(
         (status = NO_CONTENT, description = "Chain, monitors, and result tables deleted"),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
@@ -170,7 +171,7 @@ pub async fn update_chain(
 )]
 pub async fn delete_chain(
     State(state): State<AppState>,
-    Path(chain_id): Path<i64>,
+    Path(chain_id): Path<u64>,
 ) -> AppResult<axum::http::StatusCode> {
     state.chains.delete(chain_id).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
@@ -207,7 +208,7 @@ pub async fn create_monitor(
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct MonitorListQuery {
-    pub chain_id: Option<i64>,
+    pub chain_id: Option<u64>,
 }
 
 #[utoipa::path(
@@ -232,7 +233,7 @@ pub async fn list_monitors(
     get,
     path = "/monitors/{id}",
     tag = "monitors",
-    params(("id" = i64, Path, description = "Monitor ID")),
+    params(("id" = u64, Path, description = "Monitor ID")),
     responses(
         (status = OK, description = "Monitor found", body = MonitorRow),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
@@ -240,9 +241,9 @@ pub async fn list_monitors(
 )]
 pub async fn get_monitor(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(id): Path<u64>,
 ) -> AppResult<Json<MonitorRow>> {
-    let row = state.monitors.get(id).await?;
+    let row = state.monitors.get(monitor_id(id)?).await?;
     Ok(Json(row.into()))
 }
 
@@ -250,7 +251,7 @@ pub async fn get_monitor(
     patch,
     path = "/monitors/{id}",
     tag = "monitors",
-    params(("id" = i64, Path, description = "Monitor ID")),
+    params(("id" = u64, Path, description = "Monitor ID")),
     request_body = UpdateMonitor,
     responses(
         (status = OK, description = "Monitor updated", body = MonitorRow),
@@ -260,11 +261,11 @@ pub async fn get_monitor(
 )]
 pub async fn update_monitor(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(id): Path<u64>,
     body: Result<Json<UpdateMonitor>, JsonRejection>,
 ) -> AppResult<Json<MonitorRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let row = state.monitors.update(id, UpdateMonitorCommand {
+    let row = state.monitors.update(monitor_id(id)?, UpdateMonitorCommand {
         start_block: body.start_block,
         end_block: body.end_block,
         enabled: body.enabled,
@@ -276,7 +277,7 @@ pub async fn update_monitor(
     delete,
     path = "/monitors/{id}",
     tag = "monitors",
-    params(("id" = i64, Path, description = "Monitor ID")),
+    params(("id" = u64, Path, description = "Monitor ID")),
     responses(
         (status = NO_CONTENT, description = "Monitor deleted"),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
@@ -284,9 +285,9 @@ pub async fn update_monitor(
 )]
 pub async fn delete_monitor(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(id): Path<u64>,
 ) -> AppResult<axum::http::StatusCode> {
-    state.monitors.delete(id).await?;
+    state.monitors.delete(monitor_id(id)?).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -297,9 +298,9 @@ pub async fn delete_monitor(
     path = "/monitors/{id}/results",
     tag = "results",
     params(
-        ("id" = i64, Path, description = "Monitor ID"),
-        ("limit" = Option<i64>, Query, description = "Maximum number of results (default 50, max 200)"),
-        ("offset" = Option<i64>, Query, description = "Pagination offset (default 0)")
+        ("id" = u64, Path, description = "Monitor ID"),
+        ("limit" = Option<u64>, Query, description = "Maximum number of results (default 50, max 200)"),
+        ("offset" = Option<u64>, Query, description = "Pagination offset (default 0)")
     ),
     responses(
         (status = OK, description = "Decoded results ordered by block_number descending", body = [MonitorResult]),
@@ -309,12 +310,16 @@ pub async fn delete_monitor(
 )]
 pub async fn list_monitor_results(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(id): Path<u64>,
     Query(query): Query<ResultsQuery>,
 ) -> AppResult<Json<Vec<MonitorResult>>> {
-    let rows = state.monitors.results(id, ResultQuery {
-        limit: query.limit,
+    let rows = state.monitors.results(monitor_id(id)?, ResultQuery {
+        limit: PageLimit::new(query.limit),
         offset: query.offset,
     }).await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+fn monitor_id(id: u64) -> AppResult<MonitorId> {
+    MonitorId::new(id).map_err(|error| AppError::BadRequest(error.to_string()))
 }

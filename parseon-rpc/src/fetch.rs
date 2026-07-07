@@ -30,7 +30,7 @@ pub async fn fetch_block(provider: &HttpProvider, block_number: u64) -> anyhow::
     }
 
     Ok(SourceBlock {
-        number: i64::try_from(block_number)?,
+        number: block_number,
         transactions: out,
     })
 }
@@ -51,11 +51,7 @@ pub async fn fetch_logs(
         .into_iter()
         .map(|log| {
             Ok(SourceLog {
-                block_number: log
-                    .block_number
-                    .map(|n| i64::try_from(n))
-                    .transpose()
-                    .map_err(anyhow::Error::from)?,
+                block_number: log.block_number,
                 transaction_hash: log.transaction_hash,
                 log_index: log.log_index,
                 address: log.address(),

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,7 +7,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::Url;
+use super::{BlockNumber, ChainId, Url};
 use super::ports::{
     BlockCacheFactory, BlockSource, BlockSourceFactory, ChainRepository, RegisteredChain, IndexStorage,
     Telemetry,
@@ -16,10 +17,10 @@ use super::worker::{self, WorkerConfig};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SupervisorConfig {
-    pub batch_size: i64,
+    pub batch_size: NonZeroU64,
     pub poll_interval: Duration,
-    pub block_concurrency: usize,
-    pub db_write_concurrency: usize,
+    pub block_concurrency: NonZeroUsize,
+    pub db_write_concurrency: NonZeroUsize,
 }
 
 struct WorkerRuntime {
@@ -37,7 +38,7 @@ pub struct Supervisor {
     statuses: RuntimeStatus,
     telemetry: Arc<dyn Telemetry>,
     db_writes: Arc<Semaphore>,
-    workers: HashMap<i64, WorkerRuntime>,
+    workers: HashMap<ChainId, WorkerRuntime>,
 }
 
 impl Supervisor {
@@ -50,7 +51,7 @@ impl Supervisor {
         statuses: RuntimeStatus,
         telemetry: Arc<dyn Telemetry>,
     ) -> Self {
-        let db_write_concurrency = config.db_write_concurrency.max(1);
+        let db_write_concurrency = config.db_write_concurrency.get();
         Self {
             config,
             registry,
@@ -139,7 +140,7 @@ impl Supervisor {
     async fn prepare_source(
         &self,
         registered: &RegisteredChain,
-    ) -> Result<(Arc<dyn BlockSource>, i64), &'static str> {
+    ) -> Result<(Arc<dyn BlockSource>, BlockNumber), &'static str> {
         let source = self
             .source_factory
             .connect(&registered.rpc_url)
@@ -147,8 +148,7 @@ impl Supervisor {
         let probe = worker::probe_source(source.as_ref())
             .await
             .map_err(|_| "RPC endpoint validation failed")?;
-        let discovered = i64::try_from(probe.chain_id)
-            .map_err(|_| "RPC endpoint returned an unsupported chain ID")?;
+        let discovered = probe.chain_id;
         if discovered != registered.chain.id {
             return Err("RPC endpoint returned a different chain ID");
         }
@@ -159,7 +159,7 @@ impl Supervisor {
         &mut self,
         registered: RegisteredChain,
         source: Arc<dyn BlockSource>,
-        finalized_head: i64,
+        finalized_head: BlockNumber,
     ) {
         let chain = registered.chain;
         let status = ChainStatus::starting(chain.id, Some(finalized_head));
@@ -190,7 +190,7 @@ impl Supervisor {
         );
     }
 
-    async fn stop_worker(&mut self, chain_id: i64) {
+    async fn stop_worker(&mut self, chain_id: ChainId) {
         if let Some(runtime) = self.workers.remove(&chain_id) {
             runtime.cancel.cancel();
             runtime.handle.abort();
@@ -206,7 +206,7 @@ impl Supervisor {
     }
 
     #[cfg(test)]
-    fn has_worker(&self, chain_id: i64) -> bool {
+    fn has_worker(&self, chain_id: ChainId) -> bool {
         self.workers.contains_key(&chain_id)
     }
 }
@@ -243,11 +243,11 @@ mod tests {
     struct EmptyCache;
 
     impl BlockCache for EmptyCache {
-        fn get(&self, _: Chain, _: i64) -> Option<SourceBlock> {
+        fn get(&self, _: Chain, _: BlockNumber) -> Option<SourceBlock> {
             None
         }
         fn put(&self, _: Chain, _: SourceBlock) {}
-        fn evict_before(&self, _: Chain, _: i64) {}
+        fn evict_before(&self, _: Chain, _: BlockNumber) {}
     }
 
     struct EmptyCacheFactory;
@@ -286,14 +286,14 @@ mod tests {
             Ok(self.chain_id)
         }
 
-        async fn finalized_head(&self) -> anyhow::Result<i64> {
+        async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
             if self.fail {
                 anyhow::bail!("unavailable")
             }
             Ok(100)
         }
 
-        async fn fetch_block(&self, block_number: i64) -> anyhow::Result<SourceBlock> {
+        async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
             Ok(SourceBlock {
                 number: block_number,
                 transactions: Vec::new(),
@@ -331,9 +331,9 @@ mod tests {
         }
     }
 
-    fn registered(chain_id: i64, url: &str, enabled: bool) -> RegisteredChain {
+    fn registered(chain_id: ChainId, url: &str, enabled: bool) -> RegisteredChain {
         RegisteredChain {
-            chain: Chain::new(chain_id).unwrap(),
+            chain: Chain::new(chain_id),
             rpc_url: url.parse().unwrap(),
             enabled,
         }
@@ -346,10 +346,10 @@ mod tests {
     ) -> Supervisor {
         Supervisor::new(
             SupervisorConfig {
-                batch_size: 1,
+                batch_size: NonZeroU64::new(1).unwrap(),
                 poll_interval: Duration::from_secs(60),
-                block_concurrency: 1,
-                db_write_concurrency: 1,
+                block_concurrency: NonZeroUsize::new(1).unwrap(),
+                db_write_concurrency: NonZeroUsize::new(1).unwrap(),
             },
             registry,
             Arc::new(EmptyStorage),

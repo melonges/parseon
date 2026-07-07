@@ -1,10 +1,18 @@
-use super::monitor::Monitor;
+use std::num::NonZeroU64;
 
-pub fn plan_blocks(monitors: &[&Monitor], finalized_head: i64, batch_size: i64) -> Vec<i64> {
+use super::monitor::Monitor;
+use super::BlockNumber;
+
+pub fn plan_blocks(
+    monitors: &[&Monitor],
+    finalized_head: BlockNumber,
+    batch_size: NonZeroU64,
+) -> Vec<BlockNumber> {
     let mut wanted = Vec::new();
-    let batch_size = batch_size.max(1);
     for monitor in monitors {
-        let from = monitor.next_block();
+        let Some(from) = monitor.next_block() else {
+            continue;
+        };
         let to = monitor
             .end_block
             .unwrap_or(finalized_head)
@@ -12,7 +20,7 @@ pub fn plan_blocks(monitors: &[&Monitor], finalized_head: i64, batch_size: i64) 
         if from > to {
             continue;
         }
-        let to = to.min(from.saturating_add(batch_size - 1));
+        let to = to.min(from.saturating_add(batch_size.get() - 1));
         wanted.extend(from..=to);
     }
     wanted.sort_unstable();
@@ -29,13 +37,13 @@ mod tests {
     use crate::monitor::Monitor;
     use crate::{CallTarget, Cursor, Target};
 
-    fn monitor(id: i64, start: i64, cursor: Option<i64>, end: Option<i64>) -> Monitor {
+    fn monitor(id: u64, start: u64, cursor: Option<u64>, end: Option<u64>) -> Monitor {
         Monitor {
-            id,
-            chain: crate::Chain::new(1).unwrap(),
+            id: crate::MonitorId::new(id).unwrap(),
+            chain: crate::Chain::new(1),
             target: Target::Call(CallTarget {
                 address: Address::ZERO,
-                selector: [0; 4],
+                selector: [0; 4].into(),
                 signature: "f(uint256)".into(),
                 inputs: Vec::new(),
             }),
@@ -52,12 +60,12 @@ mod tests {
     fn deduplicates_and_bounds_ranges() {
         let first = monitor(1, 10, None, None);
         let second = monitor(2, 11, None, Some(12));
-        assert_eq!(plan_blocks(&[&first, &second], 20, 3), vec![10, 11, 12]);
+        assert_eq!(plan_blocks(&[&first, &second], 20, NonZeroU64::new(3).unwrap()), vec![10, 11, 12]);
     }
 
     #[test]
     fn skips_ranges_beyond_head() {
         let monitor = monitor(1, 20, None, None);
-        assert!(plan_blocks(&[&monitor], 19, 10).is_empty());
+        assert!(plan_blocks(&[&monitor], 19, NonZeroU64::new(10).unwrap()).is_empty());
     }
 }

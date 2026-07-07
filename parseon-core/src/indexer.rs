@@ -1,6 +1,6 @@
 use super::abi::{decode_calldata, decode_event};
 use super::monitor::Monitor;
-use super::{DecodedCall, DecodedEvent, ExecutedTransaction, SourceBlock, SourceLog, Target};
+use super::{BlockNumber, DecodedCall, DecodedEvent, ExecutedTransaction, Selector, SourceBlock, SourceLog, Target};
 
 pub fn decode_calls(
     block: &SourceBlock,
@@ -9,7 +9,13 @@ pub fn decode_calls(
 ) -> Vec<DecodedCall> {
     let mut calls = Vec::new();
     for tx in transactions.into_iter().filter_map(|tx| tx.succeeded.then(|| tx.transaction)) {
-        let selector = tx.input.get(..4).unwrap_or_default();
+        let Some(selector) = tx
+            .input
+            .get(..4)
+            .and_then(|bytes| Selector::try_from(bytes).ok())
+        else {
+            continue;
+        };
         let Some(monitor) = monitors
             .iter()
             .find(|monitor| monitor.matches_call(tx.to, selector))
@@ -24,7 +30,7 @@ pub fn decode_calls(
             Ok(params) => params,
             Err(error) => {
                 tracing::warn!(
-                    monitor = monitor.id,
+                    monitor = %monitor.id,
                     signature = %target.signature,
                     tx = %tx.hash,
                     "decode error: {error}"
@@ -46,7 +52,7 @@ pub fn decode_calls(
 }
 
 pub fn decode_events(
-    block_number: i64,
+    block_number: BlockNumber,
     monitors: &[Monitor],
     logs: Vec<SourceLog>,
 ) -> anyhow::Result<Vec<DecodedEvent>> {
@@ -129,11 +135,11 @@ mod tests {
             input: call.abi_encode(),
         };
         let monitor = Monitor {
-            id: 9,
-            chain: crate::Chain::new(1).unwrap(),
+            id: crate::MonitorId::new(9).unwrap(),
+            chain: crate::Chain::new(1),
             target: Target::Call(CallTarget {
                 address: contract,
-                selector: transferCall::SELECTOR,
+                selector: transferCall::SELECTOR.into(),
                 signature: "transfer(address,uint256)".into(),
                 inputs: vec![
                     AbiParam::new("to", DynSolType::Address).unwrap(),
@@ -164,7 +170,7 @@ mod tests {
 
         let decoded = decode_calls(&block, &[monitor], executed);
         assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].monitor_id, 9);
+        assert_eq!(decoded[0].monitor_id.get(), 9);
         assert_eq!(decoded[0].params[1], DecodedValue::Uint(U256::from(42)));
     }
 }

@@ -4,6 +4,7 @@ use sqlx::{FromRow, PgPool};
 use parseon_core::{Chain, Url};
 use parseon_core::ports::RegisteredChain;
 use crate::dyn_table;
+use crate::pg_types;
 type AppResult<T> = anyhow::Result<T>;
 
 #[derive(Clone, FromRow)]
@@ -22,7 +23,7 @@ impl ChainRecord {
 
     pub fn registered(&self) -> anyhow::Result<RegisteredChain> {
         Ok(RegisteredChain {
-            chain: Chain::new(self.chain_id)?,
+            chain: Chain::new(pg_types::from_i64(self.chain_id, "chain id")?),
             rpc_url: self.rpc_url()?,
             enabled: self.enabled,
         })
@@ -35,12 +36,13 @@ pub async fn create(
     rpc_url: &Url,
     enabled: bool,
 ) -> AppResult<ChainRecord> {
+    let chain_id = pg_types::to_i64(chain.id, "chain id")?;
     Ok(sqlx::query_as::<_, ChainRecord>(
         r#"INSERT INTO chains (chain_id, rpc_url, enabled)
            VALUES ($1, $2, $3)
            RETURNING *"#,
     )
-    .bind(chain.id)
+    .bind(chain_id)
     .bind(rpc_url.as_str())
     .bind(enabled)
     .fetch_one(pool)
@@ -55,7 +57,8 @@ pub async fn list(pool: &PgPool) -> AppResult<Vec<ChainRecord>> {
     )
 }
 
-pub async fn get(pool: &PgPool, chain_id: i64) -> AppResult<ChainRecord> {
+pub async fn get(pool: &PgPool, chain_id: u64) -> AppResult<ChainRecord> {
+    let chain_id = pg_types::to_i64(chain_id, "chain id")?;
     sqlx::query_as::<_, ChainRecord>("SELECT * FROM chains WHERE chain_id = $1")
         .bind(chain_id)
         .fetch_optional(pool)
@@ -65,10 +68,11 @@ pub async fn get(pool: &PgPool, chain_id: i64) -> AppResult<ChainRecord> {
 
 pub async fn update(
     pool: &PgPool,
-    chain_id: i64,
+    chain_id: u64,
     rpc_url: Option<&Url>,
     enabled: Option<bool>,
 ) -> AppResult<ChainRecord> {
+    let chain_id = pg_types::to_i64(chain_id, "chain id")?;
     sqlx::query_as::<_, ChainRecord>(
         r#"UPDATE chains
            SET rpc_url = COALESCE($1, rpc_url),
@@ -85,7 +89,8 @@ pub async fn update(
     .ok_or_else(|| anyhow::anyhow!("chain {chain_id} not found"))
 }
 
-pub async fn delete(pool: &PgPool, chain_id: i64) -> AppResult<()> {
+pub async fn delete(pool: &PgPool, chain_id: u64) -> AppResult<()> {
+    let chain_id = pg_types::to_i64(chain_id, "chain id")?;
     let mut tx = pool.begin().await?;
     let exists: Option<i64> =
         sqlx::query_scalar("SELECT chain_id FROM chains WHERE chain_id = $1 FOR UPDATE")

@@ -2,19 +2,18 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use std::collections::HashMap;
 
-use parseon_core::abi::parse_selector;
 use parseon_core::commands::ResultQuery;
 use parseon_core::filter::Filter;
 use parseon_core::monitor::Monitor;
 use parseon_core::ports::{
     BlockCommit, ChainRecord as CoreChainRecord, ChainRepository, ChainUpdate, IndexStorage,
-    MonitorKind, MonitorRecord as CoreMonitorRecord, MonitorRepository, MonitorUpdate, NewChain,
-    NewMonitor, ParamSchema, RegisteredChain, ResultRecord as CoreResultRecord, ResultRepository,
+    MonitorRecord as CoreMonitorRecord, MonitorRepository, MonitorUpdate, NewChain, NewMonitor,
+    RegisteredChain, ResultRecord as CoreResultRecord, ResultRepository,
 };
-use parseon_core::{CallTarget, Chain, Cursor, DecodedResult, EventTarget, Target};
+use parseon_core::{CallTarget, Chain, Cursor, DecodedResult, EventTarget, MonitorId, Target};
 
 use super::dyn_table::{CallResultInput, EventResultInput, ResultRecord, SearchParams};
-use super::{chain_repo, dyn_table, monitor_repo};
+use super::{chain_repo, dyn_table, monitor_repo, pg_types};
 
 #[derive(Clone)]
 pub struct PostgresStorage {
@@ -26,38 +25,39 @@ impl PostgresStorage {
         Self { pool }
     }
 
+    fn target(row: &monitor_repo::MonitorRecord) -> anyhow::Result<Target> {
+        let address = pg_types::address(&row.address)?;
+        let params = row
+            .param_schema
+            .0
+            .iter()
+            .map(monitor_repo::StoredParam::to_abi)
+            .collect::<Result<Vec<_>, _>>()?;
+        match row.kind.as_str() {
+            "call" => Ok(Target::Call(CallTarget {
+                address,
+                selector: pg_types::selector(&row.signature_hash)?,
+                signature: row.signature.clone(),
+                inputs: params,
+            })),
+            "event" => Ok(Target::Event(EventTarget {
+                address,
+                topic0: pg_types::b256(&row.signature_hash, "event topic0")?,
+                signature: row.signature.clone(),
+                params,
+            })),
+            kind => anyhow::bail!("invalid monitor kind {kind}"),
+        }
+    }
+
     fn to_monitor(row: &monitor_repo::MonitorRecord) -> anyhow::Result<Monitor> {
         Ok(Monitor {
-            id: row.id,
-            chain: Chain::new(row.chain_id)?,
-            target: if row.kind == "call" {
-                Target::Call(CallTarget {
-                    address: row.address.parse()?,
-                    selector: parse_selector(&row.signature_hash)?,
-                    signature: row.signature.clone(),
-                    inputs: row
-                        .param_schema
-                        .0
-                        .iter()
-                        .map(|param| param.to_abi())
-                        .collect::<Result<Vec<_>, _>>()?,
-                })
-            } else {
-                Target::Event(EventTarget {
-                    address: row.address.parse()?,
-                    topic0: row.signature_hash.parse()?,
-                    signature: row.signature.clone(),
-                    params: row
-                        .param_schema
-                        .0
-                        .iter()
-                        .map(|p| p.to_abi())
-                        .collect::<Result<Vec<_>, _>>()?,
-                })
-            },
-            start_block: row.start_block,
-            end_block: row.end_block,
-            cursor: Cursor(row.cursor),
+            id: pg_types::from_monitor_id(row.id)?,
+            chain: Chain::new(pg_types::from_i64(row.chain_id, "chain id")?),
+            target: Self::target(row)?,
+            start_block: pg_types::from_i64(row.start_block, "start block")?,
+            end_block: row.end_block.map(|value| pg_types::from_i64(value, "end block")).transpose()?,
+            cursor: Cursor(row.cursor.map(|value| pg_types::from_i64(value, "cursor")).transpose()?),
             completed: row.completed,
             enabled: row.enabled,
             filter: Filter::All,
@@ -67,7 +67,7 @@ impl PostgresStorage {
     fn chain_record(row: chain_repo::ChainRecord) -> anyhow::Result<CoreChainRecord> {
         let rpc_url = row.rpc_url()?;
         Ok(CoreChainRecord {
-            chain: Chain::new(row.chain_id)?,
+            chain: Chain::new(pg_types::from_i64(row.chain_id, "chain id")?),
             rpc_url,
             enabled: row.enabled,
             created_at: row.created_at,
@@ -77,29 +77,12 @@ impl PostgresStorage {
 
     fn monitor_record(row: monitor_repo::MonitorRecord) -> anyhow::Result<CoreMonitorRecord> {
         Ok(CoreMonitorRecord {
-            id: row.id,
-            chain: Chain::new(row.chain_id)?,
-            address: row.address,
-            signature: row.signature,
-            kind: match row.kind.as_str() {
-                "call" => MonitorKind::Call,
-                "event" => MonitorKind::Event,
-                kind => anyhow::bail!("invalid monitor kind {kind}"),
-            },
-            signature_hash: row.signature_hash,
-            param_schema: row
-                .param_schema
-                .0
-                .into_iter()
-                .map(|param| ParamSchema {
-                    name: param.name,
-                    sol_type: param.sol_type,
-                    indexed: param.indexed,
-                })
-                .collect(),
-            start_block: row.start_block,
-            end_block: row.end_block,
-            cursor: row.cursor,
+            id: pg_types::from_monitor_id(row.id)?,
+            chain: Chain::new(pg_types::from_i64(row.chain_id, "chain id")?),
+            target: Self::target(&row)?,
+            start_block: pg_types::from_i64(row.start_block, "start block")?,
+            end_block: row.end_block.map(|value| pg_types::from_i64(value, "end block")).transpose()?,
+            cursor: row.cursor.map(|value| pg_types::from_i64(value, "cursor")).transpose()?,
             completed: row.completed,
             enabled: row.enabled,
             created_at: row.created_at,
@@ -131,8 +114,8 @@ impl IndexStorage for PostgresStorage {
         let mut monitor_ids = commit
             .monitors
             .iter()
-            .map(|monitor| monitor.id)
-            .collect::<Vec<_>>();
+            .map(|monitor| pg_types::to_monitor_id(monitor.id))
+            .collect::<Result<Vec<_>, _>>()?;
         monitor_ids.sort_unstable();
         monitor_ids.dedup();
 
@@ -140,7 +123,7 @@ impl IndexStorage for PostgresStorage {
             "SELECT * FROM monitors WHERE id = ANY($1) AND chain_id = $2 ORDER BY id FOR UPDATE",
         )
         .bind(&monitor_ids)
-        .bind(commit.chain.id)
+        .bind(pg_types::to_i64(commit.chain.id, "chain id")?)
         .fetch_all(&mut *tx)
         .await?;
         anyhow::ensure!(
@@ -150,8 +133,8 @@ impl IndexStorage for PostgresStorage {
         );
         let rows = rows
             .into_iter()
-            .map(|row| (row.id, row))
-            .collect::<HashMap<_, _>>();
+            .map(|row| Ok((pg_types::from_monitor_id(row.id)?, row)))
+            .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
         for result in &commit.results {
             match result {
@@ -161,7 +144,7 @@ impl IndexStorage for PostgresStorage {
                     })?;
                     let executed = &call.transaction;
                     let result = CallResultInput {
-                        tx_hash: executed.transaction.hash.to_string(),
+                        tx_hash: executed.transaction.hash,
                         block_number: call.block_number,
                         params: call.params.clone(),
                     };
@@ -172,8 +155,8 @@ impl IndexStorage for PostgresStorage {
                         anyhow::anyhow!("monitor {} was not locked", event.monitor_id)
                     })?;
                     let result = EventResultInput {
-                        tx_hash: event.transaction_hash.to_string(),
-                        log_index: i64::try_from(event.log_index)?,
+                        tx_hash: event.transaction_hash,
+                        log_index: event.log_index,
                         block_number: event.block_number,
                         params: event.params.clone(),
                     };
@@ -246,15 +229,15 @@ impl MonitorRepository for PostgresStorage {
         monitor_repo::list(&self.pool, chain.map(|chain| chain.id)).await?.into_iter().map(Self::monitor_record).collect()
     }
 
-    async fn get_monitor(&self, id: i64) -> anyhow::Result<CoreMonitorRecord> {
+    async fn get_monitor(&self, id: MonitorId) -> anyhow::Result<CoreMonitorRecord> {
         Self::monitor_record(monitor_repo::get(&self.pool, id).await?)
     }
 
-    async fn update_monitor(&self, id: i64, update: MonitorUpdate) -> anyhow::Result<CoreMonitorRecord> {
+    async fn update_monitor(&self, id: MonitorId, update: MonitorUpdate) -> anyhow::Result<CoreMonitorRecord> {
         Self::monitor_record(monitor_repo::update_prepared(&self.pool, id, &update).await?)
     }
 
-    async fn delete_monitor(&self, id: i64) -> anyhow::Result<()> {
+    async fn delete_monitor(&self, id: MonitorId) -> anyhow::Result<()> {
         monitor_repo::delete(&self.pool, id).await
     }
 }
@@ -262,10 +245,14 @@ impl MonitorRepository for PostgresStorage {
 #[async_trait]
 impl ResultRepository for PostgresStorage {
     async fn query_results(&self, monitor: &CoreMonitorRecord, query: ResultQuery) -> anyhow::Result<Vec<CoreResultRecord>> {
-        let schema = monitor.param_schema.iter().map(|param| monitor_repo::StoredParam {
-            name: param.name.clone(), sol_type: param.sol_type.clone(), indexed: param.indexed,
+        let (kind, params) = match &monitor.target {
+            Target::Call(target) => ("call", &target.inputs),
+            Target::Event(target) => ("event", &target.params),
+        };
+        let schema = params.iter().map(|param| monitor_repo::StoredParam {
+            name: param.name.clone(), sol_type: param.sol_type(), indexed: param.indexed,
         }).collect::<Vec<_>>();
-        Ok(dyn_table::query_results(&self.pool, monitor.id, monitor.kind.as_str(), &schema, &SearchParams { limit: query.limit, offset: query.offset }).await?.into_iter().map(|record| match record {
+        Ok(dyn_table::query_results(&self.pool, pg_types::to_monitor_id(monitor.id)?, kind, &schema, &SearchParams { limit: query.limit, offset: query.offset }).await?.into_iter().map(|record| match record {
             ResultRecord::Call(record) => CoreResultRecord::Call { tx_hash: record.tx_hash, block_number: record.block_number, params: record.params },
             ResultRecord::Event(record) => CoreResultRecord::Event { tx_hash: record.tx_hash, log_index: record.log_index, block_number: record.block_number, params: record.params },
         }).collect())
@@ -281,13 +268,13 @@ mod tests {
     use parseon_core::filter::Filter;
     use parseon_core::monitor::Monitor;
 
-    fn monitor(chain_id: i64) -> Monitor {
+    fn monitor(chain_id: u64) -> Monitor {
         Monitor {
-            id: 1,
-            chain: Chain::new(chain_id).unwrap(),
+            id: MonitorId::new(1).unwrap(),
+            chain: Chain::new(chain_id),
             target: Target::Call(CallTarget {
                 address: Address::ZERO,
-                selector: [0; 4],
+                selector: [0; 4].into(),
                 signature: "f()".into(),
                 inputs: Vec::new(),
             }),
@@ -308,7 +295,7 @@ mod tests {
         let storage = PostgresStorage::new(pool);
         let error = storage
             .commit_block(BlockCommit {
-                chain: Chain::new(1).unwrap(),
+                chain: Chain::new(1),
                 block_number: 10,
                 monitors: vec![monitor(2)],
                 results: Vec::new(),

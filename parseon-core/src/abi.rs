@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use alloy::dyn_abi::{DynSolEvent, DynSolType, DynSolValue, Specifier};
 use alloy::json_abi::{AbiItem, Event, Function};
-use alloy::primitives::B256;
+use alloy::primitives::{B256, Selector};
 
 use super::DecodedValue;
 
@@ -38,7 +38,7 @@ impl AbiParam {
 
 #[derive(Debug, Clone)]
 pub struct MethodSpec {
-    pub selector: [u8; 4],
+    pub selector: Selector,
     pub params: Vec<AbiParam>,
 }
 
@@ -68,15 +68,6 @@ pub fn parse_abi_type(value: &str) -> Result<DynSolType, AbiError> {
     let ty = DynSolType::from_str(value).map_err(|error| AbiError::Type(error.to_string()))?;
     ensure_supported_type(&ty)?;
     Ok(ty)
-}
-
-pub fn parse_selector(value: &str) -> Result<[u8; 4], AbiError> {
-    let value = value.strip_prefix("0x").unwrap_or(value);
-    let bytes = alloy::hex::decode(value)
-        .map_err(|error| AbiError::Parse(format!("invalid selector {value}: {error}")))?;
-    bytes
-        .try_into()
-        .map_err(|_| AbiError::Parse(format!("selector must contain exactly 4 bytes: {value}")))
 }
 
 fn ensure_supported_type(ty: &DynSolType) -> Result<(), AbiError> {
