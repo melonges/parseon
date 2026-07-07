@@ -13,10 +13,9 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::core::ports::{BlockSource, BlockSourceFactory};
+use crate::core::ports::{BlockSource, BlockSourceFactory, InFlightGuard, NoopTelemetry, Telemetry};
 use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
 use crate::error::{AppError, AppResult};
-use crate::metrics::Metrics;
 use crate::rpc::fetch;
 
 pub type HttpProvider = RootProvider<AnyNetwork>;
@@ -48,24 +47,24 @@ pub struct JsonRpcBlockSource {
     chain_id: AtomicI64,
     batch_capability: AtomicU8,
     block_receipts_capability: AtomicU8,
-    metrics: Metrics,
+    telemetry: Arc<dyn Telemetry>,
 }
 
 #[derive(Clone)]
 pub struct JsonRpcBlockSourceFactory {
     config: RpcConfig,
-    metrics: Metrics,
+    telemetry: Arc<dyn Telemetry>,
 }
 
 impl Default for JsonRpcBlockSourceFactory {
     fn default() -> Self {
-        Self::new(RpcConfig::default(), Metrics::default())
+        Self::new(RpcConfig::default(), Arc::new(NoopTelemetry))
     }
 }
 
 impl JsonRpcBlockSourceFactory {
-    pub fn new(config: RpcConfig, metrics: Metrics) -> Self {
-        Self { config, metrics }
+    pub fn new(config: RpcConfig, telemetry: Arc<dyn Telemetry>) -> Self {
+        Self { config, telemetry }
     }
 }
 
@@ -74,13 +73,17 @@ impl BlockSourceFactory for JsonRpcBlockSourceFactory {
         Ok(Arc::new(JsonRpcBlockSource::connect(
             rpc_url,
             self.config,
-            self.metrics.clone(),
+            self.telemetry.clone(),
         )?))
     }
 }
 
 impl JsonRpcBlockSource {
-    pub fn connect(rpc_url: &str, config: RpcConfig, metrics: Metrics) -> AppResult<Self> {
+    pub fn connect(
+        rpc_url: &str,
+        config: RpcConfig,
+        telemetry: Arc<dyn Telemetry>,
+    ) -> AppResult<Self> {
         let request_concurrency = config.request_concurrency.max(1);
         Ok(Self {
             provider: build(rpc_url)?,
@@ -90,7 +93,7 @@ impl JsonRpcBlockSource {
             chain_id: AtomicI64::new(-1),
             batch_capability: AtomicU8::new(CAPABILITY_UNKNOWN),
             block_receipts_capability: AtomicU8::new(CAPABILITY_UNKNOWN),
-            metrics,
+            telemetry,
         })
     }
 
@@ -109,11 +112,12 @@ impl JsonRpcBlockSource {
     {
         let _permit = self.acquire().await?;
         let chain_id = self.chain_id.load(Ordering::Relaxed);
-        let _in_flight = (chain_id >= 0).then(|| self.metrics.in_flight(chain_id, "rpc"));
+        let _in_flight =
+            (chain_id >= 0).then(|| InFlightGuard::new(self.telemetry.as_ref(), chain_id, "rpc"));
         let started = Instant::now();
         let result = future.await;
         if chain_id >= 0 {
-            self.metrics.record_rpc(
+            self.telemetry.record_rpc(
                 chain_id,
                 operation,
                 strategy,
@@ -242,7 +246,7 @@ impl BlockSource for JsonRpcBlockSource {
             Ok(chain_id) => {
                 if let Ok(metric_chain_id) = i64::try_from(chain_id) {
                     self.chain_id.store(metric_chain_id, Ordering::Relaxed);
-                    self.metrics.record_rpc(
+                    self.telemetry.record_rpc(
                         metric_chain_id,
                         "chain_id",
                         "single",

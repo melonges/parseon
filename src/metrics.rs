@@ -8,6 +8,8 @@ use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::{Histogram, exponential_buckets};
 use prometheus_client::registry::Registry;
 
+use crate::core::ports::Telemetry;
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ChainLabels {
     chain_id: String,
@@ -149,19 +151,10 @@ impl Metrics {
         }
     }
 
-    pub fn in_flight(&self, chain_id: i64, stage: &'static str) -> InFlightGuard {
-        let labels = StageLabels {
-            chain_id: chain_id.to_string(),
-            stage,
-        };
-        self.inner.in_flight.get_or_create(&labels).inc();
-        InFlightGuard {
-            metrics: self.clone(),
-            labels,
-        }
-    }
+}
 
-    pub fn record_rpc(
+impl Telemetry for Metrics {
+    fn record_rpc(
         &self,
         chain_id: i64,
         operation: &'static str,
@@ -188,7 +181,7 @@ impl Metrics {
             .observe(elapsed.as_secs_f64());
     }
 
-    pub fn record_cache(&self, chain_id: i64, hit: bool) {
+    fn record_cache(&self, chain_id: i64, hit: bool) {
         self.inner
             .cache_access
             .get_or_create(&CacheLabels {
@@ -198,7 +191,7 @@ impl Metrics {
             .inc();
     }
 
-    pub fn record_commit(
+    fn record_commit(
         &self,
         chain_id: i64,
         calls: u64,
@@ -233,32 +226,29 @@ impl Metrics {
         }
     }
 
-    pub fn set_worker_lag(&self, chain_id: i64, lag: i64) {
+    fn set_worker_lag(&self, chain_id: i64, lag: i64) {
         self.inner
             .worker_lag
             .get_or_create(&Self::chain_labels(chain_id))
             .set(lag.max(0));
     }
 
-    pub fn render(&self) -> Result<String, std::fmt::Error> {
+    fn adjust_in_flight(&self, chain_id: i64, stage: &'static str, delta: i64) {
+        let gauge = self.inner.in_flight.get_or_create(&StageLabels {
+            chain_id: chain_id.to_string(),
+            stage,
+        });
+        if delta > 0 {
+            gauge.inc_by(delta);
+        } else {
+            gauge.dec_by(-delta);
+        }
+    }
+
+    fn render(&self) -> anyhow::Result<String> {
         let mut output = String::new();
         encode(&mut output, &self.inner.registry)?;
         Ok(output)
-    }
-}
-
-pub struct InFlightGuard {
-    metrics: Metrics,
-    labels: StageLabels,
-}
-
-impl Drop for InFlightGuard {
-    fn drop(&mut self) {
-        self.metrics
-            .inner
-            .in_flight
-            .get_or_create(&self.labels)
-            .dec();
     }
 }
 

@@ -7,16 +7,17 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::Chain;
-use super::ports::{BlockSource, BlockSourceFactory, ChainRegistry, RegisteredChain, Storage};
+use super::ports::{
+    BlockCacheFactory, BlockSource, BlockSourceFactory, ChainRegistry, RegisteredChain, Storage,
+    Telemetry,
+};
 use super::status::{ChainStatus, RuntimeStatus};
 use super::worker::{self, WorkerConfig};
-use crate::metrics::Metrics;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SupervisorConfig {
     pub batch_size: i64,
     pub poll_interval: Duration,
-    pub block_cache_size: usize,
     pub block_concurrency: usize,
     pub db_write_concurrency: usize,
 }
@@ -32,8 +33,9 @@ pub struct Supervisor {
     registry: Arc<dyn ChainRegistry>,
     storage: Arc<dyn Storage>,
     source_factory: Arc<dyn BlockSourceFactory>,
+    cache_factory: Arc<dyn BlockCacheFactory>,
     statuses: RuntimeStatus,
-    metrics: Metrics,
+    telemetry: Arc<dyn Telemetry>,
     db_writes: Arc<Semaphore>,
     workers: HashMap<i64, WorkerRuntime>,
 }
@@ -44,8 +46,9 @@ impl Supervisor {
         registry: Arc<dyn ChainRegistry>,
         storage: Arc<dyn Storage>,
         source_factory: Arc<dyn BlockSourceFactory>,
+        cache_factory: Arc<dyn BlockCacheFactory>,
         statuses: RuntimeStatus,
-        metrics: Metrics,
+        telemetry: Arc<dyn Telemetry>,
     ) -> Self {
         let db_write_concurrency = config.db_write_concurrency.max(1);
         Self {
@@ -53,8 +56,9 @@ impl Supervisor {
             registry,
             storage,
             source_factory,
+            cache_factory,
             statuses,
-            metrics,
+            telemetry,
             db_writes: Arc::new(Semaphore::new(db_write_concurrency)),
             workers: HashMap::new(),
         }
@@ -170,11 +174,9 @@ impl Supervisor {
             },
             self.storage.clone(),
             source,
-            Arc::new(crate::cache::MemoryBlockCache::new(
-                self.config.block_cache_size,
-            )),
+            self.cache_factory.create(),
             self.db_writes.clone(),
-            self.metrics.clone(),
+            self.telemetry.clone(),
             status,
             cancel.clone(),
         ));
@@ -236,7 +238,7 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::core::ports::{BlockCommit, BlockSource};
+    use crate::core::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry};
     use crate::core::{BlockTransaction, ExecutedTransaction, SourceBlock};
 
     #[derive(Default)]
@@ -250,6 +252,24 @@ mod tests {
     }
 
     struct EmptyStorage;
+
+    struct EmptyCache;
+
+    impl BlockCache for EmptyCache {
+        fn get(&self, _: Chain, _: i64) -> Option<SourceBlock> {
+            None
+        }
+        fn put(&self, _: Chain, _: SourceBlock) {}
+        fn evict_before(&self, _: Chain, _: i64) {}
+    }
+
+    struct EmptyCacheFactory;
+
+    impl BlockCacheFactory for EmptyCacheFactory {
+        fn create(&self) -> Arc<dyn BlockCache> {
+            Arc::new(EmptyCache)
+        }
+    }
 
     #[async_trait]
     impl Storage for EmptyStorage {
@@ -341,15 +361,15 @@ mod tests {
             SupervisorConfig {
                 batch_size: 1,
                 poll_interval: Duration::from_secs(60),
-                block_cache_size: 1,
                 block_concurrency: 1,
                 db_write_concurrency: 1,
             },
             registry,
             Arc::new(EmptyStorage),
             factory,
+            Arc::new(EmptyCacheFactory),
             statuses,
-            Metrics::default(),
+            Arc::new(NoopTelemetry),
         )
     }
 

@@ -1,9 +1,9 @@
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use lru::LruCache;
 
-use crate::core::ports::BlockCache;
+use crate::core::ports::{BlockCache, BlockCacheFactory};
 use crate::core::{Chain, SourceBlock};
 
 pub struct MemoryBlockCache {
@@ -44,6 +44,22 @@ impl BlockCache for MemoryBlockCache {
                 cache.pop(&key);
             }
         }
+    }
+}
+
+pub struct MemoryBlockCacheFactory {
+    capacity: usize,
+}
+
+impl MemoryBlockCacheFactory {
+    pub fn new(capacity: usize) -> Self {
+        Self { capacity }
+    }
+}
+
+impl BlockCacheFactory for MemoryBlockCacheFactory {
+    fn create(&self) -> Arc<dyn BlockCache> {
+        Arc::new(MemoryBlockCache::new(self.capacity))
     }
 }
 

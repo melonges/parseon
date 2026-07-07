@@ -10,10 +10,9 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::openapi::ApiDoc;
-use crate::core::ports::BlockSourceFactory;
+use crate::core::ports::{BlockSourceFactory, Telemetry};
 use crate::core::status::RuntimeStatus;
 use crate::db::storage::PostgresStorage;
-use crate::metrics::Metrics;
 
 /// Shared state passed to all handlers.
 #[derive(Clone)]
@@ -21,7 +20,7 @@ pub struct AppState {
     pub storage: PostgresStorage,
     pub runtime_status: RuntimeStatus,
     pub source_factory: std::sync::Arc<dyn BlockSourceFactory>,
-    pub metrics: Metrics,
+    pub telemetry: std::sync::Arc<dyn Telemetry>,
 }
 
 impl AppState {
@@ -29,13 +28,13 @@ impl AppState {
         storage: PostgresStorage,
         runtime_status: RuntimeStatus,
         source_factory: std::sync::Arc<dyn BlockSourceFactory>,
-        metrics: Metrics,
+        telemetry: std::sync::Arc<dyn Telemetry>,
     ) -> Self {
         Self {
             storage,
             runtime_status,
             source_factory,
-            metrics,
+            telemetry,
         }
     }
 }
@@ -79,7 +78,7 @@ mod tests {
             PostgresStorage::new(pool),
             statuses,
             std::sync::Arc::new(JsonRpcBlockSourceFactory::default()),
-            crate::metrics::Metrics::default(),
+            std::sync::Arc::new(crate::metrics::Metrics::default()),
         ))
     }
 

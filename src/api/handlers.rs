@@ -63,7 +63,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Status> {
 )]
 pub async fn metrics(State(state): State<AppState>) -> AppResult<axum::response::Response> {
     let body = state
-        .metrics
+        .telemetry
         .render()
         .map_err(|error| AppError::Internal(error.into()))?;
     Ok((

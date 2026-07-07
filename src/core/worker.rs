@@ -5,10 +5,8 @@ use futures_util::StreamExt;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use crate::metrics::Metrics;
-
 use super::indexer;
-use super::ports::{BlockCache, BlockCommit, BlockSource, Storage};
+use super::ports::{BlockCache, BlockCommit, BlockSource, InFlightGuard, Storage, Telemetry};
 use super::status::ChainStatus;
 use super::{Chain, DecodedResult, Target, scheduler};
 
@@ -26,7 +24,7 @@ pub async fn run(
     source: Arc<dyn BlockSource>,
     cache: Arc<dyn BlockCache>,
     db_writes: Arc<Semaphore>,
-    metrics: Metrics,
+    telemetry: Arc<dyn Telemetry>,
     status: ChainStatus,
     cancel: CancellationToken,
 ) {
@@ -41,7 +39,7 @@ pub async fn run(
             source.as_ref(),
             cache.as_ref(),
             db_writes.as_ref(),
-            &metrics,
+            telemetry.as_ref(),
             &cancel,
         )
         .await
@@ -89,7 +87,7 @@ pub async fn run_once(
     source: &dyn BlockSource,
     cache: &dyn BlockCache,
     db_writes: &Semaphore,
-    metrics: &Metrics,
+    telemetry: &dyn Telemetry,
     cancel: &CancellationToken,
 ) -> anyhow::Result<PollResult> {
     let finalized_head = source.finalized_head().await?;
@@ -99,7 +97,7 @@ pub async fn run_once(
         .filter(|monitor| monitor.enabled && !monitor.completed)
         .collect::<Vec<_>>();
     if active.is_empty() {
-        metrics.set_worker_lag(config.chain.id, 0);
+        telemetry.set_worker_lag(config.chain.id, 0);
         return Ok(PollResult {
             finalized_head,
             decoded: 0,
@@ -126,7 +124,7 @@ pub async fn run_once(
         planned
             .into_iter()
             .map(|(block_number, covering)| async move {
-                prepare_block(config.chain, block_number, covering, source, cache, metrics).await
+                prepare_block(config.chain, block_number, covering, source, cache, telemetry).await
             }),
         config.block_concurrency,
     );
@@ -156,7 +154,7 @@ pub async fn run_once(
             .count() as u64;
         let events = prepared.results.len() as u64 - calls;
         let permit = db_writes.acquire().await?;
-        let _in_flight = metrics.in_flight(config.chain.id, "db");
+        let _in_flight = InFlightGuard::new(telemetry, config.chain.id, "db");
         let started = std::time::Instant::now();
         let result = storage
             .commit_block(BlockCommit {
@@ -169,14 +167,14 @@ pub async fn run_once(
         drop(permit);
         match result {
             Ok(count) => {
-                metrics.record_commit(config.chain.id, calls, events, "success", started.elapsed());
+                telemetry.record_commit(config.chain.id, calls, events, "success", started.elapsed());
                 decoded += count;
                 for monitor_id in prepared.monitor_ids {
                     progress.insert(monitor_id, prepared.block_number);
                 }
             }
             Err(error) => {
-                metrics.record_commit(config.chain.id, calls, events, "error", started.elapsed());
+                telemetry.record_commit(config.chain.id, calls, events, "error", started.elapsed());
                 return Err(error);
             }
         }
@@ -195,7 +193,7 @@ pub async fn run_once(
         })
         .max()
         .unwrap_or(0);
-    metrics.set_worker_lag(config.chain.id, lag);
+    telemetry.set_worker_lag(config.chain.id, lag);
     Ok(PollResult {
         finalized_head,
         decoded,
@@ -215,9 +213,9 @@ async fn prepare_block(
     covering: Vec<super::monitor::Monitor>,
     source: &dyn BlockSource,
     cache: &dyn BlockCache,
-    metrics: &Metrics,
+    telemetry: &dyn Telemetry,
 ) -> anyhow::Result<PreparedBlock> {
-    let _in_flight = metrics.in_flight(chain.id, "block");
+    let _in_flight = InFlightGuard::new(telemetry, chain.id, "block");
 
     let call_monitors = covering
         .iter()
@@ -234,11 +232,11 @@ async fn prepare_block(
         if !call_monitors.is_empty() {
             let block = match cache.get(chain, block_number) {
                 Some(block) => {
-                    metrics.record_cache(chain.id, true);
+                    telemetry.record_cache(chain.id, true);
                     block
                 }
                 None => {
-                    metrics.record_cache(chain.id, false);
+                    telemetry.record_cache(chain.id, false);
                     let block = source.fetch_block(block_number).await?;
                     cache.put(chain, block.clone());
                     block
@@ -314,7 +312,7 @@ mod tests {
     use super::*;
     use crate::core::filter::Filter;
     use crate::core::monitor::Monitor;
-    use crate::core::ports::{BlockCache, BlockCommit, BlockSource, Storage};
+    use crate::core::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry, Storage};
     use crate::core::{
         BlockTransaction, CallTarget, Cursor, ExecutedTransaction, SourceBlock, Target,
     };
@@ -517,14 +515,14 @@ mod tests {
             poll_interval: Duration::from_millis(100),
         };
         let db_writes = Semaphore::new(1);
-        let metrics = Metrics::default();
+        let telemetry = NoopTelemetry;
         let poll = run_once(
             &config,
             &storage,
             &FakeSource,
             &FakeCache::default(),
             &db_writes,
-            &metrics,
+            &telemetry,
             &CancellationToken::new(),
         )
         .await
@@ -566,7 +564,7 @@ mod tests {
             poll_interval: Duration::from_millis(100),
         };
         let db_writes = Semaphore::new(1);
-        let metrics = Metrics::default();
+        let telemetry = NoopTelemetry;
 
         let poll = run_once(
             &config,
@@ -574,7 +572,7 @@ mod tests {
             &FakeSource,
             &FakeCache::default(),
             &db_writes,
-            &metrics,
+            &telemetry,
             &CancellationToken::new(),
         )
         .await
@@ -613,7 +611,7 @@ mod tests {
             poll_interval: Duration::from_millis(100),
         };
         let db_writes = Semaphore::new(1);
-        let metrics = Metrics::default();
+        let telemetry = NoopTelemetry;
 
         let poll = run_once(
             &config,
@@ -621,7 +619,7 @@ mod tests {
             &FakeSource,
             &FakeCache::default(),
             &db_writes,
-            &metrics,
+            &telemetry,
             &CancellationToken::new(),
         )
         .await
@@ -634,7 +632,7 @@ mod tests {
             &UnsupportedFinalizedSource,
             &FakeCache::default(),
             &db_writes,
-            &metrics,
+            &telemetry,
             &CancellationToken::new(),
         )
         .await
@@ -685,7 +683,7 @@ mod tests {
             &source,
             &FakeCache::default(),
             &Semaphore::new(1),
-            &Metrics::default(),
+            &NoopTelemetry,
             &CancellationToken::new(),
         )
         .await
@@ -737,7 +735,7 @@ mod tests {
             &source,
             &FakeCache::default(),
             &Semaphore::new(1),
-            &Metrics::default(),
+            &NoopTelemetry,
             &CancellationToken::new(),
         )
         .await
