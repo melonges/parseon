@@ -26,6 +26,20 @@ The project is moving quickly. Issues, ideas, and early contributions are welcom
 
 See the [roadmap](./roadmap.md) for planned milestones, the [terminology guide](./terminology.md) for domain language, and the [changelog](./CHANGELOG.md) for completed work.
 
+## Architecture
+
+Parseon is a Cargo workspace with a dependency-free application boundary around its infrastructure adapters:
+
+```text
+parseon-server
+├── parseon-core
+├── parseon-rpc ──────────> parseon-core
+├── parseon-postgres ─────> parseon-core
+└── parseon-memory-cache ─> parseon-core
+```
+
+`parseon-core` owns domain behavior, commands, views, application services, workers, and ports. The RPC, PostgreSQL, and memory-cache crates implement those ports. `parseon-server` owns configuration, HTTP/OpenAPI, Prometheus telemetry, and dependency wiring. The production binary remains `target/release/parseon`.
+
 ## License
 
 Licensed under either the [Apache License, Version 2.0](./LICENSE-APACHE) or the [MIT license](./LICENSE-MIT), at your option.

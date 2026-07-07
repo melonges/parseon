@@ -43,7 +43,7 @@ Base's public endpoint is rate-limited; register a private endpoint for sustaine
 
 ### sqlx migrations are embedded at compile time
 
-`src/db/pool.rs` uses `sqlx::migrate!("./src/db/migrations")` which embeds migration SQL into the binary at build time. **Editing a migration file has no effect without `cargo build`.** The running binary will not see the change.
+`parseon-postgres/src/pool.rs` uses `sqlx::migrate!("./src/migrations")` which embeds migration SQL into the binary at build time. **Editing a migration file has no effect without `cargo build`.** The running binary will not see the change.
 
 ### Modifying an applied migration breaks startup
 
@@ -82,25 +82,21 @@ Some implementation files may still use library-specific provider terminology in
 
 ## Architecture
 
-```
-main.rs        config load → DB connect (+migrate) → chain supervisor + HTTP API
-core/          domain models, ABI, monitors, filters, scheduler, indexer, worker, supervisor, and adapter ports
-cache/         chain-aware in-memory implementation of the core BlockCache port
-rpc/           Alloy JSON-RPC implementation of the core BlockSource port
-db/            PostgresStorage, monitor_repo, dyn_table (per-monitor result tables)
-api/           axum REST + OpenAPI/Swagger UI: /monitors/{id}, /healthz, /swagger-ui/
+```text
+parseon-server
+├── parseon-core
+├── parseon-rpc ──────────> parseon-core
+├── parseon-postgres ─────> parseon-core
+└── parseon-memory-cache ─> parseon-core
 ```
 
-Future architecture should move toward:
+- `parseon-core`: domain models, ABI decoding, commands, views, application services, workers, supervisor, and ports.
+- `parseon-rpc`: Alloy JSON-RPC `BlockSource` adapter, receipt batching, and log fetching.
+- `parseon-postgres`: SQLx repositories, dynamic result tables, migrations, and atomic block commits.
+- `parseon-memory-cache`: chain-aware LRU `BlockCache` and per-worker factory.
+- `parseon-server`: grouped CLI/env configuration, Axum/OpenAPI, Prometheus telemetry, and dependency wiring.
 
-```
-parseon-core   monitor targets, filters, decoded calls/events, scheduler, workers, reorg/finality logic
-block-source   JSON-RPC / eRPC / Etherscan source adapters
-storage        PostgreSQL first, MongoDB later
-cache          memory first, Redis later
-server         HTTP/OpenAPI now, GraphQL and management frontend later
-sinks          optional webhooks, Kafka, files, ClickHouse
-```
+Core must not depend on the server or any adapter crate. HTTP handlers call core application services and serialize core-derived views; adapters implement core ports.
 
 ## Key design decisions
 
@@ -111,7 +107,7 @@ sinks          optional webhooks, Kafka, files, ClickHouse
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
 - **Bounded indexing**: `BLOCK_CONCURRENCY` and `RPC_REQUEST_CONCURRENCY` apply per chain; `DB_WRITE_CONCURRENCY` limits atomic commits across the process; `RPC_BATCH_SIZE` controls targeted receipt batches.
 - **Chain-scoped monitors**: Each monitor belongs to one immutable registered chain; identical targets may exist on different chains.
-- **Per-monitor dynamic tables**: each monitor gets a `monitor_<id>_results` table containing minimal result identity and decoded ABI parameter columns. PostgreSQL column names and types are derived inside `db/dyn_table.rs`; they are not part of the core ABI model.
+- **Per-monitor dynamic tables**: each monitor gets a `monitor_<id>_results` table containing minimal result identity and decoded ABI parameter columns. PostgreSQL column names and types are derived inside `parseon-postgres/src/dyn_table.rs`; they are not part of the core ABI model.
 - **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`) and result-table names.
 - **Atomic block persistence**: decoded call/event rows and all covering monitor cursors commit in one PostgreSQL transaction.
 

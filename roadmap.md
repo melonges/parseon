@@ -6,47 +6,29 @@ Parseon is being built as a small, deterministic EVM indexing core with adapter-
 
 ## Architecture direction
 
-Parseon should keep a simple repository shape while the domain model is still moving. The near-term goal is **one binary crate with clear internal modules and stable traits**, not a large workspace full of premature crate boundaries.
+Parseon uses a small ports-and-adapters workspace. Core owns domain and application behavior; infrastructure crates implement core ports; the server is the composition root.
 
 ```text
-src/
-  api/          HTTP API, OpenAPI / Swagger, future management surface
-  cache/        in-memory BlockCache adapter
-  config/       CLI/env config loading
-  core/         domain, ABI, monitors, filters, scheduling, indexing, worker, ports
-  db/           PostgreSQL storage implementation
-  rpc/          JSON-RPC BlockSource adapter
+parseon-server
+├── parseon-core
+├── parseon-rpc ──────────> parseon-core
+├── parseon-postgres ─────> parseon-core
+└── parseon-memory-cache ─> parseon-core
 ```
 
 The core logic should stay independent from a specific database, block source, cache backend, or API surface. Adapters should customize how Parseon reads chain data, stores decoded results, and caches fetched blocks without changing the indexing logic itself.
 
-Use traits and modules first:
+The stable adapter boundaries are:
 
 ```text
-Storage trait       -> PostgreSQL implementation first
-BlockSource trait   -> JSON-RPC implementation first
-BlockCache trait    -> in-memory implementation first
-Sink trait          -> optional later
+IndexStorage / repository ports -> PostgreSQL implementation first
+BlockSource port              -> JSON-RPC implementation first
+BlockCache port               -> in-memory implementation first
+Telemetry port                -> Prometheus implementation in the server
+Sink port                     -> optional later
 ```
 
-Avoid splitting into many crates until the core domain model, terminology, and trait boundaries have stabilized. Modules are cheap. Crates are expensive. Apparently even software architecture has taxes.
-
-Separate crates may come later when there is a real reason:
-
-- independent release cycle;
-- independent dependency tree;
-- independent test surface;
-- external users;
-- large optional integrations such as MongoDB, Redis, eRPC, or ClickHouse.
-
-The first likely split, if needed, should be small:
-
-```text
-parseon-core     domain models, scheduling, reorg/finality, filters, decoded calls
-parseon-server   CLI/config, HTTP API, OpenAPI, metrics, runtime wiring
-```
-
-Only after that should Parseon consider adapter crates such as `parseon-storage-postgres`, `parseon-cache-redis`, or `parseon-source-erpc`.
+Core never depends on Axum, SQLx, Reqwest, Prometheus, the server, or adapter crates. Handlers invoke application services and return core-derived views. The production binary remains `parseon`.
 
 Runtime-loaded plugins are intentionally out of scope for early versions. Compile-time adapters with stable Rust traits are enough until actual users prove otherwise.
 
@@ -168,13 +150,12 @@ Let each monitor decide which decoded calls should be stored.
 
 ## v0.10 — Crate split evaluation
 
-Split only if the project has enough stability and real pressure to justify it.
+Status: implemented ahead of schedule.
 
-- Evaluate whether `parseon-core` should become a separate crate.
-- Evaluate whether `parseon-server` should become a separate crate.
-- Keep storage, cache, block source, and sink implementations as modules unless dependency weight or reuse requires a crate boundary.
-- Avoid creating crates only to mirror folders.
-- Document crate-boundary rules before moving code.
+- Extract `parseon-core`, `parseon-server`, `parseon-rpc`, `parseon-postgres`, and `parseon-memory-cache`.
+- Keep domain and application behavior in core.
+- Keep adapter dependency trees outside core.
+- Preserve one production `parseon` binary.
 
 ## v0.11 — Provisional indexing and rollback engine
 
