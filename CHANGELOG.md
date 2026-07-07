@@ -2,6 +2,19 @@
 
 All notable changes to Parseon are documented in this file.
 
+## 0.6.2 - 2026-07-07
+
+### Added
+
+- Dedicated `parseon-core`, `parseon-rpc`, `parseon-postgres`, `parseon-memory-cache`, and `parseon-server` workspace crates.
+- Core application services, commands, views, and repository ports for infrastructure-independent orchestration.
+
+### Changed
+
+- Route HTTP handlers through core application services instead of accessing PostgreSQL repositories directly.
+- Keep RPC, PostgreSQL, memory-cache, configuration, HTTP, and telemetry concerns behind explicit adapter boundaries.
+- Preserve the existing `parseon` production binary and HTTP API while documenting the workspace architecture.
+
 ## 0.6.1 - 2026-07-06
 
 ### Added

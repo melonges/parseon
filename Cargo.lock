@@ -3130,7 +3130,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "alloy",
  "anyhow",
@@ -3148,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-memory-cache"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "lru 0.18.0",
  "parseon-core",
@@ -3156,7 +3156,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-postgres"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "alloy",
  "anyhow",
@@ -3172,7 +3172,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-rpc"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "alloy",
  "alloy-rpc-types-any",
@@ -3186,7 +3186,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-server"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "axum",
