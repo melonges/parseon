@@ -44,7 +44,6 @@ mod tests {
             target: Target::Call(CallTarget {
                 address: Address::ZERO,
                 selector: [0; 4].into(),
-                signature: "f(uint256)".into(),
                 inputs: Vec::new(),
             }),
             start_block: start,

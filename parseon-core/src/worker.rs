@@ -516,7 +516,6 @@ mod tests {
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
                     selector: [1, 2, 3, 4].into(),
-                    signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
                 start_block: 10,
@@ -565,7 +564,6 @@ mod tests {
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
                     selector: [1, 2, 3, 4].into(),
-                    signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
                 start_block: 10,
@@ -612,7 +610,6 @@ mod tests {
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
                     selector: [1, 2, 3, 4].into(),
-                    signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
                 start_block: 11,
@@ -677,7 +674,6 @@ mod tests {
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
                     selector: [1, 2, 3, 4].into(),
-                    signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
                 start_block: 10,
@@ -729,7 +725,6 @@ mod tests {
                 target: Target::Call(CallTarget {
                     address: Address::ZERO,
                     selector: [1, 2, 3, 4].into(),
-                    signature: "f(uint256)".into(),
                     inputs: Vec::new(),
                 }),
                 start_block: 10,

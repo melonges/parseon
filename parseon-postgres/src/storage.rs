@@ -37,13 +37,11 @@ impl PostgresStorage {
             "call" => Ok(Target::Call(CallTarget {
                 address,
                 selector: pg_types::selector(&row.signature_hash)?,
-                signature: row.signature.clone(),
                 inputs: params,
             })),
             "event" => Ok(Target::Event(EventTarget {
                 address,
                 topic0: pg_types::b256(&row.signature_hash, "event topic0")?,
-                signature: row.signature.clone(),
                 params,
             })),
             kind => anyhow::bail!("invalid monitor kind {kind}"),
@@ -275,7 +273,6 @@ mod tests {
             target: Target::Call(CallTarget {
                 address: Address::ZERO,
                 selector: [0; 4].into(),
-                signature: "f()".into(),
                 inputs: Vec::new(),
             }),
             start_block: 0,

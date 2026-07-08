@@ -32,7 +32,6 @@ pub struct MonitorRecord {
     pub id: i64,
     pub chain_id: i64,
     pub address: Vec<u8>,
-    pub signature: String,
     pub kind: String,
     pub signature_hash: Vec<u8>,
     pub param_schema: Json<Vec<StoredParam>>,
@@ -46,17 +45,15 @@ pub struct MonitorRecord {
 }
 
 pub async fn create_prepared(pool: &PgPool, input: &NewMonitor) -> AppResult<MonitorRecord> {
-    let (address, signature, kind, signature_hash, abi_params) = match &input.target {
+    let (address, kind, signature_hash, abi_params) = match &input.target {
         Target::Call(target) => (
             target.address.as_slice(),
-            &target.signature,
             MonitorKind::Call,
             target.selector.as_slice(),
             &target.inputs,
         ),
         Target::Event(target) => (
             target.address.as_slice(),
-            &target.signature,
             MonitorKind::Event,
             target.topic0.as_slice(),
             &target.params,
@@ -85,13 +82,12 @@ pub async fn create_prepared(pool: &PgPool, input: &NewMonitor) -> AppResult<Mon
     anyhow::ensure!(chain_exists.is_some(), "chain {} not found", input.chain.id);
     let row = sqlx::query_as::<_, MonitorRecord>(
         r#"INSERT INTO monitors
-             (chain_id, address, signature, kind, signature_hash, param_schema, start_block, end_block)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             (chain_id, address, kind, signature_hash, param_schema, start_block, end_block)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING *"#,
     )
     .bind(chain_id)
     .bind(address)
-    .bind(signature)
     .bind(kind.as_str())
     .bind(signature_hash)
     .bind(Json(params.clone()))

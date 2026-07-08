@@ -54,9 +54,10 @@ Monitor behavior lives in `core::monitor`; runtime execution belongs to `core::w
 
 A monitor target defines what onchain call should be matched.
 
-The human-readable ABI `signature` remains text. A function `selector` is the
-fixed four-byte dispatch value derived from that signature, while an event
-`topic0` is its fixed 32-byte signature hash.
+The human-readable ABI `signature` is accepted only when creating a monitor and
+is not persisted. A function `selector` is the fixed four-byte dispatch value
+derived from that signature, while an event `topic0` is its fixed 32-byte
+signature hash.
 
 Typical target fields:
 
@@ -64,7 +65,6 @@ Typical target fields:
 chain_id
 address
 selector
-signature
 ```
 
 Recommended Rust-style shape:
@@ -74,7 +74,6 @@ pub struct MonitorTarget {
     pub chain_id: ChainId,
     pub address: Address,
     pub selector: Selector,
-    pub signature: FunctionSignature,
 }
 ```
 

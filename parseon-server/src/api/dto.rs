@@ -92,7 +92,6 @@ pub struct MonitorRow {
     pub chain_id: u64,
     #[schema(value_type = String, pattern = "^0x[0-9a-f]{40}$")]
     pub address: Address,
-    pub signature: String,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>, pattern = "^0x[0-9a-f]{8}$")]
@@ -116,7 +115,6 @@ impl From<MonitorView> for MonitorRow {
             id: record.id.get(),
             chain_id: record.chain_id,
             address: record.address,
-            signature: record.signature,
             kind: record.kind.as_str().into(),
             selector: record.selector,
             topic0: record.topic0,
@@ -290,6 +288,29 @@ mod tests {
             "signature": "function transfer(address to, uint256 value)",
             "start_block": 0
         })).is_err());
+    }
+
+    #[test]
+    fn monitor_response_keeps_only_fixed_size_target_identity() {
+        let row = MonitorRow {
+            id: 1,
+            chain_id: 1,
+            address: Address::ZERO,
+            kind: "call".into(),
+            selector: Some([1, 2, 3, 4].into()),
+            topic0: None,
+            param_schema: Vec::new(),
+            start_block: 0,
+            end_block: None,
+            cursor: None,
+            completed: false,
+            enabled: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let value = serde_json::to_value(row).unwrap();
+        assert!(value.get("signature").is_none());
+        assert_eq!(value["selector"], "0x01020304");
     }
 
     #[test]

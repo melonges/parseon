@@ -4,6 +4,11 @@ All notable changes to Parseon are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Keep human-readable ABI signatures only during monitor creation; persist and
+  return the fixed-size function selector or event topic instead.
+
 ## 0.6.4 - 2026-07-08
 
 ### Changed

@@ -109,13 +109,11 @@ impl MonitorService {
             TargetSpec::Call(spec) => Target::Call(CallTarget {
                 address: command.address,
                 selector: spec.selector,
-                signature: command.signature,
                 inputs: spec.params,
             }),
             TargetSpec::Event(spec) => Target::Event(EventTarget {
                 address: command.address,
                 topic0: spec.topic0,
-                signature: command.signature,
                 params: spec.params,
             }),
         };

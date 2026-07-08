@@ -31,7 +31,7 @@ pub fn decode_calls(
             Err(error) => {
                 tracing::warn!(
                     monitor = %monitor.id,
-                    signature = %target.signature,
+                    selector = %target.selector,
                     tx = %tx.hash,
                     "decode error: {error}"
                 );
@@ -89,9 +89,9 @@ pub fn decode_events(
             let params = decode_event(&target.params, target.topic0, &log.topics, &log.data)
                 .map_err(|error| {
                     anyhow::anyhow!(
-                        "event decode failed for monitor {} ({}): {error}",
+                        "event decode failed for monitor {} (topic0 {}): {error}",
                         monitor.id,
-                        target.signature
+                        target.topic0
                     )
                 })?;
             events.push(DecodedEvent {
@@ -140,7 +140,6 @@ mod tests {
             target: Target::Call(CallTarget {
                 address: contract,
                 selector: transferCall::SELECTOR.into(),
-                signature: "transfer(address,uint256)".into(),
                 inputs: vec![
                     AbiParam::new("to", DynSolType::Address).unwrap(),
                     AbiParam::new("value", DynSolType::Uint(256)).unwrap(),

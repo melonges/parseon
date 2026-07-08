@@ -72,7 +72,6 @@ pub enum Target {
 pub struct CallTarget {
     pub address: Address,
     pub selector: Selector,
-    pub signature: String,
     pub inputs: Vec<AbiParam>,
 }
 
@@ -80,7 +79,6 @@ pub struct CallTarget {
 pub struct EventTarget {
     pub address: Address,
     pub topic0: B256,
-    pub signature: String,
     pub params: Vec<AbiParam>,
 }
 

@@ -28,7 +28,6 @@ pub struct MonitorView {
     pub id: MonitorId,
     pub chain_id: ChainId,
     pub address: Address,
-    pub signature: String,
     pub kind: MonitorKind,
     pub selector: Option<Selector>,
     pub topic0: Option<B256>,
@@ -44,10 +43,9 @@ pub struct MonitorView {
 
 impl From<MonitorRecord> for MonitorView {
     fn from(record: MonitorRecord) -> Self {
-        let (address, signature, kind, selector, topic0, param_schema) = match record.target {
+        let (address, kind, selector, topic0, param_schema) = match record.target {
             Target::Call(target) => (
                 target.address,
-                target.signature,
                 MonitorKind::Call,
                 Some(target.selector),
                 None,
@@ -55,7 +53,6 @@ impl From<MonitorRecord> for MonitorView {
             ),
             Target::Event(target) => (
                 target.address,
-                target.signature,
                 MonitorKind::Event,
                 None,
                 Some(target.topic0),
@@ -66,7 +63,6 @@ impl From<MonitorRecord> for MonitorView {
             id: record.id,
             chain_id: record.chain.id,
             address,
-            signature,
             kind,
             selector,
             topic0,

@@ -52,7 +52,6 @@ mod tests {
             target: Target::Call(crate::CallTarget {
                 address: Address::ZERO,
                 selector: [1, 2, 3, 4].into(),
-                signature: "f(uint256)".into(),
                 inputs: vec![AbiParam::new("value", DynSolType::Uint(256)).unwrap()],
             }),
             start_block: 10,
