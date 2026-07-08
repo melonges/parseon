@@ -17,9 +17,6 @@ pub fn plan_blocks(
             .end_block
             .unwrap_or(finalized_head)
             .min(finalized_head);
-        if from > to {
-            continue;
-        }
         let to = to.min(from.saturating_add(batch_size.get() - 1));
         wanted.extend(from..=to);
     }
