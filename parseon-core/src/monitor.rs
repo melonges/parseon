@@ -1,7 +1,5 @@
-use alloy::primitives::Address;
-
 use super::filter::Filter;
-use super::{BlockNumber, Chain, Cursor, MonitorId, Selector, Target};
+use super::{BlockNumber, Chain, Cursor, MonitorId, Target};
 
 #[derive(Debug, Clone)]
 pub struct Monitor {
@@ -28,12 +26,8 @@ impl Monitor {
         self.cursor.next(self.start_block)
     }
 
-    pub fn matches_call(&self, address: Address, selector: Selector) -> bool {
-        matches!(&self.target, Target::Call(target) if target.address == address && target.selector == selector)
-    }
-
-    pub fn matches_event(&self, address: Address, topic0: alloy::primitives::B256) -> bool {
-        matches!(&self.target, Target::Event(target) if target.address == address && target.topic0 == topic0)
+    pub fn needs_block(&self, block_number: BlockNumber) -> bool {
+        self.covers(block_number) && self.cursor.0.is_none_or(|cursor| cursor < block_number)
     }
 }
 
@@ -75,9 +69,11 @@ mod tests {
     }
 
     #[test]
-    fn matches_target() {
-        let monitor = monitor();
-        assert!(monitor.matches_call(Address::ZERO, [1, 2, 3, 4].into()));
-        assert!(!monitor.matches_call(Address::ZERO, [4, 3, 2, 1].into()));
+    fn applies_cursor_progress() {
+        let mut monitor = monitor();
+        assert!(monitor.needs_block(10));
+        monitor.cursor = Cursor(Some(10));
+        assert!(!monitor.needs_block(10));
+        assert!(monitor.needs_block(11));
     }
 }

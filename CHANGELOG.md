@@ -8,6 +8,8 @@ All notable changes to Parseon are documented in this file.
 
 - Keep human-readable ABI signatures only during monitor creation; persist and
   return the fixed-size function selector or event topic instead.
+- Match calls and events through a shared per-poll target index instead of
+  scanning every monitor for each transaction and log.
 
 ## 0.6.4 - 2026-07-08
 

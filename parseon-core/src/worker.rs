@@ -1,6 +1,6 @@
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
-use std::num::{NonZeroU64, NonZeroUsize};
 
 use futures_util::StreamExt;
 use tokio::sync::Semaphore;
@@ -92,11 +92,10 @@ pub async fn run_once(
     cancel: &CancellationToken,
 ) -> anyhow::Result<PollResult> {
     let finalized_head = source.finalized_head().await?;
-    let monitors = storage.load_monitors(config.chain).await?;
-    let active = monitors
-        .iter()
-        .filter(|monitor| monitor.enabled && !monitor.completed)
-        .collect::<Vec<_>>();
+    let monitor_index = Arc::new(indexer::MonitorIndex::new(
+        storage.load_monitors(config.chain).await?,
+    )?);
+    let active = monitor_index.monitors().iter().collect::<Vec<_>>();
     if active.is_empty() {
         telemetry.set_worker_lag(config.chain.id, 0);
         return Ok(PollResult {
@@ -111,10 +110,7 @@ pub async fn run_once(
         .filter_map(|block_number| {
             let covering = active
                 .iter()
-                .filter(|monitor| {
-                    monitor.covers(block_number)
-                        && monitor.cursor.0.is_none_or(|cursor| cursor < block_number)
-                })
+                .filter(|monitor| monitor.needs_block(block_number))
                 .map(|monitor| (*monitor).clone())
                 .collect::<Vec<_>>();
             (!covering.is_empty()).then_some((block_number, covering))
@@ -122,22 +118,27 @@ pub async fn run_once(
         .collect::<Vec<_>>();
 
     let mut prepared = super::pipeline::ordered(
-        planned
-            .into_iter()
-            .map(|(block_number, covering)| async move {
-                prepare_block(config.chain, block_number, covering, source, cache, telemetry).await
-            }),
+        planned.into_iter().map(|(block_number, covering)| {
+            let monitor_index = monitor_index.clone();
+            async move {
+                prepare_block(
+                    config.chain,
+                    block_number,
+                    covering,
+                    monitor_index,
+                    source,
+                    cache,
+                    telemetry,
+                )
+                .await
+            }
+        }),
         config.block_concurrency.get(),
     );
     let mut decoded = 0;
     let mut progress = active
         .iter()
-        .map(|monitor| {
-            (
-                monitor.id,
-                monitor.cursor.0,
-            )
-        })
+        .map(|monitor| (monitor.id, monitor.cursor.0))
         .collect::<std::collections::HashMap<_, _>>();
 
     loop {
@@ -168,7 +169,13 @@ pub async fn run_once(
         drop(permit);
         match result {
             Ok(count) => {
-                telemetry.record_commit(config.chain.id, calls, events, "success", started.elapsed());
+                telemetry.record_commit(
+                    config.chain.id,
+                    calls,
+                    events,
+                    "success",
+                    started.elapsed(),
+                );
                 decoded += count;
                 for monitor_id in prepared.monitor_ids {
                     progress.insert(monitor_id, Some(prepared.block_number));
@@ -228,25 +235,22 @@ async fn prepare_block(
     chain: Chain,
     block_number: BlockNumber,
     covering: Vec<super::monitor::Monitor>,
+    monitor_index: Arc<indexer::MonitorIndex>,
     source: &dyn BlockSource,
     cache: &dyn BlockCache,
     telemetry: &dyn Telemetry,
 ) -> anyhow::Result<PreparedBlock> {
     let _in_flight = InFlightGuard::new(telemetry, chain.id, "block");
 
-    let call_monitors = covering
+    let has_calls = covering
         .iter()
-        .filter(|m| matches!(&m.target, Target::Call(_)))
-        .cloned()
-        .collect::<Vec<_>>();
-    let event_monitors = covering
+        .any(|monitor| matches!(&monitor.target, Target::Call(_)));
+    let has_events = covering
         .iter()
-        .filter(|m| matches!(&m.target, Target::Event(_)))
-        .cloned()
-        .collect::<Vec<_>>();
+        .any(|monitor| matches!(&monitor.target, Target::Event(_)));
     let calls = async {
         let mut results = Vec::new();
-        if !call_monitors.is_empty() {
+        if has_calls {
             let block = match cache.get(chain, block_number) {
                 Some(block) => {
                     telemetry.record_cache(chain.id, true);
@@ -267,9 +271,11 @@ async fn prepare_block(
                         .input
                         .get(..4)
                         .and_then(|bytes| super::Selector::try_from(bytes).ok());
-                    call_monitors
-                        .iter()
-                        .any(|monitor| selector.is_some_and(|selector| monitor.matches_call(transaction.to, selector)))
+                    selector.is_some_and(|selector| {
+                        monitor_index
+                            .call(block_number, transaction.to, selector)
+                            .is_some()
+                    })
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -277,7 +283,7 @@ async fn prepare_block(
                 .fetch_executed_transactions(&block, &candidates)
                 .await?;
             results.extend(
-                indexer::decode_calls(&block, &call_monitors, executed)
+                indexer::decode_calls(&block, monitor_index.as_ref(), executed)
                     .into_iter()
                     .map(DecodedResult::Call),
             );
@@ -286,10 +292,10 @@ async fn prepare_block(
     };
     let events = async {
         let mut results = Vec::new();
-        if !event_monitors.is_empty() {
+        if has_events {
             let mut addresses = Vec::new();
             let mut topic0s = Vec::new();
-            for monitor in &event_monitors {
+            for monitor in &covering {
                 if let Target::Event(target) = &monitor.target {
                     addresses.push(target.address);
                     topic0s.push(target.topic0);
@@ -303,7 +309,7 @@ async fn prepare_block(
                 .fetch_logs(block_number, &addresses, &topic0s)
                 .await?;
             results.extend(
-                indexer::decode_events(block_number, &event_monitors, logs)?
+                indexer::decode_events(block_number, monitor_index.as_ref(), logs)?
                     .into_iter()
                     .map(DecodedResult::Event),
             );
@@ -326,16 +332,14 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use alloy::primitives::Address;
+    use alloy::primitives::{Address, B256};
     use async_trait::async_trait;
 
     use super::*;
     use crate::filter::Filter;
     use crate::monitor::Monitor;
-    use crate::ports::{BlockCache, BlockCommit, BlockSource, NoopTelemetry, IndexStorage};
-    use crate::{
-        BlockTransaction, CallTarget, Cursor, ExecutedTransaction, SourceBlock, Target,
-    };
+    use crate::ports::{BlockCache, BlockCommit, BlockSource, IndexStorage, NoopTelemetry};
+    use crate::{BlockTransaction, CallTarget, Cursor, ExecutedTransaction, SourceBlock, Target};
 
     struct FakeStorage {
         monitor: Monitor,
@@ -359,6 +363,11 @@ mod tests {
     }
 
     struct FakeSource;
+
+    #[derive(Default)]
+    struct CandidateSource {
+        candidates: Mutex<Vec<B256>>,
+    }
 
     struct UnsupportedFinalizedSource;
 
@@ -429,6 +438,57 @@ mod tests {
             _block: &SourceBlock,
             _transactions: &[BlockTransaction],
         ) -> anyhow::Result<Vec<ExecutedTransaction>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl BlockSource for CandidateSource {
+        async fn chain_id(&self) -> anyhow::Result<u64> {
+            Ok(1)
+        }
+
+        async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
+            Ok(10)
+        }
+
+        async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
+            Ok(SourceBlock {
+                number: block_number,
+                transactions: vec![
+                    BlockTransaction {
+                        hash: B256::repeat_byte(1),
+                        to: Address::ZERO,
+                        input: vec![1, 2, 3, 4],
+                    },
+                    BlockTransaction {
+                        hash: B256::repeat_byte(2),
+                        to: Address::ZERO,
+                        input: vec![4, 3, 2, 1],
+                    },
+                    BlockTransaction {
+                        hash: B256::repeat_byte(3),
+                        to: Address::repeat_byte(1),
+                        input: vec![1, 2, 3, 4],
+                    },
+                    BlockTransaction {
+                        hash: B256::repeat_byte(4),
+                        to: Address::ZERO,
+                        input: vec![1, 2, 3],
+                    },
+                ],
+            })
+        }
+
+        async fn fetch_executed_transactions(
+            &self,
+            _block: &SourceBlock,
+            transactions: &[BlockTransaction],
+        ) -> anyhow::Result<Vec<ExecutedTransaction>> {
+            self.candidates
+                .lock()
+                .unwrap()
+                .extend(transactions.iter().map(|transaction| transaction.hash));
             Ok(Vec::new())
         }
     }
@@ -556,6 +616,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetches_execution_only_for_indexed_call_targets() {
+        let storage = FakeStorage {
+            monitor: Monitor {
+                id: MonitorId::new(7).unwrap(),
+                chain: Chain::new(1),
+                target: Target::Call(CallTarget {
+                    address: Address::ZERO,
+                    selector: [1, 2, 3, 4].into(),
+                    inputs: Vec::new(),
+                }),
+                start_block: 10,
+                end_block: None,
+                cursor: Cursor(None),
+                completed: false,
+                enabled: true,
+                filter: Filter::All,
+            },
+            commits: Mutex::new(Vec::new()),
+        };
+        let source = CandidateSource::default();
+        let config = WorkerConfig {
+            chain: Chain::new(1),
+            batch_size: NonZeroU64::new(1).unwrap(),
+            block_concurrency: NonZeroUsize::new(1).unwrap(),
+            poll_interval: Duration::from_millis(100),
+        };
+
+        run_once(
+            &config,
+            &storage,
+            &source,
+            &FakeCache::default(),
+            &Semaphore::new(1),
+            &NoopTelemetry,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*source.candidates.lock().unwrap(), [B256::repeat_byte(1)]);
+    }
+
+    #[tokio::test]
     async fn ignores_monitors_owned_by_another_chain() {
         let storage = FakeStorage {
             monitor: Monitor {
@@ -658,10 +761,7 @@ mod tests {
 
         let snapshot = status.snapshot();
         assert_eq!(snapshot.finalized_head, Some(10));
-        assert_eq!(
-            snapshot.worker_state,
-            crate::status::WorkerState::Degraded
-        );
+        assert_eq!(snapshot.worker_state, crate::status::WorkerState::Degraded);
         assert!(snapshot.last_error.unwrap().contains("invalid argument"));
     }
 
