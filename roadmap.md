@@ -111,19 +111,15 @@ Scale indexing without duplicating block source work.
 - Add backpressure for block source calls and database writes.
 - Expose Prometheus-compatible metrics.
 
-## v0.7 — Rich API and management surface
+## v0.7 — Runtime monitor filters
 
-Prepare Parseon for a future frontend.
+Let each monitor decide which decoded calls should be stored.
 
-- Add richer chain, monitor, worker, and result endpoints.
-- Add pause, resume, and reindex operations.
-- Add cursor-based pagination.
-- Add advanced result filtering.
-- Revisit call and event resource shapes.
-- Add event-metadata searches and decoded-parameter filters.
-- Revisit offset and cursor pagination design across both result kinds.
-- Keep OpenAPI first-class.
-- Consider GraphQL after the HTTP model stabilizes.
+- Add a safe JSON Filter DSL.
+- Filter by transaction metadata, decoded parameters, status, block range, and sender / receiver.
+- Add a filter test endpoint.
+- Benchmark filter overhead.
+- Consider WASM filters later for advanced users.
 
 ## v0.8 — Optional adapters
 
@@ -138,15 +134,19 @@ Expand the ecosystem around the core after internal traits are stable.
 - Consider sink adapters such as webhooks, Kafka, files, or ClickHouse.
 - Reevaluate whether any adapter should become a separate crate based on dependency weight and reuse.
 
-## v0.9 — Runtime monitor filters
+## v0.9 — Rich API and management surface
 
-Let each monitor decide which decoded calls should be stored.
+Prepare Parseon for a future frontend.
 
-- Add a safe JSON Filter DSL.
-- Filter by transaction metadata, decoded parameters, status, block range, and sender / receiver.
-- Add a filter test endpoint.
-- Benchmark filter overhead.
-- Consider WASM filters later for advanced users.
+- Add richer chain, monitor, worker, and result endpoints.
+- Add pause, resume, and reindex operations.
+- Add cursor-based pagination.
+- Add advanced result filtering.
+- Revisit call and event resource shapes.
+- Add event-metadata searches and decoded-parameter filters.
+- Revisit offset and cursor pagination design across both result kinds.
+- Keep OpenAPI first-class.
+- Consider GraphQL after the HTTP model stabilizes.
 
 ## v0.10 — Crate split evaluation
 
@@ -188,8 +188,8 @@ Make Parseon reliable to operate as infrastructure.
 ## Current priorities
 
 1. Optimize parallel indexing.
-2. Build richer APIs for management and querying.
+2. Add runtime monitor filters.
 3. Add optional adapters only after the core traits are stable.
-4. Add runtime monitor filters.
+4. Build richer APIs for management and querying.
 5. Reevaluate separate crates near v0.10, not before the domain model settles.
 6. Add provisional indexing and rollback only as a coherent v0.11 feature.
