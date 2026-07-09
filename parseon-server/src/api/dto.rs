@@ -314,38 +314,35 @@ mod tests {
     }
 
     #[test]
-    fn serializes_minimal_call_result() {
-        let tx_hash = TxHash::repeat_byte(0x11);
-        let result = MonitorResult::from(MonitorResultView::Call {
-            tx_hash,
+    fn serializes_minimal_results() {
+        let call_hash = TxHash::repeat_byte(0x11);
+        let call = MonitorResult::from(MonitorResultView::Call {
+            tx_hash: call_hash,
             block_number: 10,
             params: serde_json::json!({"value": "42"}),
         });
         assert_eq!(
-            serde_json::to_value(result).unwrap(),
+            serde_json::to_value(call).unwrap(),
             serde_json::json!({
                 "kind": "call",
-                "tx_hash": tx_hash.to_string(),
+                "tx_hash": call_hash.to_string(),
                 "block_number": 10,
                 "params": {"value": "42"}
             })
         );
-    }
 
-    #[test]
-    fn serializes_minimal_event_result() {
-        let tx_hash = TxHash::repeat_byte(0x22);
-        let result = MonitorResult::from(MonitorResultView::Event {
-            tx_hash,
+        let event_hash = TxHash::repeat_byte(0x22);
+        let event = MonitorResult::from(MonitorResultView::Event {
+            tx_hash: event_hash,
             log_index: 3,
             block_number: 11,
             params: serde_json::json!({"owner": "0x1"}),
         });
         assert_eq!(
-            serde_json::to_value(result).unwrap(),
+            serde_json::to_value(event).unwrap(),
             serde_json::json!({
                 "kind": "event",
-                "tx_hash": tx_hash.to_string(),
+                "tx_hash": event_hash.to_string(),
                 "log_index": 3,
                 "block_number": 11,
                 "params": {"owner": "0x1"}

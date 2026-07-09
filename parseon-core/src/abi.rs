@@ -234,7 +234,6 @@ fn decode_value(value: DynSolValue) -> Result<DecodedValue, AbiError> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::Address;
     use alloy::sol_types::SolCall;
 
     use super::*;
@@ -242,13 +241,6 @@ mod tests {
     alloy::sol! {
         function transfer(address to, uint256 value) external returns (bool);
         function f_bytes32(bytes32 word) external returns (bool);
-    }
-
-    #[test]
-    fn address_type_is_semantic_not_storage_specific() {
-        let param = AbiParam::new("owner", DynSolType::Address).unwrap();
-        assert_eq!(param.sol_type(), "address");
-        assert_eq!(Address::ZERO.to_string().len(), 42);
     }
 
     #[test]

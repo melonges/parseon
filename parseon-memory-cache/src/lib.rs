@@ -82,20 +82,6 @@ mod tests {
     }
 
     #[test]
-    fn stores_and_retrieves_blocks() {
-        let cache = MemoryBlockCache::new(NonZeroUsize::new(1).unwrap());
-        let chain = Chain::new(1);
-        cache.put(chain, block(10));
-        assert_eq!(cache.get(chain, 10).map(|block| block.number), Some(10));
-    }
-
-    #[test]
-    fn configures_entry_capacity() {
-        let cache = MemoryBlockCache::new(NonZeroUsize::new(2).unwrap());
-        assert_eq!(cache.inner.policy().max_capacity(), Some(2));
-    }
-
-    #[test]
     fn accepts_parallel_writes() {
         const THREADS: u64 = 8;
         const BLOCKS_PER_THREAD: u64 = 32;

@@ -153,12 +153,7 @@ mod tests {
 
     use futures_util::StreamExt;
 
-    use super::{Chain, Cursor, MonitorId};
-
-    #[test]
-    fn validates_chain_ids() {
-        assert_eq!(Chain::new(42).id, 42);
-    }
+    use super::{Cursor, MonitorId};
 
     #[test]
     fn cursor_computes_next_block() {

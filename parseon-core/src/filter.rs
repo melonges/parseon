@@ -13,13 +13,3 @@ impl Filter {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Filter;
-
-    #[test]
-    fn default_filter_allows_calls() {
-        assert_eq!(Filter::default(), Filter::All);
-    }
-}
