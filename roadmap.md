@@ -113,13 +113,14 @@ Scale indexing without duplicating block source work.
 
 ## v0.7 — Runtime monitor filters
 
-Let each monitor decide which decoded calls should be stored.
+Let each monitor decide which decoded results should be stored.
 
-- Add a safe JSON Filter DSL.
-- Filter by transaction metadata, decoded parameters, status, block range, and sender / receiver.
-- Add a filter test endpoint.
-- Benchmark filter overhead.
-- Consider WASM filters later for advanced users.
+- Define a constrained JSON AST Filter DSL.
+- Validate filters when monitors are created or updated; persist canonical JSON and compile it once into typed Rust predicates for workers.
+- Support boolean composition and typed comparisons over transaction and event metadata, decoded parameters, status, block range, sender, and receiver.
+- Apply filters consistently to decoded calls and events before result persistence.
+- Add a filter validation and preview endpoint.
+- Benchmark filter overhead under parallel worker execution.
 
 ## v0.8 — Optional adapters
 
@@ -131,7 +132,9 @@ Expand the ecosystem around the core after internal traits are stable.
 - Use address- and contract-oriented APIs for faster historical backfills, fallback reads, ABI discovery, and metadata enrichment while keeping direct JSON-RPC as the canonical chain and finality source.
 - Evaluate provider-specific ERC-20 and ERC-721 transfer APIs as optimized sources for transfer monitors; their indexed transfer results can avoid scanning unrelated blocks, transactions, receipts, and logs, reducing indexing latency and JSON-RPC traffic.
 - Experiment with MongoDB storage for document-oriented decoded results.
-- Consider sink adapters such as webhooks, Kafka, files, or ClickHouse.
+- Add PostgreSQL `NOTIFY` for committed monitor-result notifications.
+- Add stream sink adapters for webhooks and Kafka.
+- Consider additional sink adapters such as files or ClickHouse.
 - Reevaluate whether any adapter should become a separate crate based on dependency weight and reuse.
 
 ## v0.9 — Rich API and management surface
