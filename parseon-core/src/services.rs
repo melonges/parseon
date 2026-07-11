@@ -89,11 +89,17 @@ pub struct MonitorService {
     chains: Arc<dyn ChainRepository>,
     monitors: Arc<dyn MonitorRepository>,
     results: Arc<dyn ResultRepository>,
+    sources: Arc<dyn BlockSourceFactory>,
 }
 
 impl MonitorService {
-    pub fn new(chains: Arc<dyn ChainRepository>, monitors: Arc<dyn MonitorRepository>, results: Arc<dyn ResultRepository>) -> Self {
-        Self { chains, monitors, results }
+    pub fn new(
+        chains: Arc<dyn ChainRepository>,
+        monitors: Arc<dyn MonitorRepository>,
+        results: Arc<dyn ResultRepository>,
+        sources: Arc<dyn BlockSourceFactory>,
+    ) -> Self {
+        Self { chains, monitors, results, sources }
     }
 
     pub async fn count(&self) -> anyhow::Result<usize> {
@@ -101,9 +107,19 @@ impl MonitorService {
     }
 
     pub async fn create(&self, command: CreateMonitor) -> anyhow::Result<MonitorView> {
-        validate_range(command.start_block, command.end_block)?;
         let chain = Chain::new(command.chain_id);
-        self.chains.get_chain(chain).await.context("get monitor chain")?;
+        let registered = self.chains.get_chain(chain).await.context("get monitor chain")?;
+        let start_block = match command.start_block {
+            Some(block) => block,
+            None => self
+                .sources
+                .connect(&registered.rpc_url)
+                .context("connect monitor chain block source")?
+                .finalized_head()
+                .await
+                .context("fetch monitor chain finalized head")?,
+        };
+        validate_range(start_block, command.end_block)?;
         let spec = parse_target_signature(&command.signature).map_err(|error| invalid(error.to_string()))?;
         let target = match spec {
             TargetSpec::Call(spec) => Target::Call(CallTarget {
@@ -120,7 +136,7 @@ impl MonitorService {
         self.monitors.create_monitor(NewMonitor {
             chain,
             target,
-            start_block: command.start_block,
+            start_block,
             end_block: command.end_block,
         }).await.context("create monitor").map(Into::into)
     }

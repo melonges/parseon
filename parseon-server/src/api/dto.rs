@@ -55,7 +55,9 @@ pub struct CreateMonitor {
     /// Human-readable function or event signature, e.g. `function transfer(address to,
     /// uint256 value)` or `event Transfer(address indexed from, address indexed to, uint256 value)`.
     pub signature: String,
-    pub start_block: u64,
+    /// First block to index. Omit both block fields to start at the current finalized head and
+    /// continue indexing new finalized blocks as they arrive.
+    pub start_block: Option<u64>,
     #[serde(default)]
     pub end_block: Option<u64>,
 }

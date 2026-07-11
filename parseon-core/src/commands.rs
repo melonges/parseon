@@ -17,7 +17,7 @@ pub struct CreateMonitor {
     pub chain_id: ChainId,
     pub address: Address,
     pub signature: String,
-    pub start_block: BlockNumber,
+    pub start_block: Option<BlockNumber>,
     pub end_block: Option<BlockNumber>,
 }
 

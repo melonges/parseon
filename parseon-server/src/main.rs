@@ -47,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
         storage.clone(),
         storage.clone(),
         storage.clone(),
+        source_factory.clone(),
     );
 
     // Reconciles the database registry and runs one isolated worker per enabled chain.

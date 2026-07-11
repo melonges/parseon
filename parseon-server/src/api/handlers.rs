@@ -187,7 +187,7 @@ pub async fn delete_chain(
     responses(
         (status = OK, description = "Monitor created", body = MonitorRow),
         (status = BAD_REQUEST, description = "Invalid request or ABI signature", body = ErrorResponse),
-        (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
+        (status = INTERNAL_SERVER_ERROR, description = "Database or RPC error", body = ErrorResponse)
     )
 )]
 pub async fn create_monitor(

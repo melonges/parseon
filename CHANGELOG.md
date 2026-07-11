@@ -6,6 +6,7 @@ All notable changes to Parseon are documented in this file.
 
 ### Changed
 
+- Allow monitor creation to omit `start_block` and `end_block`, starting at the chain's current finalized head and continuing live as new finalized blocks arrive.
 - Keep human-readable ABI signatures only during monitor creation; persist and
   return the fixed-size function selector or event topic instead.
 - Match calls and events through a shared per-poll target index instead of

@@ -79,8 +79,8 @@ mod tests {
         let storage = std::sync::Arc::new(parseon_postgres::PostgresStorage::new(pool));
         let sources = std::sync::Arc::new(JsonRpcBlockSourceFactory::default());
         router(AppState::new(
-            ChainService::new(storage.clone(), sources),
-            MonitorService::new(storage.clone(), storage.clone(), storage),
+            ChainService::new(storage.clone(), sources.clone()),
+            MonitorService::new(storage.clone(), storage.clone(), storage, sources),
             statuses,
             std::sync::Arc::new(crate::metrics::Metrics::default()),
         ))
