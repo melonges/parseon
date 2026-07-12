@@ -111,17 +111,22 @@ Scale indexing without duplicating block source work.
 - Add backpressure for block source calls and database writes.
 - Expose Prometheus-compatible metrics.
 
-## v0.7 — Runtime monitor filter and map DSL
+## v0.7 — Runtime monitor filters
 
-Let each monitor decide which decoded results should be stored and how their persisted data should be shaped.
+Status: implemented in v0.7.0.
 
-- Define a constrained JSON AST DSL with `filter` and `map` stages.
-- Validate the DSL when monitors are created or updated; persist canonical JSON and compile it once into typed Rust predicates and transformations for workers.
-- Support boolean composition and typed comparisons over transaction and event metadata, decoded parameters, status, block range, sender, and receiver.
-- Support typed mappings that project, rename, and transform decoded parameters and metadata into the result shape saved by Storage.
-- Apply filters first and mappings second for both decoded calls and events, then persist the mapped result while retaining required result identity fields.
-- Add a DSL validation and preview endpoint that returns both the filter decision and mapped result.
-- Benchmark filter and mapping overhead under parallel worker execution.
+Let each monitor decide which successfully decoded results should be stored.
+
+- Add a bounded, versioned JSON AST with boolean composition and typed scalar comparisons.
+- Validate filters when monitors are created, persist canonical JSON, and compile it into typed Rust predicates before worker evaluation.
+- Filter decoded parameters, block and transaction identity, call sender/receiver, and native event metadata without additional event RPC calls.
+- Apply immutable filters consistently to successful calls and events before atomic result persistence.
+- Add stateless filter validation and evaluation through `POST /filters/preview`.
+- Benchmark compilation and call/event evaluation under bounded parallel execution.
+
+Future filter-language work can add a textual expression frontend, arithmetic,
+composite ABI values, table-state references, SQL compilation, and a typed map
+stage while reusing the versioned source-to-typed-IR boundary introduced here.
 
 ## v0.8 — Optional adapters
 
@@ -192,8 +197,8 @@ Make Parseon reliable to operate as infrastructure.
 ## Current priorities
 
 1. Optimize parallel indexing.
-2. Add the runtime monitor filter and map DSL.
-3. Add optional adapters only after the core traits are stable.
-4. Build richer APIs for management and querying.
+2. Add optional adapters only after the core traits are stable.
+3. Build richer APIs for management and querying.
+4. Evolve the filter language only after the JSON AST is proven in production.
 5. Reevaluate separate crates near v0.10, not before the domain model settles.
 6. Add provisional indexing and rollback only as a coherent v0.11 feature.
