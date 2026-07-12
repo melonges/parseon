@@ -70,10 +70,8 @@ pub(crate) struct CreateMonitor {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct UpdateMonitor {
-    pub start_block: Option<u64>,
-    /// `null` clears end_block (open-ended/live); a number sets a finite end.
-    pub end_block: Option<Option<u64>>,
-    pub enabled: Option<bool>,
+    /// `false` pauses indexing; `true` resumes from the current cursor.
+    pub enabled: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

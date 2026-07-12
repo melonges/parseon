@@ -7,8 +7,8 @@ use parseon_core::filter::{Filter, FilterDefinition};
 use parseon_core::monitor::Monitor;
 use parseon_core::ports::{
     BlockCommit, ChainRecord as CoreChainRecord, ChainRepository, ChainUpdate, IndexStorage,
-    MonitorRecord as CoreMonitorRecord, MonitorRepository, MonitorUpdate, NewChain, NewMonitor,
-    RegisteredChain, ResultRecord as CoreResultRecord, ResultRepository,
+    MonitorRecord as CoreMonitorRecord, MonitorRepository, NewChain, NewMonitor, RegisteredChain,
+    ResultRecord as CoreResultRecord, ResultRepository,
 };
 use parseon_core::{CallTarget, Chain, Cursor, DecodedResult, EventTarget, MonitorId, Target};
 
@@ -259,12 +259,12 @@ impl MonitorRepository for PostgresStorage {
         Self::monitor_record(monitor_repo::get(&self.pool, id).await?)
     }
 
-    async fn update_monitor(
+    async fn set_monitor_enabled(
         &self,
         id: MonitorId,
-        update: MonitorUpdate,
+        enabled: bool,
     ) -> anyhow::Result<CoreMonitorRecord> {
-        Self::monitor_record(monitor_repo::update_prepared(&self.pool, id, &update).await?)
+        Self::monitor_record(monitor_repo::set_enabled(&self.pool, id, enabled).await?)
     }
 
     async fn delete_monitor(&self, id: MonitorId) -> anyhow::Result<()> {

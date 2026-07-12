@@ -30,13 +30,6 @@ pub struct PreviewFilter {
     pub sample: FilterSample,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct UpdateMonitor {
-    pub start_block: Option<BlockNumber>,
-    pub end_block: Option<Option<BlockNumber>>,
-    pub enabled: Option<bool>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageLimit(u16);
 

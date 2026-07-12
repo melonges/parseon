@@ -120,6 +120,7 @@ Core must not depend on the server or any adapter crate. HTTP handlers call core
 - **Direct RPC endpoints**: Registered endpoints determine their EIP-155 chain IDs and must support the `finalized` block tag.
 - **Write-only RPC URLs**: Provider endpoints are persisted for workers but never returned or logged.
 - **Database-backed monitor state**: The worker reloads monitors each poll; no in-memory registry can retain stale cursors.
+- **Immutable monitor definitions**: A monitor's chain, target, block range, and filter are fixed at creation. Only `enabled` is user-mutable for pause/resume; workers own cursor and completion state.
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
 - **Bounded indexing**: `BLOCK_CONCURRENCY` and `RPC_REQUEST_CONCURRENCY` apply per chain; `DB_WRITE_CONCURRENCY` limits atomic commits across the process; `RPC_BATCH_SIZE` controls targeted receipt batches.
 - **Chain-scoped monitors**: Each monitor belongs to one immutable registered chain; identical targets may exist on different chains.

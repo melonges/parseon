@@ -144,17 +144,6 @@ pub(crate) async fn drop_result_table(
         .await?;
     Ok(())
 }
-pub(crate) async fn truncate_result_table(
-    tx: &mut Transaction<'_, sqlx::Postgres>,
-    id: i64,
-) -> AppResult<()> {
-    QueryBuilder::new("TRUNCATE TABLE ")
-        .push(Identifier::new(result_table_name(id)?)?)
-        .build()
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
 
 pub(crate) struct CallResultInput {
     pub tx_hash: TxHash,

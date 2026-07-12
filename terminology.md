@@ -35,15 +35,18 @@ Use `Monitor` for the user-defined rule:
 Monitor = Target + block range + optional Filter + Cursor
 ```
 
-A monitor is configuration and state. It is not the running task itself.
+A monitor has an immutable definition and mutable operational state. Its chain,
+target, block range, and filter are fixed at creation. `enabled` controls
+pause/resume, while the worker owns cursor and completion progress.
 
 Prefer:
 
 ```http
 POST /monitors
 GET /monitors/{id}
+PATCH /monitors/{id} { "enabled": false }
 GET /monitors/{id}/results
-POST /monitors/{id}/reindex
+POST /monitors/{id}/reindex  # future dedicated operation
 ```
 
 Avoid using `Watcher` for public API, database entities, or new core models. `Watcher` sounds like a running process and collides with `Worker`.

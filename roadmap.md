@@ -37,7 +37,7 @@ Runtime-loaded plugins are intentionally out of scope for early versions. Compil
 Initial development baseline.
 
 - Single-chain EVM indexing.
-- Monitor CRUD API.
+- Immutable monitor definitions with enable, disable, and delete operations.
 - ABI calldata decoding.
 - PostgreSQL result storage.
 - HTTP API with OpenAPI / Swagger UI.

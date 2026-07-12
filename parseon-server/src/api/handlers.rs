@@ -14,7 +14,6 @@ use parseon_core::MonitorId;
 use parseon_core::commands::{
     CreateChain as CreateChainCommand, CreateMonitor as CreateMonitorCommand, PageLimit,
     PreviewFilter as PreviewFilterCommand, ResultQuery, UpdateChain as UpdateChainCommand,
-    UpdateMonitor as UpdateMonitorCommand,
 };
 
 // ----- Health -----
@@ -268,8 +267,8 @@ pub(crate) async fn get_monitor(
     params(("id" = u64, Path, description = "Monitor ID")),
     request_body = UpdateMonitor,
     responses(
-        (status = OK, description = "Monitor updated", body = MonitorRow),
-        (status = BAD_REQUEST, description = "Invalid request or block range", body = ErrorResponse),
+        (status = OK, description = "Monitor enabled state updated", body = MonitorRow),
+        (status = BAD_REQUEST, description = "Invalid request", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -279,17 +278,7 @@ pub(crate) async fn update_monitor(
     body: Result<Json<UpdateMonitor>, JsonRejection>,
 ) -> AppResult<Json<MonitorRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let row = state
-        .monitors
-        .update(
-            monitor_id(id)?,
-            UpdateMonitorCommand {
-                start_block: body.start_block,
-                end_block: body.end_block,
-                enabled: body.enabled,
-            },
-        )
-        .await?;
+    let row = state.monitors.set_enabled(monitor_id(id)?, body.enabled).await?;
     Ok(Json(row.into()))
 }
 

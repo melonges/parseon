@@ -6,7 +6,7 @@ use sqlx::{FromRow, PgConnection, PgPool};
 use crate::{dyn_table, pg_types};
 use parseon_core::abi::{AbiParam, parse_abi_type};
 use parseon_core::filter::FilterExpression;
-use parseon_core::ports::{MonitorKind, MonitorUpdate, NewMonitor};
+use parseon_core::ports::{MonitorKind, NewMonitor};
 use parseon_core::{BlockNumber, ChainId, MonitorId, Target};
 type AppResult<T> = anyhow::Result<T>;
 
@@ -150,42 +150,22 @@ pub(crate) async fn delete(pool: &PgPool, id: MonitorId) -> AppResult<()> {
     Ok(())
 }
 
-pub(crate) async fn update_prepared(
+pub(crate) async fn set_enabled(
     pool: &PgPool,
     id: MonitorId,
-    update: &MonitorUpdate,
+    enabled: bool,
 ) -> AppResult<MonitorRecord> {
     let id = pg_types::to_monitor_id(id)?;
-    let start_block = pg_types::to_i64(update.start_block, "start block")?;
-    let end_block =
-        update.end_block.map(|block| pg_types::to_i64(block, "end block")).transpose()?;
-    let cursor = update.cursor.map(|block| pg_types::to_i64(block, "cursor")).transpose()?;
-    let mut tx = pool.begin().await?;
-    let current =
-        sqlx::query_as::<_, MonitorRecord>("SELECT * FROM monitors WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("monitor {id} not found"))?;
-    if update.reindex {
-        dyn_table::truncate_result_table(&mut tx, current.id).await?;
-    }
     let row = sqlx::query_as::<_, MonitorRecord>(
         r#"UPDATE monitors
-             SET start_block = $1, end_block = $2, enabled = $3,
-                 cursor = $4, completed = $5, updated_at = NOW()
-           WHERE id = $6
+             SET enabled = $1, updated_at = NOW()
+           WHERE id = $2
            RETURNING *"#,
     )
-    .bind(start_block)
-    .bind(end_block)
-    .bind(update.enabled)
-    .bind(cursor)
-    .bind(update.completed)
+    .bind(enabled)
     .bind(id)
-    .fetch_one(&mut *tx)
+    .fetch_one(pool)
     .await?;
-    tx.commit().await?;
     Ok(row)
 }
 

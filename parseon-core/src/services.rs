@@ -4,13 +4,11 @@ use std::sync::Arc;
 use anyhow::Context;
 
 use crate::abi::{TargetSpec, parse_target_signature};
-use crate::commands::{
-    CreateChain, CreateMonitor, PreviewFilter, ResultQuery, UpdateChain, UpdateMonitor,
-};
+use crate::commands::{CreateChain, CreateMonitor, PreviewFilter, ResultQuery, UpdateChain};
 use crate::filter::{self, FilterDefinition, FilterPreview};
 use crate::ports::{
-    BlockSourceFactory, ChainRepository, ChainUpdate, MonitorRepository, MonitorUpdate, NewChain,
-    NewMonitor, ResultRepository,
+    BlockSourceFactory, ChainRepository, ChainUpdate, MonitorRepository, NewChain, NewMonitor,
+    ResultRepository,
 };
 use crate::views::{ChainView, MonitorResultView, MonitorView};
 use crate::{CallTarget, Chain, ChainId, EventTarget, MonitorId, Target, Url, worker};
@@ -199,37 +197,11 @@ impl MonitorService {
         self.monitors.get_monitor(id).await.context("get monitor").map(Into::into)
     }
 
-    pub async fn update(
-        &self,
-        id: MonitorId,
-        command: UpdateMonitor,
-    ) -> anyhow::Result<MonitorView> {
-        if command.start_block.is_none() && command.end_block.is_none() && command.enabled.is_none()
-        {
-            return Err(invalid("at least one monitor field is required"));
-        }
-        let current = self.monitors.get_monitor(id).await.context("get monitor before update")?;
-        let start_block = command.start_block.unwrap_or(current.start_block);
-        let end_block = command.end_block.unwrap_or(current.end_block);
-        validate_range(start_block, end_block)?;
-        let reindex = start_block != current.start_block
-            || end_block.is_some_and(|end| current.cursor.is_some_and(|cursor| cursor > end));
-        let cursor = if reindex { start_block.checked_sub(1) } else { current.cursor };
-        let completed = end_block.is_some_and(|end| cursor.is_some_and(|cursor| cursor >= end));
+    pub async fn set_enabled(&self, id: MonitorId, enabled: bool) -> anyhow::Result<MonitorView> {
         self.monitors
-            .update_monitor(
-                id,
-                MonitorUpdate {
-                    start_block,
-                    end_block,
-                    cursor,
-                    completed,
-                    enabled: command.enabled.unwrap_or(current.enabled),
-                    reindex,
-                },
-            )
+            .set_monitor_enabled(id, enabled)
             .await
-            .context("update monitor")
+            .context("set monitor enabled state")
             .map(Into::into)
     }
 

@@ -8,6 +8,11 @@ All notable changes to Parseon are documented in this file.
 
 - Add repository-wide Rustfmt and curated Rust and Clippy policies with low-noise contributor verification commands.
 - Require notable changes to update the unreleased changelog and document major, minor, and patch release preparation.
+- Treat `enabled` as the monitor pause/resume control while keeping cursor progress and existing results intact.
+
+### Breaking
+
+- Make monitor definitions immutable after creation; `PATCH /monitors/{id}` now accepts only `enabled` and no longer changes block ranges or triggers reindexing.
 
 ## 0.7.0 - 2026-07-12
 

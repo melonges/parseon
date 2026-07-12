@@ -88,16 +88,6 @@ pub struct NewMonitor {
 }
 
 #[derive(Debug, Clone)]
-pub struct MonitorUpdate {
-    pub start_block: BlockNumber,
-    pub end_block: Option<BlockNumber>,
-    pub cursor: Option<BlockNumber>,
-    pub completed: bool,
-    pub enabled: bool,
-    pub reindex: bool,
-}
-
-#[derive(Debug, Clone)]
 pub struct MonitorRecord {
     pub id: MonitorId,
     pub chain: Chain,
@@ -124,10 +114,10 @@ pub trait MonitorRepository: Send + Sync {
     async fn create_monitor(&self, monitor: NewMonitor) -> anyhow::Result<MonitorRecord>;
     async fn list_monitors(&self, chain: Option<Chain>) -> anyhow::Result<Vec<MonitorRecord>>;
     async fn get_monitor(&self, id: MonitorId) -> anyhow::Result<MonitorRecord>;
-    async fn update_monitor(
+    async fn set_monitor_enabled(
         &self,
         id: MonitorId,
-        update: MonitorUpdate,
+        enabled: bool,
     ) -> anyhow::Result<MonitorRecord>;
     async fn delete_monitor(&self, id: MonitorId) -> anyhow::Result<()>;
 }
