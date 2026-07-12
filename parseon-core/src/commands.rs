@@ -1,4 +1,5 @@
 use crate::{Address, BlockNumber, ChainId, Url};
+use crate::filter::{FilterExpression, FilterSample};
 
 #[derive(Debug, Clone)]
 pub struct CreateChain {
@@ -19,6 +20,14 @@ pub struct CreateMonitor {
     pub signature: String,
     pub start_block: Option<BlockNumber>,
     pub end_block: Option<BlockNumber>,
+    pub filter: Option<FilterExpression>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviewFilter {
+    pub signature: String,
+    pub filter: FilterExpression,
+    pub sample: FilterSample,
 }
 
 #[derive(Debug, Clone, Default)]

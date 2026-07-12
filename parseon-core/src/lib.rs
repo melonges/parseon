@@ -95,6 +95,7 @@ pub enum DecodedValue {
 #[derive(Debug, Clone)]
 pub struct BlockTransaction {
     pub hash: B256,
+    pub from: Address,
     pub to: Address,
     pub input: Vec<u8>,
 }

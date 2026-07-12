@@ -24,6 +24,7 @@ pub async fn fetch_block(provider: &HttpProvider, block_number: u64) -> anyhow::
         let Some(to) = tx.to() else { continue };
         out.push(BlockTransaction {
             hash: tx.tx_hash(),
+            from: tx.from(),
             to,
             input: tx.input().to_vec(),
         });

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::abi::{decode_calldata, decode_event};
+use super::filter::FilterContext;
 use super::monitor::Monitor;
 use super::{
     Address, B256, BlockNumber, DecodedCall, DecodedEvent, ExecutedTransaction, Selector,
@@ -82,7 +83,7 @@ pub(crate) fn decode_calls(
     block: &SourceBlock,
     monitors: &MonitorIndex,
     transactions: Vec<ExecutedTransaction>,
-) -> Vec<DecodedCall> {
+) -> anyhow::Result<Vec<DecodedCall>> {
     let mut calls = Vec::new();
     for tx in transactions
         .into_iter()
@@ -114,20 +115,22 @@ pub(crate) fn decode_calls(
                 continue;
             }
         };
-        let call = DecodedCall {
-            monitor_id: monitor.id,
+        if monitor.filter.evaluate(FilterContext::Call {
             block_number: block.number,
-            transaction: ExecutedTransaction {
-                transaction: tx,
-                succeeded: true,
-            },
-            params,
-        };
-        if monitor.filter.matches(&call) {
-            calls.push(call);
+            tx_hash: tx.hash,
+            from: tx.from,
+            to: tx.to,
+            params: &params,
+        })? {
+            calls.push(DecodedCall {
+                monitor_id: monitor.id,
+                block_number: block.number,
+                transaction: ExecutedTransaction { transaction: tx, succeeded: true },
+                params,
+            });
         }
     }
-    calls
+    Ok(calls)
 }
 
 pub(crate) fn decode_events(
@@ -169,13 +172,15 @@ pub(crate) fn decode_events(
                 )
             },
         )?;
-        events.push(DecodedEvent {
-            monitor_id: monitor.id,
+        if monitor.filter.evaluate(FilterContext::Event {
             block_number,
-            transaction_hash,
+            tx_hash: transaction_hash,
+            emitter: log.address,
             log_index,
-            params,
-        });
+            params: &params,
+        })? {
+            events.push(DecodedEvent { monitor_id: monitor.id, block_number, transaction_hash, log_index, params });
+        }
     }
     Ok(events)
 }
@@ -312,6 +317,7 @@ mod tests {
         };
         let transaction = BlockTransaction {
             hash: B256::ZERO,
+            from: Address::ZERO,
             to: contract,
             input: call.abi_encode(),
         };
@@ -349,7 +355,7 @@ mod tests {
         ];
 
         let index = MonitorIndex::new(vec![monitor]).unwrap();
-        let decoded = decode_calls(&block, &index, executed);
+        let decoded = decode_calls(&block, &index, executed).unwrap();
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].monitor_id.get(), 9);
         assert_eq!(decoded[0].params[1], DecodedValue::Uint(U256::from(42)));

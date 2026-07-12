@@ -88,13 +88,21 @@ Example JSON filter DSL:
 ```json
 {
   "and": [
-    { "field": "tx.status", "op": "eq", "value": 1 },
-    { "field": "params.value", "op": "gt", "value": "1000000000000000000" }
+    { "field": "tx.from", "op": "eq", "value": "0x1111111111111111111111111111111111111111" },
+    { "field": "params.value", "op": "gte", "value": "1000000000000000000" }
   ]
 }
 ```
 
-Filters should be deterministic, safe, and testable. Start with a JSON DSL before considering WASM or script-based filters.
+The first filter language is a bounded, versioned JSON AST compiled against the
+monitor ABI before indexing. It supports scalar equality, integer ordering, and
+short-circuit boolean composition over decoded parameters and the metadata
+already fetched for successful calls or events.
+
+Keep the JSON frontend separate from the typed expression representation. A
+later textual language can add richer paths, arithmetic, composite values,
+table state, and SQL compilation without moving parsing or database concerns
+into worker evaluation.
 
 ## BlockSource, not Provider
 

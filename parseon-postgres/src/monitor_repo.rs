@@ -4,6 +4,7 @@ use sqlx::types::Json;
 use sqlx::{FromRow, PgConnection, PgPool};
 
 use parseon_core::abi::{AbiParam, parse_abi_type};
+use parseon_core::filter::FilterExpression;
 use parseon_core::ports::{MonitorKind, MonitorUpdate, NewMonitor};
 use parseon_core::{BlockNumber, ChainId, MonitorId, Target};
 use crate::{dyn_table, pg_types};
@@ -40,6 +41,8 @@ pub struct MonitorRecord {
     pub cursor: Option<i64>,
     pub completed: bool,
     pub enabled: bool,
+    pub filter_ast: Option<Json<FilterExpression>>,
+    pub filter_version: Option<i16>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -73,6 +76,9 @@ pub async fn create_prepared(pool: &PgPool, input: &NewMonitor) -> AppResult<Mon
         .end_block
         .map(|block| pg_types::to_i64(block, "end block"))
         .transpose()?;
+    let (filter_ast, filter_version) = input.filter.as_ref().map_or((None, None), |filter| {
+        (Some(Json(filter.expression.clone())), Some(filter.version))
+    });
     let mut tx = pool.begin().await?;
     let chain_exists: Option<i64> =
         sqlx::query_scalar("SELECT chain_id FROM chains WHERE chain_id = $1 FOR KEY SHARE")
@@ -82,8 +88,9 @@ pub async fn create_prepared(pool: &PgPool, input: &NewMonitor) -> AppResult<Mon
     anyhow::ensure!(chain_exists.is_some(), "chain {} not found", input.chain.id);
     let row = sqlx::query_as::<_, MonitorRecord>(
         r#"INSERT INTO monitors
-             (chain_id, address, kind, signature_hash, param_schema, start_block, end_block)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+             (chain_id, address, kind, signature_hash, param_schema, start_block, end_block,
+              filter_ast, filter_version)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            RETURNING *"#,
     )
     .bind(chain_id)
@@ -93,6 +100,8 @@ pub async fn create_prepared(pool: &PgPool, input: &NewMonitor) -> AppResult<Mon
     .bind(Json(params.clone()))
     .bind(start_block)
     .bind(end_block)
+    .bind(filter_ast)
+    .bind(filter_version)
     .fetch_one(&mut *tx)
     .await?;
     dyn_table::create_result_table(&mut tx, row.id, &row.kind, &params).await?;

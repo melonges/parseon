@@ -5,12 +5,14 @@ use axum::response::IntoResponse;
 
 use crate::api::AppState;
 use crate::api::dto::{
-    ChainRow, CreateChain, CreateMonitor, ErrorResponse, Health, MonitorResult, MonitorRow,
-    ResultsQuery, Status, UpdateChain, UpdateMonitor,
+    ChainRow, CreateChain, CreateMonitor, ErrorResponse, FilterPreviewRequest,
+    FilterPreviewResponse, Health, MonitorResult, MonitorRow, ResultsQuery, Status, UpdateChain,
+    UpdateMonitor,
 };
 use parseon_core::commands::{
     CreateChain as CreateChainCommand, CreateMonitor as CreateMonitorCommand, PageLimit,
-    ResultQuery, UpdateChain as UpdateChainCommand, UpdateMonitor as UpdateMonitorCommand,
+    PreviewFilter as PreviewFilterCommand, ResultQuery, UpdateChain as UpdateChainCommand,
+    UpdateMonitor as UpdateMonitorCommand,
 };
 use parseon_core::MonitorId;
 use crate::error::{AppError, AppResult};
@@ -201,8 +203,31 @@ pub async fn create_monitor(
         signature: body.signature,
         start_block: body.start_block,
         end_block: body.end_block,
+        filter: body.filter,
     }).await?;
     Ok(Json(row.into()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/filters/preview",
+    tag = "filters",
+    request_body = FilterPreviewRequest,
+    responses(
+        (status = OK, description = "Canonical filter and preview result", body = FilterPreviewResponse),
+        (status = BAD_REQUEST, description = "Invalid signature, filter, or sample", body = ErrorResponse),
+        (status = INTERNAL_SERVER_ERROR, description = "Internal error", body = ErrorResponse)
+    )
+)]
+pub async fn preview_filter(
+    body: Result<Json<FilterPreviewRequest>, JsonRejection>,
+) -> AppResult<Json<FilterPreviewResponse>> {
+    let Json(body) = body.map_err(|error| AppError::BadRequest(error.body_text()))?;
+    Ok(Json(parseon_core::services::preview_filter(PreviewFilterCommand {
+        signature: body.signature,
+        filter: body.filter,
+        sample: body.sample.into(),
+    })?.into()))
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]

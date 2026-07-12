@@ -4,6 +4,7 @@ use utoipa::ToSchema;
 
 use parseon_core::status::{ChainStatusSnapshot, WorkerState};
 use parseon_core::abi::AbiParam;
+use parseon_core::filter::{FilterExpression, FilterPreview, FilterSample};
 use parseon_core::views::{ChainView, MonitorResultView, MonitorView};
 use parseon_core::{Address, B256, Selector, TxHash, Url};
 
@@ -48,6 +49,7 @@ impl From<ChainView> for ChainRow {
 // ----- Monitors -----
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateMonitor {
     pub chain_id: u64,
     #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{40}$")]
@@ -60,9 +62,13 @@ pub struct CreateMonitor {
     pub start_block: Option<u64>,
     #[serde(default)]
     pub end_block: Option<u64>,
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub filter: Option<FilterExpression>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateMonitor {
     pub start_block: Option<u64>,
     /// `null` clears end_block (open-ended/live); a number sets a finite end.
@@ -107,6 +113,8 @@ pub struct MonitorRow {
     pub cursor: Option<u64>,
     pub completed: bool,
     pub enabled: bool,
+    #[schema(value_type = Option<Object>)]
+    pub filter: Option<FilterExpression>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -126,9 +134,79 @@ impl From<MonitorView> for MonitorRow {
             cursor: record.cursor,
             completed: record.completed,
             enabled: record.enabled,
+            filter: record.filter,
             created_at: record.created_at,
             updated_at: record.updated_at,
         }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FilterPreviewRequest {
+    pub signature: String,
+    #[schema(value_type = Object)]
+    pub filter: FilterExpression,
+    pub sample: FilterSampleInput,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FilterSampleInput {
+    Call {
+        block_number: u64,
+        #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{64}$")]
+        tx_hash: TxHash,
+        #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{40}$")]
+        from: Address,
+        #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{40}$")]
+        to: Address,
+        #[schema(value_type = Object)]
+        params: std::collections::BTreeMap<String, serde_json::Value>,
+    },
+    Event {
+        block_number: u64,
+        #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{64}$")]
+        tx_hash: TxHash,
+        #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{40}$")]
+        emitter: Address,
+        log_index: u64,
+        #[schema(value_type = Object)]
+        params: std::collections::BTreeMap<String, serde_json::Value>,
+    },
+}
+
+impl From<FilterSampleInput> for FilterSample {
+    fn from(sample: FilterSampleInput) -> Self {
+        match sample {
+            FilterSampleInput::Call { block_number, tx_hash, from, to, params } => Self::Call {
+                block_number,
+                tx_hash,
+                from,
+                to,
+                params: params.into_iter().collect(),
+            },
+            FilterSampleInput::Event { block_number, tx_hash, emitter, log_index, params } => Self::Event {
+                block_number,
+                tx_hash,
+                emitter,
+                log_index,
+                params: params.into_iter().collect(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FilterPreviewResponse {
+    #[schema(value_type = Object)]
+    pub filter: FilterExpression,
+    pub matches: bool,
+}
+
+impl From<FilterPreview> for FilterPreviewResponse {
+    fn from(preview: FilterPreview) -> Self {
+        Self { filter: preview.filter, matches: preview.matches }
     }
 }
 
@@ -307,6 +385,7 @@ mod tests {
             cursor: None,
             completed: false,
             enabled: true,
+            filter: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

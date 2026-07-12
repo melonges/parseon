@@ -283,7 +283,7 @@ async fn prepare_block(
                 .fetch_executed_transactions(&block, &candidates)
                 .await?;
             results.extend(
-                indexer::decode_calls(&block, monitor_index.as_ref(), executed)
+                indexer::decode_calls(&block, monitor_index.as_ref(), executed)?
                     .into_iter()
                     .map(DecodedResult::Call),
             );
@@ -458,21 +458,25 @@ mod tests {
                 transactions: vec![
                     BlockTransaction {
                         hash: B256::repeat_byte(1),
+                        from: Address::ZERO,
                         to: Address::ZERO,
                         input: vec![1, 2, 3, 4],
                     },
                     BlockTransaction {
                         hash: B256::repeat_byte(2),
+                        from: Address::ZERO,
                         to: Address::ZERO,
                         input: vec![4, 3, 2, 1],
                     },
                     BlockTransaction {
                         hash: B256::repeat_byte(3),
+                        from: Address::ZERO,
                         to: Address::repeat_byte(1),
                         input: vec![1, 2, 3, 4],
                     },
                     BlockTransaction {
                         hash: B256::repeat_byte(4),
+                        from: Address::ZERO,
                         to: Address::ZERO,
                         input: vec![1, 2, 3],
                     },

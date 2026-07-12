@@ -45,6 +45,7 @@ pub fn router(state: AppState) -> axum::Router {
         .merge(routes::health_routes())
         .merge(routes::chain_routes())
         .merge(routes::monitor_routes())
+        .merge(routes::filter_routes())
         .split_for_parts();
 
     router
@@ -123,6 +124,7 @@ mod tests {
             ("/chains/{chain_id}", "delete", &["204", "500"][..]),
             ("/monitors", "get", &["200", "500"][..]),
             ("/monitors", "post", &["200", "400", "500"][..]),
+            ("/filters/preview", "post", &["200", "400", "500"][..]),
             ("/monitors/{id}", "get", &["200", "500"][..]),
             ("/monitors/{id}", "patch", &["200", "400", "500"][..]),
             ("/monitors/{id}", "delete", &["204", "500"][..]),
@@ -152,6 +154,9 @@ mod tests {
             "CreateChain",
             "CreateMonitor",
             "ErrorResponse",
+            "FilterPreviewRequest",
+            "FilterPreviewResponse",
+            "FilterSampleInput",
             "Health",
             "MonitorResult",
             "MonitorRow",

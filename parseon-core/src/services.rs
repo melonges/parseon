@@ -4,7 +4,8 @@ use std::sync::Arc;
 use anyhow::Context;
 
 use crate::abi::{TargetSpec, parse_target_signature};
-use crate::commands::{CreateChain, CreateMonitor, ResultQuery, UpdateChain, UpdateMonitor};
+use crate::commands::{CreateChain, CreateMonitor, PreviewFilter, ResultQuery, UpdateChain, UpdateMonitor};
+use crate::filter::{self, FilterDefinition, FilterPreview};
 use crate::ports::{
     BlockSourceFactory, ChainRepository, ChainUpdate, MonitorRepository, MonitorUpdate, NewChain,
     NewMonitor, ResultRepository,
@@ -133,11 +134,17 @@ impl MonitorService {
                 params: spec.params,
             }),
         };
+        let filter = command
+            .filter
+            .map(|expression| FilterDefinition::prepare(expression, &target).map(|value| value.0))
+            .transpose()
+            .map_err(|error| invalid(error.to_string()))?;
         self.monitors.create_monitor(NewMonitor {
             chain,
             target,
             start_block,
             end_block: command.end_block,
+            filter,
         }).await.context("create monitor").map(Into::into)
     }
 
@@ -183,6 +190,18 @@ impl MonitorService {
         let monitor = self.monitors.get_monitor(id).await.context("get monitor for result query")?;
         Ok(self.results.query_results(&monitor, query).await.context("query monitor results")?.into_iter().map(Into::into).collect())
     }
+}
+
+pub fn preview_filter(command: PreviewFilter) -> anyhow::Result<FilterPreview> {
+    let address = match &command.sample {
+        filter::FilterSample::Call { to, .. } => *to,
+        filter::FilterSample::Event { emitter, .. } => *emitter,
+    };
+    let target = match parse_target_signature(&command.signature).map_err(|error| invalid(error.to_string()))? {
+        TargetSpec::Call(spec) => Target::Call(CallTarget { address, selector: spec.selector, inputs: spec.params }),
+        TargetSpec::Event(spec) => Target::Event(EventTarget { address, topic0: spec.topic0, params: spec.params }),
+    };
+    filter::preview(&target, command.filter, command.sample).map_err(|error| invalid(error.to_string()))
 }
 
 fn validate_range(start_block: u64, end_block: Option<u64>) -> anyhow::Result<()> {

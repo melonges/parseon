@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::abi::AbiParam;
+use crate::filter::FilterExpression;
 use crate::ports::{ChainRecord, MonitorKind, MonitorRecord, ResultRecord};
 use crate::{Address, B256, BlockNumber, ChainId, MonitorId, Selector, Target, TxHash};
 
@@ -37,12 +38,14 @@ pub struct MonitorView {
     pub cursor: Option<BlockNumber>,
     pub completed: bool,
     pub enabled: bool,
+    pub filter: Option<FilterExpression>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl From<MonitorRecord> for MonitorView {
     fn from(record: MonitorRecord) -> Self {
+        let filter = record.filter.map(|filter| filter.expression);
         let (address, kind, selector, topic0, param_schema) = match record.target {
             Target::Call(target) => (
                 target.address,
@@ -72,6 +75,7 @@ impl From<MonitorRecord> for MonitorView {
             cursor: record.cursor,
             completed: record.completed,
             enabled: record.enabled,
+            filter,
             created_at: record.created_at,
             updated_at: record.updated_at,
         }

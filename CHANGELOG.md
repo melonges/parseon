@@ -4,8 +4,19 @@ All notable changes to Parseon are documented in this file.
 
 ## Unreleased
 
+## 0.7.0 - 2026-07-12
+
+### Added
+
+- Immutable, ABI-aware JSON monitor filters with typed comparisons, boolean
+  composition, canonical persistence, and call/event worker evaluation.
+- Stateless filter validation and evaluation at `POST /filters/preview`.
+- Criterion coverage for filter compilation and bounded call/event evaluation.
+
 ### Changed
 
+- Keep successful transactions as the indexing boundary and expose only
+  already-available transaction or log metadata to filters.
 - Allow monitor creation to omit `start_block` and `end_block`, starting at the chain's current finalized head and continuing live as new finalized blocks arrive.
 - Keep human-readable ABI signatures only during monitor creation; persist and
   return the fixed-size function selector or event topic instead.

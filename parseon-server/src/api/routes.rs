@@ -22,6 +22,10 @@ pub fn monitor_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::list_monitor_results))
 }
 
+pub fn filter_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new().routes(routes!(handlers::preview_filter))
+}
+
 pub fn chain_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(handlers::create_chain, handlers::list_chains))

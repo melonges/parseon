@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 
 use parseon_core::commands::ResultQuery;
-use parseon_core::filter::Filter;
+use parseon_core::filter::{Filter, FilterDefinition};
 use parseon_core::monitor::Monitor;
 use parseon_core::ports::{
     BlockCommit, ChainRecord as CoreChainRecord, ChainRepository, ChainUpdate, IndexStorage,
@@ -49,16 +49,22 @@ impl PostgresStorage {
     }
 
     fn to_monitor(row: &monitor_repo::MonitorRecord) -> anyhow::Result<Monitor> {
+        let target = Self::target(row)?;
+        let filter = match (&row.filter_ast, row.filter_version) {
+            (None, None) => Filter::All,
+            (Some(filter), Some(version)) => FilterDefinition { version, expression: filter.0.clone() }.compile(&target)?,
+            _ => anyhow::bail!("monitor {} has incomplete filter state", row.id),
+        };
         Ok(Monitor {
             id: pg_types::from_monitor_id(row.id)?,
             chain: Chain::new(pg_types::from_i64(row.chain_id, "chain id")?),
-            target: Self::target(row)?,
+            target,
             start_block: pg_types::from_i64(row.start_block, "start block")?,
             end_block: row.end_block.map(|value| pg_types::from_i64(value, "end block")).transpose()?,
             cursor: Cursor(row.cursor.map(|value| pg_types::from_i64(value, "cursor")).transpose()?),
             completed: row.completed,
             enabled: row.enabled,
-            filter: Filter::All,
+            filter,
         })
     }
 
@@ -74,6 +80,11 @@ impl PostgresStorage {
     }
 
     fn monitor_record(row: monitor_repo::MonitorRecord) -> anyhow::Result<CoreMonitorRecord> {
+        let filter = match (row.filter_ast.as_ref(), row.filter_version) {
+            (None, None) => None,
+            (Some(filter), Some(version)) => Some(FilterDefinition { version, expression: filter.0.clone() }),
+            _ => anyhow::bail!("monitor {} has incomplete filter state", row.id),
+        };
         Ok(CoreMonitorRecord {
             id: pg_types::from_monitor_id(row.id)?,
             chain: Chain::new(pg_types::from_i64(row.chain_id, "chain id")?),
@@ -83,6 +94,7 @@ impl PostgresStorage {
             cursor: row.cursor.map(|value| pg_types::from_i64(value, "cursor")).transpose()?,
             completed: row.completed,
             enabled: row.enabled,
+            filter,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

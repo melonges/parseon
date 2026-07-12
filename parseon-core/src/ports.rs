@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use super::filter::FilterDefinition;
 use super::monitor::Monitor;
 use super::{
     BlockNumber, BlockTransaction, Chain, ChainId, DecodedResult, ExecutedTransaction, MonitorId,
@@ -83,6 +84,7 @@ pub struct NewMonitor {
     pub target: Target,
     pub start_block: BlockNumber,
     pub end_block: Option<BlockNumber>,
+    pub filter: Option<FilterDefinition>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +107,7 @@ pub struct MonitorRecord {
     pub cursor: Option<BlockNumber>,
     pub completed: bool,
     pub enabled: bool,
+    pub filter: Option<FilterDefinition>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

@@ -10,6 +10,7 @@ use utoipa::OpenApi;
         (name = "health", description = "Service health, finalized indexing status, and metrics"),
         (name = "chains", description = "EVM chain registry management"),
         (name = "monitors", description = "EVM call and event monitor management"),
+        (name = "filters", description = "Stateless monitor filter validation and preview"),
         (name = "results", description = "Search decoded monitor results")
     )
 )]
