@@ -4,6 +4,11 @@ All notable changes to Parseon are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Add repository-wide Rustfmt and curated Rust and Clippy policies with low-noise contributor verification commands.
+- Require notable changes to update the unreleased changelog and document major, minor, and patch release preparation.
+
 ## 0.7.0 - 2026-07-12
 
 ### Added

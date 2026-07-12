@@ -15,6 +15,20 @@
 - Keep the description imperative, lowercase, and concise; use `!` only for intentional breaking changes.
 - Prefer one coherent change per commit. Common types are `feat`, `fix`, `refactor`, `docs`, `test`, `build`, and `chore`.
 
+## Changelog
+
+- Maintain `CHANGELOG.md` for every notable user-, operator-, API-, architecture-, performance-, or contributor-facing change.
+- Add entries under `Unreleased` in the same change; do not create a version or release date unless explicitly requested.
+- Use applicable `Added`, `Changed`, `Fixed`, and `Breaking` headings and describe outcomes rather than implementation details.
+- Keep each entry concise and independently understandable. Omit formatting-only changes and incidental maintenance with no meaningful impact.
+
+## Releases
+
+- Support major, minor, and patch releases according to Semantic Versioning: breaking changes require a major bump, backward-compatible features a minor bump, and backward-compatible fixes a patch bump.
+- Before `1.0.0`, use a minor bump for breaking changes and a patch bump for backward-compatible changes, consistent with Parseon's existing `0.x` release history.
+- When explicitly asked to prepare a release, update the workspace version and `Cargo.lock`, move `Unreleased` entries under `## <version> - <YYYY-MM-DD>`, and leave a fresh empty `Unreleased` section.
+- Use `chore(release): prepare v<version>` for the release commit. Do not publish, tag, push, or create a GitHub release unless explicitly requested.
+
 ## Development stage
 
 - Parseon is in an early stage of development. Breaking changes are allowed when they improve the design.
