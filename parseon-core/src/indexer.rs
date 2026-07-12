@@ -27,27 +27,19 @@ impl MonitorIndex {
             match &monitor.target {
                 Target::Call(target) => {
                     anyhow::ensure!(
-                        calls
-                            .insert((target.address, target.selector), index)
-                            .is_none(),
+                        calls.insert((target.address, target.selector), index).is_none(),
                         "duplicate call monitor target"
                     );
                 }
                 Target::Event(target) => {
                     anyhow::ensure!(
-                        events
-                            .insert((target.address, target.topic0), index)
-                            .is_none(),
+                        events.insert((target.address, target.topic0), index).is_none(),
                         "duplicate event monitor target"
                     );
                 }
             }
         }
-        Ok(Self {
-            monitors,
-            calls,
-            events,
-        })
+        Ok(Self { monitors, calls, events })
     }
 
     pub(crate) fn monitors(&self) -> &[Monitor] {
@@ -85,14 +77,8 @@ pub(crate) fn decode_calls(
     transactions: Vec<ExecutedTransaction>,
 ) -> anyhow::Result<Vec<DecodedCall>> {
     let mut calls = Vec::new();
-    for tx in transactions
-        .into_iter()
-        .filter_map(|tx| tx.succeeded.then(|| tx.transaction))
-    {
-        let Some(selector) = tx
-            .input
-            .get(..4)
-            .and_then(|bytes| Selector::try_from(bytes).ok())
+    for tx in transactions.into_iter().filter_map(|tx| tx.succeeded.then_some(tx.transaction)) {
+        let Some(selector) = tx.input.get(..4).and_then(|bytes| Selector::try_from(bytes).ok())
         else {
             continue;
         };
@@ -146,10 +132,7 @@ pub(crate) fn decode_events(
         let Some(monitor) = monitors.event(block_number, log.address, topic0) else {
             continue;
         };
-        anyhow::ensure!(
-            !log.removed,
-            "removed log returned for finalized block {block_number}"
-        );
+        anyhow::ensure!(!log.removed, "removed log returned for finalized block {block_number}");
         anyhow::ensure!(
             log.block_number == Some(block_number),
             "log has missing or incorrect block number"
@@ -157,12 +140,8 @@ pub(crate) fn decode_events(
         let transaction_hash = log
             .transaction_hash
             .ok_or_else(|| anyhow::anyhow!("log is missing transaction hash"))?;
-        let log_index = log
-            .log_index
-            .ok_or_else(|| anyhow::anyhow!("log is missing log index"))?;
-        let Target::Event(target) = &monitor.target else {
-            unreachable!()
-        };
+        let log_index = log.log_index.ok_or_else(|| anyhow::anyhow!("log is missing log index"))?;
+        let Target::Event(target) = &monitor.target else { unreachable!() };
         let params = decode_event(&target.params, target.topic0, &log.topics, &log.data).map_err(
             |error| {
                 anyhow::anyhow!(
@@ -179,7 +158,13 @@ pub(crate) fn decode_events(
             log_index,
             params: &params,
         })? {
-            events.push(DecodedEvent { monitor_id: monitor.id, block_number, transaction_hash, log_index, params });
+            events.push(DecodedEvent {
+                monitor_id: monitor.id,
+                block_number,
+                transaction_hash,
+                log_index,
+                params,
+            });
         }
     }
     Ok(events)
@@ -224,20 +209,12 @@ mod tests {
         let index = MonitorIndex::new(vec![
             monitor(
                 1,
-                Target::Call(CallTarget {
-                    address: call_address,
-                    selector,
-                    inputs: Vec::new(),
-                }),
+                Target::Call(CallTarget { address: call_address, selector, inputs: Vec::new() }),
                 None,
             ),
             monitor(
                 2,
-                Target::Event(EventTarget {
-                    address: event_address,
-                    topic0,
-                    params: Vec::new(),
-                }),
+                Target::Event(EventTarget { address: event_address, topic0, params: Vec::new() }),
                 None,
             ),
         ])
@@ -255,13 +232,7 @@ mod tests {
     fn excludes_cursor_progress_and_duplicate_targets() {
         let address = address!("0000000000000000000000000000000000000001");
         let selector = Selector::from([1, 2, 3, 4]);
-        let target = || {
-            Target::Call(CallTarget {
-                address,
-                selector,
-                inputs: Vec::new(),
-            })
-        };
+        let target = || Target::Call(CallTarget { address, selector, inputs: Vec::new() });
         let index = MonitorIndex::new(vec![monitor(1, target(), Some(10))]).unwrap();
         assert!(index.call(10, address, selector).is_none());
         assert_eq!(index.call(11, address, selector).unwrap().id.get(), 1);
@@ -277,11 +248,7 @@ mod tests {
         let topic0 = B256::repeat_byte(5);
         let index = MonitorIndex::new(vec![monitor(
             2,
-            Target::Event(EventTarget {
-                address,
-                topic0,
-                params: Vec::new(),
-            }),
+            Target::Event(EventTarget { address, topic0, params: Vec::new() }),
             None,
         )])
         .unwrap();
@@ -311,10 +278,7 @@ mod tests {
     #[test]
     fn decodes_successful_matching_transactions_only() {
         let contract = address!("0000000000000000000000000000000000000001");
-        let call = transferCall {
-            to: Address::ZERO,
-            value: U256::from(42),
-        };
+        let call = transferCall { to: Address::ZERO, value: U256::from(42) };
         let transaction = BlockTransaction {
             hash: B256::ZERO,
             from: Address::ZERO,
@@ -339,19 +303,10 @@ mod tests {
             enabled: true,
             filter: Filter::All,
         };
-        let block = SourceBlock {
-            number: 1,
-            transactions: vec![transaction.clone()],
-        };
+        let block = SourceBlock { number: 1, transactions: vec![transaction.clone()] };
         let executed = vec![
-            ExecutedTransaction {
-                transaction: transaction.clone(),
-                succeeded: false,
-            },
-            ExecutedTransaction {
-                transaction,
-                succeeded: true,
-            },
+            ExecutedTransaction { transaction: transaction.clone(), succeeded: false },
+            ExecutedTransaction { transaction, succeeded: true },
         ];
 
         let index = MonitorIndex::new(vec![monitor]).unwrap();

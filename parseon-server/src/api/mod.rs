@@ -1,7 +1,7 @@
-pub mod dto;
-pub mod handlers;
-pub mod openapi;
-pub mod routes;
+pub(crate) mod dto;
+pub(crate) mod handlers;
+pub(crate) mod openapi;
+pub(crate) mod routes;
 
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -16,7 +16,7 @@ use parseon_core::status::RuntimeStatus;
 
 /// Shared state passed to all handlers.
 #[derive(Clone)]
-pub struct AppState {
+pub(crate) struct AppState {
     pub chains: ChainService,
     pub monitors: MonitorService,
     pub runtime_status: RuntimeStatus,
@@ -24,23 +24,18 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(
+    pub(crate) fn new(
         chains: ChainService,
         monitors: MonitorService,
         runtime_status: RuntimeStatus,
         telemetry: std::sync::Arc<dyn Telemetry>,
     ) -> Self {
-        Self {
-            chains,
-            monitors,
-            runtime_status,
-            telemetry,
-        }
+        Self { chains, monitors, runtime_status, telemetry }
     }
 }
 
 /// Build the axum router.
-pub fn router(state: AppState) -> axum::Router {
+pub(crate) fn router(state: AppState) -> axum::Router {
     let (router, openapi) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(routes::health_routes())
         .merge(routes::chain_routes())
@@ -90,20 +85,12 @@ mod tests {
     #[tokio::test]
     async fn serves_complete_openapi_document() {
         let response = test_router()
-            .oneshot(
-                Request::builder()
-                    .uri("/api-docs/openapi.json")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/api-docs/openapi.json").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get(header::CONTENT_TYPE).unwrap(),
-            "application/json"
-        );
+        assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "application/json");
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let document: Value = serde_json::from_slice(&body).unwrap();
@@ -116,11 +103,7 @@ mod tests {
             ("/chains", "get", &["200", "500"][..]),
             ("/chains", "post", &["201", "400", "500"][..]),
             ("/chains/{chain_id}", "get", &["200", "500"][..]),
-            (
-                "/chains/{chain_id}",
-                "patch",
-                &["200", "400", "500"][..],
-            ),
+            ("/chains/{chain_id}", "patch", &["200", "400", "500"][..]),
             ("/chains/{chain_id}", "delete", &["204", "500"][..]),
             ("/monitors", "get", &["200", "500"][..]),
             ("/monitors", "post", &["200", "400", "500"][..]),
@@ -128,11 +111,7 @@ mod tests {
             ("/monitors/{id}", "get", &["200", "500"][..]),
             ("/monitors/{id}", "patch", &["200", "400", "500"][..]),
             ("/monitors/{id}", "delete", &["204", "500"][..]),
-            (
-                "/monitors/{id}/results",
-                "get",
-                &["200", "400", "500"][..],
-            ),
+            ("/monitors/{id}/results", "get", &["200", "400", "500"][..]),
         ];
 
         for (path, method, expected_statuses) in expected_operations {
@@ -174,28 +153,16 @@ mod tests {
         assert!(abi_param_properties.contains_key("indexed"));
         assert!(!schemas.contains_key("SqlKind"));
         assert!(schemas["ChainRow"]["properties"].get("rpc_url").is_none());
-        assert_eq!(
-            schemas["CreateChain"]["properties"]["rpc_url"]["writeOnly"],
-            true
-        );
+        assert_eq!(schemas["CreateChain"]["properties"]["rpc_url"]["writeOnly"], true);
         assert_eq!(schemas["CreateChain"]["properties"]["rpc_url"]["format"], "uri");
-        assert!(
-            schemas["MonitorRow"]["properties"]
-                .get("chain_id")
-                .is_some()
-        );
-        assert!(
-            schemas["CreateMonitor"]["properties"]
-                .get("chain_id")
-                .is_some()
-        );
+        assert!(schemas["MonitorRow"]["properties"].get("chain_id").is_some());
+        assert!(schemas["CreateMonitor"]["properties"].get("chain_id").is_some());
 
         let monitor_parameters = paths["/monitors"]["get"]["parameters"].as_array().unwrap();
         assert_eq!(monitor_parameters[0]["name"], "chain_id");
 
-        let result_parameters = paths["/monitors/{id}/results"]["get"]["parameters"]
-            .as_array()
-            .unwrap();
+        let result_parameters =
+            paths["/monitors/{id}/results"]["get"]["parameters"].as_array().unwrap();
         let parameter_names = result_parameters
             .iter()
             .map(|parameter| parameter["name"].as_str().unwrap())
@@ -206,12 +173,7 @@ mod tests {
     #[tokio::test]
     async fn reports_finalized_runtime_status() {
         let response = test_router()
-            .oneshot(
-                Request::builder()
-                    .uri("/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -236,27 +198,14 @@ mod tests {
         let app = test_router();
         let redirect = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/swagger-ui")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/swagger-ui").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(redirect.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            redirect.headers().get(header::LOCATION).unwrap(),
-            "/swagger-ui/"
-        );
+        assert_eq!(redirect.headers().get(header::LOCATION).unwrap(), "/swagger-ui/");
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/swagger-ui/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/swagger-ui/").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -274,12 +223,7 @@ mod tests {
     #[tokio::test]
     async fn serves_prometheus_metrics() {
         let response = test_router()
-            .oneshot(
-                Request::builder()
-                    .uri("/metrics")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
             .await
             .unwrap();
 

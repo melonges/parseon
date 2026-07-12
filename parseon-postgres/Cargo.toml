@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 parseon-core = { path = "../parseon-core" }
 alloy = { version = "2.1", default-features = false, features = ["std", "dyn-abi"] }

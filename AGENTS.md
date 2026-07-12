@@ -2,10 +2,12 @@
 
 ## Build & test
 
-- `cargo test` — unit and HTTP router tests; fast, no services needed.
-- `cargo build --release` — release binary at `target/release/parseon`.
-- No lint/format config exists (no clippy/rustfmt config, no CI). Verify with `cargo test`.
-- Don't run build commands by yourself, ask me and I'll run and give you output
+- `rtk cargo fmt --all -- --check` — verify the repository's stable Rustfmt policy.
+- `rtk cargo clippy -q --workspace --all-targets --all-features --message-format=short -- -D warnings` — enforce workspace Rust and Clippy lints.
+- `rtk cargo test -q --workspace --all-features --message-format=short` — unit and HTTP router tests; fast, no services needed.
+- `rtk cargo build -q --release --message-format=short` — release binary at `target/release/parseon`.
+- Agents may run all verification commands. Prefer Cargo's `-q` flag to suppress successful compilation progress while preserving diagnostics and test failures.
+- No CI exists; run format, lint, and test checks before handing off code changes.
 
 ## Git commits
 
@@ -112,4 +114,5 @@ Core must not depend on the server or any adapter crate. HTTP handlers call core
 - **Atomic block persistence**: decoded call/event rows and all covering monitor cursors commit in one PostgreSQL transaction.
 
 ## Roadmap
-- ** roadmap in roadmap.md
+
+See `roadmap.md`.

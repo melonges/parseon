@@ -14,4 +14,4 @@ use utoipa::OpenApi;
         (name = "results", description = "Search decoded monitor results")
     )
 )]
-pub struct ApiDoc;
+pub(crate) struct ApiDoc;

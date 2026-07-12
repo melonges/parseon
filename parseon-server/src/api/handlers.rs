@@ -9,13 +9,13 @@ use crate::api::dto::{
     FilterPreviewResponse, Health, MonitorResult, MonitorRow, ResultsQuery, Status, UpdateChain,
     UpdateMonitor,
 };
+use crate::error::{AppError, AppResult};
+use parseon_core::MonitorId;
 use parseon_core::commands::{
     CreateChain as CreateChainCommand, CreateMonitor as CreateMonitorCommand, PageLimit,
     PreviewFilter as PreviewFilterCommand, ResultQuery, UpdateChain as UpdateChainCommand,
     UpdateMonitor as UpdateMonitorCommand,
 };
-use parseon_core::MonitorId;
-use crate::error::{AppError, AppResult};
 
 // ----- Health -----
 
@@ -28,12 +28,9 @@ use crate::error::{AppError, AppResult};
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn healthz(State(state): State<AppState>) -> AppResult<Json<Health>> {
+pub(crate) async fn healthz(State(state): State<AppState>) -> AppResult<Json<Health>> {
     let monitors = state.monitors.count().await?;
-    Ok(Json(Health {
-        status: "ok",
-        monitors,
-    }))
+    Ok(Json(Health { status: "ok", monitors }))
 }
 
 #[utoipa::path(
@@ -44,15 +41,10 @@ pub async fn healthz(State(state): State<AppState>) -> AppResult<Json<Health>> {
         (status = OK, description = "Finalized indexing progress and worker state", body = Status)
     )
 )]
-pub async fn status(State(state): State<AppState>) -> Json<Status> {
+pub(crate) async fn status(State(state): State<AppState>) -> Json<Status> {
     Json(Status {
         mode: "finalized",
-        chains: state
-            .runtime_status
-            .snapshot()
-            .into_iter()
-            .map(Into::into)
-            .collect(),
+        chains: state.runtime_status.snapshot().into_iter().map(Into::into).collect(),
     })
 }
 
@@ -65,18 +57,9 @@ pub async fn status(State(state): State<AppState>) -> Json<Status> {
         (status = INTERNAL_SERVER_ERROR, description = "Metrics encoding error", body = ErrorResponse)
     )
 )]
-pub async fn metrics(State(state): State<AppState>) -> AppResult<axum::response::Response> {
-    let body = state
-        .telemetry
-        .render()
-        ?;
-    Ok((
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8",
-        )],
-        body,
-    )
+pub(crate) async fn metrics(State(state): State<AppState>) -> AppResult<axum::response::Response> {
+    let body = state.telemetry.render()?;
+    Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], body)
         .into_response())
 }
 
@@ -93,15 +76,15 @@ pub async fn metrics(State(state): State<AppState>) -> AppResult<axum::response:
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn create_chain(
+pub(crate) async fn create_chain(
     State(state): State<AppState>,
     body: Result<Json<CreateChain>, JsonRejection>,
 ) -> AppResult<(axum::http::StatusCode, Json<ChainRow>)> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let row = state.chains.create(CreateChainCommand {
-        rpc_url: body.rpc_url,
-        enabled: body.enabled,
-    }).await?;
+    let row = state
+        .chains
+        .create(CreateChainCommand { rpc_url: body.rpc_url, enabled: body.enabled })
+        .await?;
     Ok((axum::http::StatusCode::CREATED, Json(row.into())))
 }
 
@@ -114,7 +97,7 @@ pub async fn create_chain(
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn list_chains(State(state): State<AppState>) -> AppResult<Json<Vec<ChainRow>>> {
+pub(crate) async fn list_chains(State(state): State<AppState>) -> AppResult<Json<Vec<ChainRow>>> {
     let rows = state.chains.list().await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
@@ -129,7 +112,7 @@ pub async fn list_chains(State(state): State<AppState>) -> AppResult<Json<Vec<Ch
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn get_chain(
+pub(crate) async fn get_chain(
     State(state): State<AppState>,
     Path(chain_id): Path<u64>,
 ) -> AppResult<Json<ChainRow>> {
@@ -148,16 +131,16 @@ pub async fn get_chain(
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn update_chain(
+pub(crate) async fn update_chain(
     State(state): State<AppState>,
     Path(chain_id): Path<u64>,
     body: Result<Json<UpdateChain>, JsonRejection>,
 ) -> AppResult<Json<ChainRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let row = state.chains.update(chain_id, UpdateChainCommand {
-        rpc_url: body.rpc_url,
-        enabled: body.enabled,
-    }).await?;
+    let row = state
+        .chains
+        .update(chain_id, UpdateChainCommand { rpc_url: body.rpc_url, enabled: body.enabled })
+        .await?;
     Ok(Json(row.into()))
 }
 
@@ -171,7 +154,7 @@ pub async fn update_chain(
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn delete_chain(
+pub(crate) async fn delete_chain(
     State(state): State<AppState>,
     Path(chain_id): Path<u64>,
 ) -> AppResult<axum::http::StatusCode> {
@@ -192,19 +175,22 @@ pub async fn delete_chain(
         (status = INTERNAL_SERVER_ERROR, description = "Database or RPC error", body = ErrorResponse)
     )
 )]
-pub async fn create_monitor(
+pub(crate) async fn create_monitor(
     State(state): State<AppState>,
     body: Result<Json<CreateMonitor>, JsonRejection>,
 ) -> AppResult<Json<MonitorRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let row = state.monitors.create(CreateMonitorCommand {
-        chain_id: body.chain_id,
-        address: body.address,
-        signature: body.signature,
-        start_block: body.start_block,
-        end_block: body.end_block,
-        filter: body.filter,
-    }).await?;
+    let row = state
+        .monitors
+        .create(CreateMonitorCommand {
+            chain_id: body.chain_id,
+            address: body.address,
+            signature: body.signature,
+            start_block: body.start_block,
+            end_block: body.end_block,
+            filter: body.filter,
+        })
+        .await?;
     Ok(Json(row.into()))
 }
 
@@ -219,20 +205,23 @@ pub async fn create_monitor(
         (status = INTERNAL_SERVER_ERROR, description = "Internal error", body = ErrorResponse)
     )
 )]
-pub async fn preview_filter(
+pub(crate) async fn preview_filter(
     body: Result<Json<FilterPreviewRequest>, JsonRejection>,
 ) -> AppResult<Json<FilterPreviewResponse>> {
     let Json(body) = body.map_err(|error| AppError::BadRequest(error.body_text()))?;
-    Ok(Json(parseon_core::services::preview_filter(PreviewFilterCommand {
-        signature: body.signature,
-        filter: body.filter,
-        sample: body.sample.into(),
-    })?.into()))
+    Ok(Json(
+        parseon_core::services::preview_filter(PreviewFilterCommand {
+            signature: body.signature,
+            filter: body.filter,
+            sample: body.sample.into(),
+        })?
+        .into(),
+    ))
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
-pub struct MonitorListQuery {
+pub(crate) struct MonitorListQuery {
     pub chain_id: Option<u64>,
 }
 
@@ -246,7 +235,7 @@ pub struct MonitorListQuery {
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn list_monitors(
+pub(crate) async fn list_monitors(
     State(state): State<AppState>,
     Query(query): Query<MonitorListQuery>,
 ) -> AppResult<Json<Vec<MonitorRow>>> {
@@ -264,7 +253,7 @@ pub async fn list_monitors(
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn get_monitor(
+pub(crate) async fn get_monitor(
     State(state): State<AppState>,
     Path(id): Path<u64>,
 ) -> AppResult<Json<MonitorRow>> {
@@ -284,17 +273,23 @@ pub async fn get_monitor(
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn update_monitor(
+pub(crate) async fn update_monitor(
     State(state): State<AppState>,
     Path(id): Path<u64>,
     body: Result<Json<UpdateMonitor>, JsonRejection>,
 ) -> AppResult<Json<MonitorRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
-    let row = state.monitors.update(monitor_id(id)?, UpdateMonitorCommand {
-        start_block: body.start_block,
-        end_block: body.end_block,
-        enabled: body.enabled,
-    }).await?;
+    let row = state
+        .monitors
+        .update(
+            monitor_id(id)?,
+            UpdateMonitorCommand {
+                start_block: body.start_block,
+                end_block: body.end_block,
+                enabled: body.enabled,
+            },
+        )
+        .await?;
     Ok(Json(row.into()))
 }
 
@@ -308,7 +303,7 @@ pub async fn update_monitor(
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn delete_monitor(
+pub(crate) async fn delete_monitor(
     State(state): State<AppState>,
     Path(id): Path<u64>,
 ) -> AppResult<axum::http::StatusCode> {
@@ -333,15 +328,18 @@ pub async fn delete_monitor(
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
-pub async fn list_monitor_results(
+pub(crate) async fn list_monitor_results(
     State(state): State<AppState>,
     Path(id): Path<u64>,
     Query(query): Query<ResultsQuery>,
 ) -> AppResult<Json<Vec<MonitorResult>>> {
-    let rows = state.monitors.results(monitor_id(id)?, ResultQuery {
-        limit: PageLimit::new(query.limit),
-        offset: query.offset,
-    }).await?;
+    let rows = state
+        .monitors
+        .results(
+            monitor_id(id)?,
+            ResultQuery { limit: PageLimit::new(query.limit), offset: query.offset },
+        )
+        .await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 

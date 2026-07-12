@@ -17,11 +17,7 @@ pub struct AbiParam {
 impl AbiParam {
     pub fn new(name: impl Into<String>, ty: DynSolType) -> Result<Self, AbiError> {
         ensure_supported_type(&ty)?;
-        Ok(Self {
-            name: name.into(),
-            ty,
-            indexed: false,
-        })
+        Ok(Self { name: name.into(), ty, indexed: false })
     }
 
     pub fn sol_type(&self) -> String {
@@ -80,9 +76,7 @@ fn ensure_supported_type(ty: &DynSolType) -> Result<(), AbiError> {
         | DynSolType::Function
         | DynSolType::Bytes
         | DynSolType::String => Ok(()),
-        _ => Err(AbiError::Type(format!(
-            "composite type not supported: {ty}"
-        ))),
+        _ => Err(AbiError::Type(format!("composite type not supported: {ty}"))),
     }
 }
 
@@ -95,30 +89,20 @@ fn method_spec(func: &Function) -> Result<MethodSpec, AbiError> {
         .map(|(index, param)| -> Result<AbiParam, AbiError> {
             let ty = Specifier::<DynSolType>::resolve(param)
                 .map_err(|error| AbiError::Type(format!("param `{}`: {error}", param.name)))?;
-            let name = if param.name.is_empty() {
-                format!("arg_{index}")
-            } else {
-                param.name.clone()
-            };
+            let name =
+                if param.name.is_empty() { format!("arg_{index}") } else { param.name.clone() };
             if !names.insert(name.clone()) {
-                return Err(AbiError::Parse(format!(
-                    "duplicate parameter name `{name}`"
-                )));
+                return Err(AbiError::Parse(format!("duplicate parameter name `{name}`")));
             }
             AbiParam::new(name, ty)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     if params.is_empty() {
-        return Err(AbiError::Parse(
-            "functions with no inputs are not supported".to_string(),
-        ));
+        return Err(AbiError::Parse("functions with no inputs are not supported".to_string()));
     }
 
-    Ok(MethodSpec {
-        selector: func.selector().into(),
-        params,
-    })
+    Ok(MethodSpec { selector: func.selector(), params })
 }
 
 pub fn parse_target_signature(signature: &str) -> Result<TargetSpec, AbiError> {
@@ -127,9 +111,7 @@ pub fn parse_target_signature(signature: &str) -> Result<TargetSpec, AbiError> {
     {
         AbiItem::Function(func) => method_spec(&func).map(TargetSpec::Call),
         AbiItem::Event(event) => event_spec(&event).map(TargetSpec::Event),
-        _ => Err(AbiError::Parse(format!(
-            "invalid target signature: {signature}"
-        ))),
+        _ => Err(AbiError::Parse(format!("invalid target signature: {signature}"))),
     }
 }
 
@@ -145,23 +127,15 @@ fn event_spec(event: &Event) -> Result<EventSpec, AbiError> {
         .map(|(index, param)| {
             let ty = Specifier::<DynSolType>::resolve(param)
                 .map_err(|error| AbiError::Type(format!("param `{}`: {error}", param.name)))?;
-            let name = if param.name.is_empty() {
-                format!("arg_{index}")
-            } else {
-                param.name.clone()
-            };
+            let name =
+                if param.name.is_empty() { format!("arg_{index}") } else { param.name.clone() };
             if !names.insert(name.clone()) {
-                return Err(AbiError::Parse(format!(
-                    "duplicate parameter name `{name}`"
-                )));
+                return Err(AbiError::Parse(format!("duplicate parameter name `{name}`")));
             }
             Ok(AbiParam::new(name, ty)?.with_indexed(param.indexed))
         })
         .collect::<Result<Vec<_>, AbiError>>()?;
-    Ok(EventSpec {
-        topic0: event.selector(),
-        params,
-    })
+    Ok(EventSpec { topic0: event.selector(), params })
 }
 
 pub fn decode_event(
@@ -170,18 +144,9 @@ pub fn decode_event(
     topics: &[B256],
     data: &[u8],
 ) -> Result<Vec<DecodedValue>, AbiError> {
-    let indexed = params
-        .iter()
-        .filter(|p| p.indexed)
-        .map(|p| p.ty.clone())
-        .collect();
-    let body = DynSolType::Tuple(
-        params
-            .iter()
-            .filter(|p| !p.indexed)
-            .map(|p| p.ty.clone())
-            .collect(),
-    );
+    let indexed = params.iter().filter(|p| p.indexed).map(|p| p.ty.clone()).collect();
+    let body =
+        DynSolType::Tuple(params.iter().filter(|p| !p.indexed).map(|p| p.ty.clone()).collect());
     let event = DynSolEvent::new(Some(topic0), indexed, body)
         .ok_or_else(|| AbiError::Decode("event has too many indexed parameters".into()))?;
     let decoded = event
@@ -193,12 +158,8 @@ pub fn decode_event(
         .iter()
         .map(|param| {
             decode_value(
-                if param.indexed {
-                    indexed.next()
-                } else {
-                    body.next()
-                }
-                .ok_or_else(|| AbiError::Decode("decoded parameter count mismatch".into()))?,
+                if param.indexed { indexed.next() } else { body.next() }
+                    .ok_or_else(|| AbiError::Decode("decoded parameter count mismatch".into()))?,
             )
         })
         .collect()
@@ -206,9 +167,8 @@ pub fn decode_event(
 
 pub fn decode_calldata(params: &[AbiParam], data: &[u8]) -> Result<Vec<DecodedValue>, AbiError> {
     let ty = DynSolType::Tuple(params.iter().map(|param| param.ty.clone()).collect());
-    let decoded = ty
-        .abi_decode_params(data)
-        .map_err(|error| AbiError::Decode(error.to_string()))?;
+    let decoded =
+        ty.abi_decode_params(data).map_err(|error| AbiError::Decode(error.to_string()))?;
     let values = match decoded {
         DynSolValue::Tuple(values) => values,
         single => vec![single],
@@ -226,9 +186,7 @@ fn decode_value(value: DynSolValue) -> Result<DecodedValue, AbiError> {
         DynSolValue::Function(value) => Ok(DecodedValue::Bytes(value.as_slice().to_vec())),
         DynSolValue::Uint(value, _) => Ok(DecodedValue::Uint(value)),
         DynSolValue::Int(value, _) => Ok(DecodedValue::Int(value)),
-        _ => Err(AbiError::Decode(
-            "composite types not supported at decode time".into(),
-        )),
+        _ => Err(AbiError::Decode("composite types not supported at decode time".into())),
     }
 }
 

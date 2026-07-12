@@ -6,10 +6,10 @@ use sqlx::postgres::PgRow;
 use sqlx::types::BigDecimal;
 use sqlx::{PgConnection, PgPool, QueryBuilder, Row, Transaction};
 
+use crate::{monitor_repo::StoredParam, pg_types};
+use parseon_core::abi::parse_abi_type;
 use parseon_core::commands::PageLimit;
 use parseon_core::{BlockNumber, DecodedValue, TxHash};
-use parseon_core::abi::parse_abi_type;
-use crate::{monitor_repo::StoredParam, pg_types};
 type AppResult<T> = anyhow::Result<T>;
 
 const CALL_COLUMNS: &[(&str, &str)] = &[
@@ -83,23 +83,19 @@ fn postgres_params(kind: &str, params: &[StoredParam]) -> AppResult<Vec<PgParam>
                 col = format!("{base}_{n}");
                 n += 1;
             }
-            Ok(PgParam {
-                name: p.name.clone(),
-                column: col,
-                kind: PgColumnType::from_param(p)?,
-            })
+            Ok(PgParam { name: p.name.clone(), column: col, kind: PgColumnType::from_param(p)? })
         })
         .collect()
 }
 
-pub fn result_table_name(id: i64) -> AppResult<String> {
+pub(crate) fn result_table_name(id: i64) -> AppResult<String> {
     if id <= 0 {
         anyhow::bail!("invalid monitor id");
     }
     Ok(format!("monitor_{id}_results"))
 }
 
-pub async fn create_result_table(
+pub(crate) async fn create_result_table(
     tx: &mut Transaction<'_, sqlx::Postgres>,
     id: i64,
     kind: &str,
@@ -116,10 +112,7 @@ pub async fn create_result_table(
     qb.push(table.clone()).push(" (");
     let mut separated = qb.separated(", ");
     for (name, ty) in cols {
-        separated
-            .push(*name)
-            .push_unseparated(" ")
-            .push_unseparated(*ty);
+        separated.push(*name).push_unseparated(" ").push_unseparated(*ty);
     }
     for p in &params {
         separated
@@ -139,7 +132,10 @@ pub async fn create_result_table(
         .await?;
     Ok(())
 }
-pub async fn drop_result_table(tx: &mut Transaction<'_, sqlx::Postgres>, id: i64) -> AppResult<()> {
+pub(crate) async fn drop_result_table(
+    tx: &mut Transaction<'_, sqlx::Postgres>,
+    id: i64,
+) -> AppResult<()> {
     QueryBuilder::new("DROP TABLE IF EXISTS ")
         .push(Identifier::new(result_table_name(id)?)?)
         .push(" CASCADE")
@@ -148,7 +144,7 @@ pub async fn drop_result_table(tx: &mut Transaction<'_, sqlx::Postgres>, id: i64
         .await?;
     Ok(())
 }
-pub async fn truncate_result_table(
+pub(crate) async fn truncate_result_table(
     tx: &mut Transaction<'_, sqlx::Postgres>,
     id: i64,
 ) -> AppResult<()> {
@@ -160,12 +156,12 @@ pub async fn truncate_result_table(
     Ok(())
 }
 
-pub struct CallResultInput {
+pub(crate) struct CallResultInput {
     pub tx_hash: TxHash,
     pub block_number: BlockNumber,
     pub params: Vec<DecodedValue>,
 }
-pub struct EventResultInput {
+pub(crate) struct EventResultInput {
     pub tx_hash: TxHash,
     pub log_index: u64,
     pub block_number: BlockNumber,
@@ -176,12 +172,12 @@ fn push_values(qb: &mut QueryBuilder<sqlx::Postgres>, values: &[DecodedValue]) -
     for v in values {
         qb.push(", ");
         match v {
-            DecodedValue::Uint(v) => qb.push_bind(
-                BigDecimal::from_str(&v.to_string()).map_err(anyhow::Error::from)?,
-            ),
-            DecodedValue::Int(v) => qb.push_bind(
-                BigDecimal::from_str(&v.to_string()).map_err(anyhow::Error::from)?,
-            ),
+            DecodedValue::Uint(v) => {
+                qb.push_bind(BigDecimal::from_str(&v.to_string()).map_err(anyhow::Error::from)?)
+            }
+            DecodedValue::Int(v) => {
+                qb.push_bind(BigDecimal::from_str(&v.to_string()).map_err(anyhow::Error::from)?)
+            }
             DecodedValue::Bool(v) => qb.push_bind(*v),
             DecodedValue::Address(v) => qb.push_bind(v.as_slice()),
             DecodedValue::String(v) => qb.push_bind(v),
@@ -197,7 +193,7 @@ fn push_param_columns(qb: &mut QueryBuilder<sqlx::Postgres>, params: &[PgParam])
     Ok(())
 }
 
-pub async fn insert_call(
+pub(crate) async fn insert_call(
     conn: &mut PgConnection,
     id: i64,
     schema: &[StoredParam],
@@ -208,8 +204,7 @@ pub async fn insert_call(
         anyhow::bail!("parameter count mismatch");
     }
     let mut qb = QueryBuilder::new("INSERT INTO ");
-    qb.push(Identifier::new(result_table_name(id)?)?)
-        .push(" (tx_hash,block_number");
+    qb.push(Identifier::new(result_table_name(id)?)?).push(" (tx_hash,block_number");
     push_param_columns(&mut qb, &params)?;
     qb.push(") VALUES (")
         .push_bind(input.tx_hash.as_slice())
@@ -220,7 +215,7 @@ pub async fn insert_call(
     qb.build().execute(conn).await?;
     Ok(())
 }
-pub async fn insert_event(
+pub(crate) async fn insert_event(
     conn: &mut PgConnection,
     id: i64,
     schema: &[StoredParam],
@@ -231,8 +226,7 @@ pub async fn insert_event(
         anyhow::bail!("parameter count mismatch");
     }
     let mut qb = QueryBuilder::new("INSERT INTO ");
-    qb.push(Identifier::new(result_table_name(id)?)?)
-        .push(" (tx_hash,log_index,block_number");
+    qb.push(Identifier::new(result_table_name(id)?)?).push(" (tx_hash,log_index,block_number");
     push_param_columns(&mut qb, &params)?;
     qb.push(") VALUES (")
         .push_bind(input.tx_hash.as_slice())
@@ -246,25 +240,25 @@ pub async fn insert_event(
     Ok(())
 }
 
-pub struct SearchParams {
+pub(crate) struct SearchParams {
     pub limit: PageLimit,
     pub offset: u64,
 }
 #[derive(Debug)]
-pub struct CallResultRecord {
+pub(crate) struct CallResultRecord {
     pub tx_hash: TxHash,
     pub block_number: BlockNumber,
     pub params: serde_json::Value,
 }
 #[derive(Debug)]
-pub struct EventResultRecord {
+pub(crate) struct EventResultRecord {
     pub tx_hash: TxHash,
     pub log_index: u64,
     pub block_number: BlockNumber,
     pub params: serde_json::Value,
 }
 #[derive(Debug)]
-pub enum ResultRecord {
+pub(crate) enum ResultRecord {
     Call(CallResultRecord),
     Event(EventResultRecord),
 }
@@ -290,7 +284,7 @@ fn read_params(row: &PgRow, params: &[PgParam]) -> AppResult<serde_json::Value> 
     }
     Ok(serde_json::Value::Object(map))
 }
-pub async fn query_results(
+pub(crate) async fn query_results(
     pool: &PgPool,
     id: i64,
     kind: &str,
@@ -315,13 +309,19 @@ pub async fn query_results(
             let decoded = read_params(&row, &params)?;
             Ok(if kind == "call" {
                 ResultRecord::Call(CallResultRecord {
-                    tx_hash: pg_types::b256(&row.try_get::<Vec<u8>, _>("tx_hash")?, "transaction hash")?,
+                    tx_hash: pg_types::b256(
+                        &row.try_get::<Vec<u8>, _>("tx_hash")?,
+                        "transaction hash",
+                    )?,
                     block_number: pg_types::from_i64(row.try_get("block_number")?, "block number")?,
                     params: decoded,
                 })
             } else {
                 ResultRecord::Event(EventResultRecord {
-                    tx_hash: pg_types::b256(&row.try_get::<Vec<u8>, _>("tx_hash")?, "transaction hash")?,
+                    tx_hash: pg_types::b256(
+                        &row.try_get::<Vec<u8>, _>("tx_hash")?,
+                        "transaction hash",
+                    )?,
                     log_index: pg_types::from_i64(row.try_get("log_index")?, "log index")?,
                     block_number: pg_types::from_i64(row.try_get("block_number")?, "block number")?,
                     params: decoded,
@@ -361,11 +361,7 @@ mod tests {
     fn indexed_dynamic_params_store_topic_hashes_as_bytes() {
         let params = postgres_params(
             "event",
-            &[StoredParam {
-                name: "label".into(),
-                sol_type: "string".into(),
-                indexed: true,
-            }],
+            &[StoredParam { name: "label".into(), sol_type: "string".into(), indexed: true }],
         )
         .unwrap();
         assert_eq!(params[0].kind, PgColumnType::Bytea);

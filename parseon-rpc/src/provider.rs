@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use alloy::eips::BlockNumberOrTag;
@@ -10,16 +10,20 @@ use alloy::network::BlockResponse;
 use alloy::primitives::{Address, B256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::transports::http::reqwest::Client;
+use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use anyhow::Context;
 
-use parseon_core::ports::{BlockSource, BlockSourceFactory, InFlightGuard, NoopTelemetry, Telemetry};
-use parseon_core::{BlockNumber, BlockTransaction, ChainId, ExecutedTransaction, SourceBlock, SourceLog, Url};
 use crate::fetch;
+use parseon_core::ports::{
+    BlockSource, BlockSourceFactory, InFlightGuard, NoopTelemetry, Telemetry,
+};
+use parseon_core::{
+    BlockNumber, BlockTransaction, ChainId, ExecutedTransaction, SourceBlock, SourceLog, Url,
+};
 
-pub type HttpProvider = RootProvider<AnyNetwork>;
+pub(crate) type HttpProvider = RootProvider<AnyNetwork>;
 
 const CAPABILITY_UNKNOWN: u8 = 0;
 const CAPABILITY_SUPPORTED: u8 = 1;
@@ -71,11 +75,7 @@ impl JsonRpcBlockSourceFactory {
 
 impl BlockSourceFactory for JsonRpcBlockSourceFactory {
     fn connect(&self, rpc_url: &Url) -> anyhow::Result<Arc<dyn BlockSource>> {
-        Ok(Arc::new(JsonRpcBlockSource::connect(
-            rpc_url,
-            self.config,
-            self.telemetry.clone(),
-        )?))
+        Ok(Arc::new(JsonRpcBlockSource::connect(rpc_url, self.config, self.telemetry.clone())?))
     }
 }
 
@@ -113,8 +113,8 @@ impl JsonRpcBlockSource {
     {
         let _permit = self.acquire().await?;
         let chain_id = self.chain_id.get().copied();
-        let _in_flight = chain_id
-            .map(|chain_id| InFlightGuard::new(self.telemetry.as_ref(), chain_id, "rpc"));
+        let _in_flight =
+            chain_id.map(|chain_id| InFlightGuard::new(self.telemetry.as_ref(), chain_id, "rpc"));
         let started = Instant::now();
         let result = future.await;
         if let Some(chain_id) = chain_id {
@@ -152,10 +152,8 @@ impl JsonRpcBlockSource {
         &self,
         transactions: &[BlockTransaction],
     ) -> anyhow::Result<Vec<ExecutedTransaction>> {
-        let chunks = transactions
-            .chunks(self.batch_size)
-            .map(|chunk| chunk.to_vec())
-            .collect::<Vec<_>>();
+        let chunks =
+            transactions.chunks(self.batch_size).map(|chunk| chunk.to_vec()).collect::<Vec<_>>();
         let mut batches = stream::iter(chunks.into_iter().map(|chunk| async move {
             self.observed("receipts", "batch", async {
                 Ok(fetch::fetch_receipt_batch(&self.provider, &chunk).await?)
@@ -187,18 +185,13 @@ impl JsonRpcBlockSource {
         {
             let block_receipts = self
                 .observed("receipts", "block_receipts", async {
-                    Ok(fetch::fetch_block_receipts(
-                        &self.provider,
-                        block.number,
-                        transactions,
-                    )
-                    .await?)
+                    Ok(fetch::fetch_block_receipts(&self.provider, block.number, transactions)
+                        .await?)
                 })
                 .await;
             match block_receipts {
                 Ok(receipts) => {
-                    self.block_receipts_capability
-                        .store(CAPABILITY_SUPPORTED, Ordering::Relaxed);
+                    self.block_receipts_capability.store(CAPABILITY_SUPPORTED, Ordering::Relaxed);
                     return Ok(receipts);
                 }
                 Err(error) => {
@@ -217,14 +210,12 @@ impl JsonRpcBlockSource {
         if self.batch_capability.load(Ordering::Relaxed) != CAPABILITY_UNSUPPORTED {
             match self.batched_receipts(transactions).await {
                 Ok(receipts) => {
-                    self.batch_capability
-                        .store(CAPABILITY_SUPPORTED, Ordering::Relaxed);
+                    self.batch_capability.store(CAPABILITY_SUPPORTED, Ordering::Relaxed);
                     return Ok(receipts);
                 }
                 Err(error) => {
                     if unsupported_batch(&error) {
-                        self.batch_capability
-                            .store(CAPABILITY_UNSUPPORTED, Ordering::Relaxed);
+                        self.batch_capability.store(CAPABILITY_UNSUPPORTED, Ordering::Relaxed);
                     }
                     tracing::debug!(
                         chain_id = ?self.chain_id.get(),
@@ -260,9 +251,8 @@ impl BlockSource for JsonRpcBlockSource {
     }
 
     async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
-        self.observed("finalized_head", "single", async {
-            finalized_number(&self.provider).await
-        }).await
+        self.observed("finalized_head", "single", async { finalized_number(&self.provider).await })
+            .await
     }
 
     async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
@@ -287,13 +277,7 @@ impl BlockSource for JsonRpcBlockSource {
         topic0s: &[B256],
     ) -> anyhow::Result<Vec<SourceLog>> {
         self.observed("logs", "single", async {
-            fetch::fetch_logs(
-                &self.provider,
-                block_number,
-                addresses,
-                topic0s,
-            )
-            .await
+            fetch::fetch_logs(&self.provider, block_number, addresses, topic0s).await
         })
         .await
     }
@@ -312,20 +296,21 @@ fn unsupported_batch(error: &anyhow::Error) -> bool {
             || message.contains("invalid request"))
 }
 
-pub fn build(rpc_url: &Url) -> anyhow::Result<HttpProvider> {
+pub(crate) fn build(rpc_url: &Url) -> anyhow::Result<HttpProvider> {
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .context("build HTTP client")?;
-    let rpc_client = alloy::rpc::client::ClientBuilder::default().http_with_client(client, rpc_url.clone());
+    let rpc_client =
+        alloy::rpc::client::ClientBuilder::default().http_with_client(client, rpc_url.clone());
     Ok(RootProvider::<AnyNetwork>::new(rpc_client))
 }
 
-pub async fn chain_id(provider: &HttpProvider) -> anyhow::Result<u64> {
+pub(crate) async fn chain_id(provider: &HttpProvider) -> anyhow::Result<u64> {
     Ok(provider.get_chain_id().await?)
 }
 
-pub async fn finalized_number(provider: &HttpProvider) -> anyhow::Result<u64> {
+pub(crate) async fn finalized_number(provider: &HttpProvider) -> anyhow::Result<u64> {
     let block = provider
         .get_block_by_number(BlockNumberOrTag::Finalized)
         .await?

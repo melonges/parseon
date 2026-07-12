@@ -7,13 +7,13 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::{BlockNumber, ChainId, Url};
 use super::ports::{
-    BlockCacheFactory, BlockSource, BlockSourceFactory, ChainRepository, RegisteredChain, IndexStorage,
-    Telemetry,
+    BlockCacheFactory, BlockSource, BlockSourceFactory, ChainRepository, IndexStorage,
+    RegisteredChain, Telemetry,
 };
 use super::status::{ChainStatus, RuntimeStatus};
 use super::worker::{self, WorkerConfig};
+use super::{BlockNumber, ChainId, Url};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SupervisorConfig {
@@ -85,10 +85,8 @@ impl Supervisor {
 
     pub async fn reconcile(&mut self) -> anyhow::Result<()> {
         let chains = self.registry.list_registered_chains().await?;
-        let registered = chains
-            .iter()
-            .map(|registered| registered.chain.id)
-            .collect::<HashSet<_>>();
+        let registered =
+            chains.iter().map(|registered| registered.chain.id).collect::<HashSet<_>>();
 
         let removed = self
             .workers
@@ -108,17 +106,13 @@ impl Supervisor {
         for registered in chains {
             if !registered.enabled {
                 self.stop_worker(registered.chain.id).await;
-                self.statuses
-                    .replace(ChainStatus::disabled(registered.chain.id));
+                self.statuses.replace(ChainStatus::disabled(registered.chain.id));
                 continue;
             }
 
-            let unchanged = self
-                .workers
-                .get(&registered.chain.id)
-                .is_some_and(|runtime| {
-                    runtime.rpc_url == registered.rpc_url && !runtime.handle.is_finished()
-                });
+            let unchanged = self.workers.get(&registered.chain.id).is_some_and(|runtime| {
+                runtime.rpc_url == registered.rpc_url && !runtime.handle.is_finished()
+            });
             if unchanged {
                 continue;
             }
@@ -129,8 +123,7 @@ impl Supervisor {
                     self.start_worker(registered, source, finalized_head);
                 }
                 Err(message) => {
-                    self.statuses
-                        .replace(ChainStatus::degraded(registered.chain.id, message));
+                    self.statuses.replace(ChainStatus::degraded(registered.chain.id, message));
                 }
             }
         }
@@ -180,21 +173,15 @@ impl Supervisor {
             status,
             cancel.clone(),
         ));
-        self.workers.insert(
-            chain.id,
-            WorkerRuntime {
-                rpc_url: registered.rpc_url,
-                cancel,
-                handle,
-            },
-        );
+        self.workers
+            .insert(chain.id, WorkerRuntime { rpc_url: registered.rpc_url, cancel, handle });
     }
 
     async fn stop_worker(&mut self, chain_id: ChainId) {
         if let Some(runtime) = self.workers.remove(&chain_id) {
             runtime.cancel.cancel();
             runtime.handle.abort();
-            let _ = runtime.handle.await;
+            drop(runtime.handle.await);
         }
     }
 
@@ -231,11 +218,21 @@ mod tests {
         async fn list_registered_chains(&self) -> anyhow::Result<Vec<RegisteredChain>> {
             Ok(self.0.read().unwrap().clone())
         }
-        async fn create_chain(&self, _: NewChain) -> anyhow::Result<ChainRecord> { unreachable!() }
-        async fn list_chains(&self) -> anyhow::Result<Vec<ChainRecord>> { unreachable!() }
-        async fn get_chain(&self, _: Chain) -> anyhow::Result<ChainRecord> { unreachable!() }
-        async fn update_chain(&self, _: Chain, _: ChainUpdate) -> anyhow::Result<ChainRecord> { unreachable!() }
-        async fn delete_chain(&self, _: Chain) -> anyhow::Result<()> { unreachable!() }
+        async fn create_chain(&self, _: NewChain) -> anyhow::Result<ChainRecord> {
+            unreachable!()
+        }
+        async fn list_chains(&self) -> anyhow::Result<Vec<ChainRecord>> {
+            unreachable!()
+        }
+        async fn get_chain(&self, _: Chain) -> anyhow::Result<ChainRecord> {
+            unreachable!()
+        }
+        async fn update_chain(&self, _: Chain, _: ChainUpdate) -> anyhow::Result<ChainRecord> {
+            unreachable!()
+        }
+        async fn delete_chain(&self, _: Chain) -> anyhow::Result<()> {
+            unreachable!()
+        }
     }
 
     struct EmptyStorage;
@@ -294,10 +291,7 @@ mod tests {
         }
 
         async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
-            Ok(SourceBlock {
-                number: block_number,
-                transactions: Vec::new(),
-            })
+            Ok(SourceBlock { number: block_number, transactions: Vec::new() })
         }
 
         async fn fetch_executed_transactions(
@@ -332,11 +326,7 @@ mod tests {
     }
 
     fn registered(chain_id: ChainId, url: &str, enabled: bool) -> RegisteredChain {
-        RegisteredChain {
-            chain: Chain::new(chain_id),
-            rpc_url: url.parse().unwrap(),
-            enabled,
-        }
+        RegisteredChain { chain: Chain::new(chain_id), rpc_url: url.parse().unwrap(), enabled }
     }
 
     fn supervisor(
@@ -376,10 +366,7 @@ mod tests {
         *registry.0.write().unwrap() = vec![registered(1, "https://first.example", false)];
         supervisor.reconcile().await.unwrap();
         assert!(!supervisor.has_worker(1));
-        assert_eq!(
-            statuses.snapshot()[0].worker_state,
-            crate::status::WorkerState::Disabled
-        );
+        assert_eq!(statuses.snapshot()[0].worker_state, crate::status::WorkerState::Disabled);
 
         *registry.0.write().unwrap() = vec![registered(1, "https://replacement.example", true)];
         supervisor.reconcile().await.unwrap();
@@ -407,10 +394,7 @@ mod tests {
         supervisor.reconcile().await.unwrap();
         assert!(supervisor.has_worker(1));
         assert!(!supervisor.has_worker(2));
-        assert_eq!(
-            statuses.snapshot()[1].worker_state,
-            crate::status::WorkerState::Degraded
-        );
+        assert_eq!(statuses.snapshot()[1].worker_state, crate::status::WorkerState::Degraded);
 
         factory.set("https://failing.example", 2, false);
         supervisor.reconcile().await.unwrap();

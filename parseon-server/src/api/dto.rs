@@ -2,9 +2,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use parseon_core::status::{ChainStatusSnapshot, WorkerState};
 use parseon_core::abi::AbiParam;
 use parseon_core::filter::{FilterExpression, FilterPreview, FilterSample};
+use parseon_core::status::{ChainStatusSnapshot, WorkerState};
 use parseon_core::views::{ChainView, MonitorResultView, MonitorView};
 use parseon_core::{Address, B256, Selector, TxHash, Url};
 
@@ -12,7 +12,7 @@ use parseon_core::{Address, B256, Selector, TxHash, Url};
 
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct CreateChain {
+pub(crate) struct CreateChain {
     #[schema(write_only)]
     pub rpc_url: Url,
     #[serde(default = "default_enabled")]
@@ -21,14 +21,14 @@ pub struct CreateChain {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct UpdateChain {
+pub(crate) struct UpdateChain {
     #[schema(write_only)]
     pub rpc_url: Option<Url>,
     pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct ChainRow {
+pub(crate) struct ChainRow {
     pub chain_id: u64,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
@@ -50,7 +50,7 @@ impl From<ChainView> for ChainRow {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct CreateMonitor {
+pub(crate) struct CreateMonitor {
     pub chain_id: u64,
     #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{40}$")]
     pub address: Address,
@@ -69,7 +69,7 @@ pub struct CreateMonitor {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct UpdateMonitor {
+pub(crate) struct UpdateMonitor {
     pub start_block: Option<u64>,
     /// `null` clears end_block (open-ended/live); a number sets a finite end.
     pub end_block: Option<Option<u64>>,
@@ -77,7 +77,7 @@ pub struct UpdateMonitor {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct AbiParamSchema {
+pub(crate) struct AbiParamSchema {
     pub name: String,
     pub sol_type: String,
     pub indexed: bool,
@@ -86,16 +86,12 @@ pub struct AbiParamSchema {
 impl From<AbiParam> for AbiParamSchema {
     fn from(param: AbiParam) -> Self {
         let sol_type = param.sol_type();
-        Self {
-            name: param.name,
-            sol_type,
-            indexed: param.indexed,
-        }
+        Self { name: param.name, sol_type, indexed: param.indexed }
     }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct MonitorRow {
+pub(crate) struct MonitorRow {
     pub id: u64,
     pub chain_id: u64,
     #[schema(value_type = String, pattern = "^0x[0-9a-f]{40}$")]
@@ -143,7 +139,7 @@ impl From<MonitorView> for MonitorRow {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct FilterPreviewRequest {
+pub(crate) struct FilterPreviewRequest {
     pub signature: String,
     #[schema(value_type = Object)]
     pub filter: FilterExpression,
@@ -152,7 +148,7 @@ pub struct FilterPreviewRequest {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum FilterSampleInput {
+pub(crate) enum FilterSampleInput {
     Call {
         block_number: u64,
         #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{64}$")]
@@ -179,26 +175,24 @@ pub enum FilterSampleInput {
 impl From<FilterSampleInput> for FilterSample {
     fn from(sample: FilterSampleInput) -> Self {
         match sample {
-            FilterSampleInput::Call { block_number, tx_hash, from, to, params } => Self::Call {
-                block_number,
-                tx_hash,
-                from,
-                to,
-                params: params.into_iter().collect(),
-            },
-            FilterSampleInput::Event { block_number, tx_hash, emitter, log_index, params } => Self::Event {
-                block_number,
-                tx_hash,
-                emitter,
-                log_index,
-                params: params.into_iter().collect(),
-            },
+            FilterSampleInput::Call { block_number, tx_hash, from, to, params } => {
+                Self::Call { block_number, tx_hash, from, to, params: params.into_iter().collect() }
+            }
+            FilterSampleInput::Event { block_number, tx_hash, emitter, log_index, params } => {
+                Self::Event {
+                    block_number,
+                    tx_hash,
+                    emitter,
+                    log_index,
+                    params: params.into_iter().collect(),
+                }
+            }
         }
     }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct FilterPreviewResponse {
+pub(crate) struct FilterPreviewResponse {
     #[schema(value_type = Object)]
     pub filter: FilterExpression,
     pub matches: bool,
@@ -211,19 +205,19 @@ impl From<FilterPreview> for FilterPreviewResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct Health {
+pub(crate) struct Health {
     pub status: &'static str,
     pub monitors: usize,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct Status {
+pub(crate) struct Status {
     pub mode: &'static str,
     pub chains: Vec<ChainStatusRow>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct ChainStatusRow {
+pub(crate) struct ChainStatusRow {
     pub chain_id: u64,
     pub enabled: bool,
     pub worker_state: &'static str,
@@ -253,14 +247,14 @@ impl From<ChainStatusSnapshot> for ChainStatusRow {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct ErrorResponse {
+pub(crate) struct ErrorResponse {
     pub error: String,
 }
 
 // ----- Results search -----
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct ResultsQuery {
+pub(crate) struct ResultsQuery {
     /// Maximum number of results (default 50, clamped to 200).
     #[serde(default = "default_limit")]
     pub limit: u64,
@@ -270,7 +264,7 @@ pub struct ResultsQuery {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct CallMonitorResult {
+pub(crate) struct CallMonitorResult {
     #[schema(value_type = String, pattern = "^0x[0-9a-f]{64}$")]
     pub tx_hash: TxHash,
     pub block_number: u64,
@@ -279,7 +273,7 @@ pub struct CallMonitorResult {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct EventMonitorResult {
+pub(crate) struct EventMonitorResult {
     #[schema(value_type = String, pattern = "^0x[0-9a-f]{64}$")]
     pub tx_hash: TxHash,
     pub log_index: u64,
@@ -290,7 +284,7 @@ pub struct EventMonitorResult {
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum MonitorResult {
+pub(crate) enum MonitorResult {
     Call(CallMonitorResult),
     Event(EventMonitorResult),
 }
@@ -298,17 +292,12 @@ pub enum MonitorResult {
 impl From<MonitorResultView> for MonitorResult {
     fn from(record: MonitorResultView) -> Self {
         match record {
-            MonitorResultView::Call { tx_hash, block_number, params } => Self::Call(CallMonitorResult {
-                tx_hash,
-                block_number,
-                params,
-            }),
-            MonitorResultView::Event { tx_hash, log_index, block_number, params } => Self::Event(EventMonitorResult {
-                tx_hash,
-                log_index,
-                block_number,
-                params,
-            }),
+            MonitorResultView::Call { tx_hash, block_number, params } => {
+                Self::Call(CallMonitorResult { tx_hash, block_number, params })
+            }
+            MonitorResultView::Event { tx_hash, log_index, block_number, params } => {
+                Self::Event(EventMonitorResult { tx_hash, log_index, block_number, params })
+            }
         }
     }
 }
@@ -332,16 +321,15 @@ mod tests {
         }))
         .unwrap();
         assert!(create.enabled);
-        assert!(serde_json::from_value::<CreateChain>(serde_json::json!({
-            "rpc_url": "not a URL"
-        })).is_err());
+        assert!(
+            serde_json::from_value::<CreateChain>(serde_json::json!({
+                "rpc_url": "not a URL"
+            }))
+            .is_err()
+        );
 
-        let row = ChainRow {
-            chain_id: 1,
-            enabled: true,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
+        let row =
+            ChainRow { chain_id: 1, enabled: true, created_at: Utc::now(), updated_at: Utc::now() };
         let value = serde_json::to_value(row).unwrap();
         assert!(value.get("rpc_url").is_none());
         assert!(!value.to_string().contains("secret"));
@@ -356,18 +344,24 @@ mod tests {
             "start_block": 0
         });
         assert!(serde_json::from_value::<CreateMonitor>(base).is_ok());
-        assert!(serde_json::from_value::<CreateMonitor>(serde_json::json!({
-            "chain_id": -1,
-            "address": "0x0000000000000000000000000000000000000001",
-            "signature": "function transfer(address to, uint256 value)",
-            "start_block": 0
-        })).is_err());
-        assert!(serde_json::from_value::<CreateMonitor>(serde_json::json!({
-            "chain_id": 1,
-            "address": "not-an-address",
-            "signature": "function transfer(address to, uint256 value)",
-            "start_block": 0
-        })).is_err());
+        assert!(
+            serde_json::from_value::<CreateMonitor>(serde_json::json!({
+                "chain_id": -1,
+                "address": "0x0000000000000000000000000000000000000001",
+                "signature": "function transfer(address to, uint256 value)",
+                "start_block": 0
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<CreateMonitor>(serde_json::json!({
+                "chain_id": 1,
+                "address": "not-an-address",
+                "signature": "function transfer(address to, uint256 value)",
+                "start_block": 0
+            }))
+            .is_err()
+        );
     }
 
     #[test]

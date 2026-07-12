@@ -12,12 +12,15 @@ async fn main() -> anyhow::Result<()> {
     let config = config::Config::load();
 
     // Logging.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.server.rust_log)),
-        )
-        .try_init();
+    drop(
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    tracing_subscriber::EnvFilter::new(&config.server.rust_log)
+                }),
+            )
+            .try_init(),
+    );
 
     tracing::info!("starting parseon");
 
@@ -70,12 +73,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // HTTP API.
-    let state = api::AppState::new(
-        chains,
-        monitors,
-        runtime_status,
-        telemetry,
-    );
+    let state = api::AppState::new(chains, monitors, runtime_status, telemetry);
     let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(&config.server.http_listen).await?;
     tracing::info!(listen = %config.server.http_listen, "http API listening");

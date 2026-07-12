@@ -19,6 +19,10 @@ pub struct WorkerConfig {
     pub poll_interval: Duration,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "worker dependencies are explicit and independently shared"
+)]
 pub async fn run(
     config: WorkerConfig,
     storage: Arc<dyn IndexStorage>,
@@ -76,10 +80,7 @@ pub async fn probe_source(source: &dyn BlockSource) -> anyhow::Result<SourceStat
     let finalized_head = source.finalized_head().await.map_err(|error| {
         anyhow::anyhow!("RPC does not support the required finalized block tag: {error:#}")
     })?;
-    Ok(SourceStatus {
-        chain_id,
-        finalized_head,
-    })
+    Ok(SourceStatus { chain_id, finalized_head })
 }
 
 pub async fn run_once(
@@ -92,16 +93,12 @@ pub async fn run_once(
     cancel: &CancellationToken,
 ) -> anyhow::Result<PollResult> {
     let finalized_head = source.finalized_head().await?;
-    let monitor_index = Arc::new(indexer::MonitorIndex::new(
-        storage.load_monitors(config.chain).await?,
-    )?);
+    let monitor_index =
+        Arc::new(indexer::MonitorIndex::new(storage.load_monitors(config.chain).await?)?);
     let active = monitor_index.monitors().iter().collect::<Vec<_>>();
     if active.is_empty() {
         telemetry.set_worker_lag(config.chain.id, 0);
-        return Ok(PollResult {
-            finalized_head,
-            decoded: 0,
-        });
+        return Ok(PollResult { finalized_head, decoded: 0 });
     }
 
     let wanted = scheduler::plan_blocks(&active, finalized_head, config.batch_size);
@@ -201,27 +198,17 @@ pub async fn run_once(
     let lag = active
         .iter()
         .map(|monitor| {
-            let target = monitor
-                .end_block
-                .unwrap_or(finalized_head)
-                .min(finalized_head);
+            let target = monitor.end_block.unwrap_or(finalized_head).min(finalized_head);
             Cursor(*progress.get(&monitor.id).unwrap_or(&monitor.cursor.0))
                 .next(monitor.start_block)
                 .map_or(0, |next| {
-                    if next > target {
-                        0
-                    } else {
-                        target.saturating_sub(next).saturating_add(1)
-                    }
+                    if next > target { 0 } else { target.saturating_sub(next).saturating_add(1) }
                 })
         })
         .max()
         .unwrap_or(0);
     telemetry.set_worker_lag(config.chain.id, lag);
-    Ok(PollResult {
-        finalized_head,
-        decoded,
-    })
+    Ok(PollResult { finalized_head, decoded })
 }
 
 struct PreparedBlock {
@@ -242,12 +229,8 @@ async fn prepare_block(
 ) -> anyhow::Result<PreparedBlock> {
     let _in_flight = InFlightGuard::new(telemetry, chain.id, "block");
 
-    let has_calls = covering
-        .iter()
-        .any(|monitor| matches!(&monitor.target, Target::Call(_)));
-    let has_events = covering
-        .iter()
-        .any(|monitor| matches!(&monitor.target, Target::Event(_)));
+    let has_calls = covering.iter().any(|monitor| matches!(&monitor.target, Target::Call(_)));
+    let has_events = covering.iter().any(|monitor| matches!(&monitor.target, Target::Event(_)));
     let calls = async {
         let mut results = Vec::new();
         if has_calls {
@@ -272,16 +255,12 @@ async fn prepare_block(
                         .get(..4)
                         .and_then(|bytes| super::Selector::try_from(bytes).ok());
                     selector.is_some_and(|selector| {
-                        monitor_index
-                            .call(block_number, transaction.to, selector)
-                            .is_some()
+                        monitor_index.call(block_number, transaction.to, selector).is_some()
                     })
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            let executed = source
-                .fetch_executed_transactions(&block, &candidates)
-                .await?;
+            let executed = source.fetch_executed_transactions(&block, &candidates).await?;
             results.extend(
                 indexer::decode_calls(&block, monitor_index.as_ref(), executed)?
                     .into_iter()
@@ -305,9 +284,7 @@ async fn prepare_block(
             addresses.dedup();
             topic0s.sort_unstable();
             topic0s.dedup();
-            let logs = source
-                .fetch_logs(block_number, &addresses, &topic0s)
-                .await?;
+            let logs = source.fetch_logs(block_number, &addresses, &topic0s).await?;
             results.extend(
                 indexer::decode_events(block_number, monitor_index.as_ref(), logs)?
                     .into_iter()
@@ -349,10 +326,7 @@ mod tests {
     #[async_trait]
     impl IndexStorage for FakeStorage {
         async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>> {
-            Ok((self.monitor.chain == chain)
-                .then(|| self.monitor.clone())
-                .into_iter()
-                .collect())
+            Ok((self.monitor.chain == chain).then(|| self.monitor.clone()).into_iter().collect())
         }
 
         async fn commit_block(&self, commit: BlockCommit) -> anyhow::Result<usize> {
@@ -379,11 +353,7 @@ mod tests {
 
     impl ParallelSource {
         fn new(fail_at: Option<BlockNumber>) -> Self {
-            Self {
-                current: AtomicUsize::new(0),
-                maximum: AtomicUsize::new(0),
-                fail_at,
-            }
+            Self { current: AtomicUsize::new(0), maximum: AtomicUsize::new(0), fail_at }
         }
     }
 
@@ -394,18 +364,11 @@ mod tests {
 
     impl BlockCache for FakeCache {
         fn get(&self, chain: Chain, block_number: BlockNumber) -> Option<SourceBlock> {
-            self.blocks
-                .lock()
-                .unwrap()
-                .get(&(chain.id, block_number))
-                .cloned()
+            self.blocks.lock().unwrap().get(&(chain.id, block_number)).cloned()
         }
 
         fn put(&self, chain: Chain, block: SourceBlock) {
-            self.blocks
-                .lock()
-                .unwrap()
-                .insert((chain.id, block.number), block);
+            self.blocks.lock().unwrap().insert((chain.id, block.number), block);
         }
 
         fn evict_before(&self, chain: Chain, block_number: BlockNumber) {
@@ -427,10 +390,7 @@ mod tests {
         }
 
         async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
-            Ok(SourceBlock {
-                number: block_number,
-                transactions: Vec::new(),
-            })
+            Ok(SourceBlock { number: block_number, transactions: Vec::new() })
         }
 
         async fn fetch_executed_transactions(
@@ -538,10 +498,7 @@ mod tests {
             if self.fail_at == Some(block_number) {
                 anyhow::bail!("block {block_number} failed")
             }
-            Ok(SourceBlock {
-                number: block_number,
-                transactions: Vec::new(),
-            })
+            Ok(SourceBlock { number: block_number, transactions: Vec::new() })
         }
 
         async fn fetch_executed_transactions(
@@ -557,18 +514,11 @@ mod tests {
     async fn startup_probe_requires_finalized_tag_support() {
         assert_eq!(
             probe_source(&FakeSource).await.unwrap(),
-            SourceStatus {
-                chain_id: 1,
-                finalized_head: 10,
-            }
+            SourceStatus { chain_id: 1, finalized_head: 10 }
         );
 
         let error = probe_source(&UnsupportedFinalizedSource).await.unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("does not support the required finalized block tag")
-        );
+        assert!(error.to_string().contains("does not support the required finalized block tag"));
     }
 
     #[tokio::test]

@@ -52,7 +52,9 @@ impl PostgresStorage {
         let target = Self::target(row)?;
         let filter = match (&row.filter_ast, row.filter_version) {
             (None, None) => Filter::All,
-            (Some(filter), Some(version)) => FilterDefinition { version, expression: filter.0.clone() }.compile(&target)?,
+            (Some(filter), Some(version)) => {
+                FilterDefinition { version, expression: filter.0.clone() }.compile(&target)?
+            }
             _ => anyhow::bail!("monitor {} has incomplete filter state", row.id),
         };
         Ok(Monitor {
@@ -60,8 +62,13 @@ impl PostgresStorage {
             chain: Chain::new(pg_types::from_i64(row.chain_id, "chain id")?),
             target,
             start_block: pg_types::from_i64(row.start_block, "start block")?,
-            end_block: row.end_block.map(|value| pg_types::from_i64(value, "end block")).transpose()?,
-            cursor: Cursor(row.cursor.map(|value| pg_types::from_i64(value, "cursor")).transpose()?),
+            end_block: row
+                .end_block
+                .map(|value| pg_types::from_i64(value, "end block"))
+                .transpose()?,
+            cursor: Cursor(
+                row.cursor.map(|value| pg_types::from_i64(value, "cursor")).transpose()?,
+            ),
             completed: row.completed,
             enabled: row.enabled,
             filter,
@@ -82,7 +89,9 @@ impl PostgresStorage {
     fn monitor_record(row: monitor_repo::MonitorRecord) -> anyhow::Result<CoreMonitorRecord> {
         let filter = match (row.filter_ast.as_ref(), row.filter_version) {
             (None, None) => None,
-            (Some(filter), Some(version)) => Some(FilterDefinition { version, expression: filter.0.clone() }),
+            (Some(filter), Some(version)) => {
+                Some(FilterDefinition { version, expression: filter.0.clone() })
+            }
             _ => anyhow::bail!("monitor {} has incomplete filter state", row.id),
         };
         Ok(CoreMonitorRecord {
@@ -90,7 +99,10 @@ impl PostgresStorage {
             chain: Chain::new(pg_types::from_i64(row.chain_id, "chain id")?),
             target: Self::target(&row)?,
             start_block: pg_types::from_i64(row.start_block, "start block")?,
-            end_block: row.end_block.map(|value| pg_types::from_i64(value, "end block")).transpose()?,
+            end_block: row
+                .end_block
+                .map(|value| pg_types::from_i64(value, "end block"))
+                .transpose()?,
             cursor: row.cursor.map(|value| pg_types::from_i64(value, "cursor")).transpose()?,
             completed: row.completed,
             enabled: row.enabled,
@@ -104,19 +116,12 @@ impl PostgresStorage {
 #[async_trait]
 impl IndexStorage for PostgresStorage {
     async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>> {
-        monitor_repo::list(&self.pool, Some(chain.id))
-            .await?
-            .iter()
-            .map(Self::to_monitor)
-            .collect()
+        monitor_repo::list(&self.pool, Some(chain.id)).await?.iter().map(Self::to_monitor).collect()
     }
 
     async fn commit_block(&self, commit: BlockCommit) -> anyhow::Result<usize> {
         anyhow::ensure!(
-            commit
-                .monitors
-                .iter()
-                .all(|monitor| monitor.chain == commit.chain),
+            commit.monitors.iter().all(|monitor| monitor.chain == commit.chain),
             "cross-chain monitor set rejected for chain {}",
             commit.chain.id
         );
@@ -176,9 +181,7 @@ impl IndexStorage for PostgresStorage {
         }
 
         for monitor in &commit.monitors {
-            let completed = monitor
-                .end_block
-                .is_some_and(|end| commit.block_number >= end);
+            let completed = monitor.end_block.is_some_and(|end| commit.block_number >= end);
             monitor_repo::set_cursor(
                 &mut tx,
                 monitor.id,
@@ -205,7 +208,9 @@ impl ChainRepository for PostgresStorage {
     }
 
     async fn create_chain(&self, input: NewChain) -> anyhow::Result<CoreChainRecord> {
-        Self::chain_record(chain_repo::create(&self.pool, input.chain, &input.rpc_url, input.enabled).await?)
+        Self::chain_record(
+            chain_repo::create(&self.pool, input.chain, &input.rpc_url, input.enabled).await?,
+        )
     }
 
     async fn list_chains(&self) -> anyhow::Result<Vec<CoreChainRecord>> {
@@ -216,8 +221,15 @@ impl ChainRepository for PostgresStorage {
         Self::chain_record(chain_repo::get(&self.pool, chain.id).await?)
     }
 
-    async fn update_chain(&self, chain: Chain, update: ChainUpdate) -> anyhow::Result<CoreChainRecord> {
-        Self::chain_record(chain_repo::update(&self.pool, chain.id, update.rpc_url.as_ref(), update.enabled).await?)
+    async fn update_chain(
+        &self,
+        chain: Chain,
+        update: ChainUpdate,
+    ) -> anyhow::Result<CoreChainRecord> {
+        Self::chain_record(
+            chain_repo::update(&self.pool, chain.id, update.rpc_url.as_ref(), update.enabled)
+                .await?,
+        )
     }
 
     async fn delete_chain(&self, chain: Chain) -> anyhow::Result<()> {
@@ -236,14 +248,22 @@ impl MonitorRepository for PostgresStorage {
     }
 
     async fn list_monitors(&self, chain: Option<Chain>) -> anyhow::Result<Vec<CoreMonitorRecord>> {
-        monitor_repo::list(&self.pool, chain.map(|chain| chain.id)).await?.into_iter().map(Self::monitor_record).collect()
+        monitor_repo::list(&self.pool, chain.map(|chain| chain.id))
+            .await?
+            .into_iter()
+            .map(Self::monitor_record)
+            .collect()
     }
 
     async fn get_monitor(&self, id: MonitorId) -> anyhow::Result<CoreMonitorRecord> {
         Self::monitor_record(monitor_repo::get(&self.pool, id).await?)
     }
 
-    async fn update_monitor(&self, id: MonitorId, update: MonitorUpdate) -> anyhow::Result<CoreMonitorRecord> {
+    async fn update_monitor(
+        &self,
+        id: MonitorId,
+        update: MonitorUpdate,
+    ) -> anyhow::Result<CoreMonitorRecord> {
         Self::monitor_record(monitor_repo::update_prepared(&self.pool, id, &update).await?)
     }
 
@@ -254,18 +274,46 @@ impl MonitorRepository for PostgresStorage {
 
 #[async_trait]
 impl ResultRepository for PostgresStorage {
-    async fn query_results(&self, monitor: &CoreMonitorRecord, query: ResultQuery) -> anyhow::Result<Vec<CoreResultRecord>> {
+    async fn query_results(
+        &self,
+        monitor: &CoreMonitorRecord,
+        query: ResultQuery,
+    ) -> anyhow::Result<Vec<CoreResultRecord>> {
         let (kind, params) = match &monitor.target {
             Target::Call(target) => ("call", &target.inputs),
             Target::Event(target) => ("event", &target.params),
         };
-        let schema = params.iter().map(|param| monitor_repo::StoredParam {
-            name: param.name.clone(), sol_type: param.sol_type(), indexed: param.indexed,
-        }).collect::<Vec<_>>();
-        Ok(dyn_table::query_results(&self.pool, pg_types::to_monitor_id(monitor.id)?, kind, &schema, &SearchParams { limit: query.limit, offset: query.offset }).await?.into_iter().map(|record| match record {
-            ResultRecord::Call(record) => CoreResultRecord::Call { tx_hash: record.tx_hash, block_number: record.block_number, params: record.params },
-            ResultRecord::Event(record) => CoreResultRecord::Event { tx_hash: record.tx_hash, log_index: record.log_index, block_number: record.block_number, params: record.params },
-        }).collect())
+        let schema = params
+            .iter()
+            .map(|param| monitor_repo::StoredParam {
+                name: param.name.clone(),
+                sol_type: param.sol_type(),
+                indexed: param.indexed,
+            })
+            .collect::<Vec<_>>();
+        Ok(dyn_table::query_results(
+            &self.pool,
+            pg_types::to_monitor_id(monitor.id)?,
+            kind,
+            &schema,
+            &SearchParams { limit: query.limit, offset: query.offset },
+        )
+        .await?
+        .into_iter()
+        .map(|record| match record {
+            ResultRecord::Call(record) => CoreResultRecord::Call {
+                tx_hash: record.tx_hash,
+                block_number: record.block_number,
+                params: record.params,
+            },
+            ResultRecord::Event(record) => CoreResultRecord::Event {
+                tx_hash: record.tx_hash,
+                log_index: record.log_index,
+                block_number: record.block_number,
+                params: record.params,
+            },
+        })
+        .collect())
     }
 }
 
@@ -311,10 +359,6 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("cross-chain monitor set rejected")
-        );
+        assert!(error.to_string().contains("cross-chain monitor set rejected"));
     }
 }

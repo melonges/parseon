@@ -6,13 +6,16 @@ use alloy::providers::Provider;
 use alloy_rpc_types_any::AnyTransactionReceipt;
 use anyhow::Context;
 
-use parseon_core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
 use crate::provider::HttpProvider;
 use alloy::primitives::{Address, B256};
 use alloy::rpc::types::Filter;
+use parseon_core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
 
 /// Fetch and cache the transaction fields needed for monitor matching.
-pub async fn fetch_block(provider: &HttpProvider, block_number: u64) -> anyhow::Result<SourceBlock> {
+pub(crate) async fn fetch_block(
+    provider: &HttpProvider,
+    block_number: u64,
+) -> anyhow::Result<SourceBlock> {
     let block = provider
         .get_block_by_number(BlockNumberOrTag::Number(block_number))
         .kind(BlockTransactionsKind::Full)
@@ -30,13 +33,10 @@ pub async fn fetch_block(provider: &HttpProvider, block_number: u64) -> anyhow::
         });
     }
 
-    Ok(SourceBlock {
-        number: block_number,
-        transactions: out,
-    })
+    Ok(SourceBlock { number: block_number, transactions: out })
 }
 
-pub async fn fetch_logs(
+pub(crate) async fn fetch_logs(
     provider: &HttpProvider,
     block_number: u64,
     addresses: &[Address],
@@ -64,7 +64,7 @@ pub async fn fetch_logs(
         .collect()
 }
 
-pub async fn fetch_receipt(
+pub(crate) async fn fetch_receipt(
     provider: &HttpProvider,
     tx: &BlockTransaction,
 ) -> anyhow::Result<ExecutedTransaction> {
@@ -72,13 +72,10 @@ pub async fn fetch_receipt(
         .get_transaction_receipt(tx.hash)
         .await?
         .with_context(|| format!("receipt for {} not found", tx.hash))?;
-    Ok(ExecutedTransaction {
-        transaction: tx.clone(),
-        succeeded: receipt.status(),
-    })
+    Ok(ExecutedTransaction { transaction: tx.clone(), succeeded: receipt.status() })
 }
 
-pub async fn fetch_receipt_batch(
+pub(crate) async fn fetch_receipt_batch(
     provider: &HttpProvider,
     txs: &[BlockTransaction],
 ) -> anyhow::Result<Vec<ExecutedTransaction>> {
@@ -98,18 +95,14 @@ pub async fn fetch_receipt_batch(
 
     let mut out = Vec::with_capacity(txs.len());
     for (tx, waiter) in txs.iter().zip(waiters) {
-        let receipt = waiter
-            .await?
-            .with_context(|| format!("receipt for {} not found", tx.hash))?;
-        out.push(ExecutedTransaction {
-            transaction: tx.clone(),
-            succeeded: receipt.status(),
-        });
+        let receipt =
+            waiter.await?.with_context(|| format!("receipt for {} not found", tx.hash))?;
+        out.push(ExecutedTransaction { transaction: tx.clone(), succeeded: receipt.status() });
     }
     Ok(out)
 }
 
-pub async fn fetch_block_receipts(
+pub(crate) async fn fetch_block_receipts(
     provider: &HttpProvider,
     block_number: u64,
     txs: &[BlockTransaction],
@@ -127,10 +120,7 @@ pub async fn fetch_block_receipts(
             let succeeded = statuses
                 .remove(&tx.hash)
                 .with_context(|| format!("receipt for {} not found", tx.hash))?;
-            Ok(ExecutedTransaction {
-                transaction: tx.clone(),
-                succeeded,
-            })
+            Ok(ExecutedTransaction { transaction: tx.clone(), succeeded })
         })
         .collect()
 }

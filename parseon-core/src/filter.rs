@@ -77,13 +77,7 @@ impl FilterDefinition {
     ) -> Result<(Self, Filter), FilterError> {
         validate_limits(&expression)?;
         let (expression, compiled) = compile_expression(expression, target, "/filter")?;
-        Ok((
-            Self {
-                version: FILTER_VERSION,
-                expression,
-            },
-            Filter::Expr(compiled),
-        ))
+        Ok((Self { version: FILTER_VERSION, expression }, Filter::Expr(compiled)))
     }
 
     pub fn compile(&self, target: &Target) -> Result<Filter, FilterError> {
@@ -94,9 +88,7 @@ impl FilterDefinition {
             ));
         }
         validate_limits(&self.expression)?;
-        Ok(Filter::Expr(
-            compile_expression(self.expression.clone(), target, "/filter")?.1,
-        ))
+        Ok(Filter::Expr(compile_expression(self.expression.clone(), target, "/filter")?.1))
     }
 }
 
@@ -173,16 +165,7 @@ pub fn preview(
 ) -> Result<FilterPreview, FilterError> {
     let (definition, filter) = FilterDefinition::prepare(expression, target)?;
     let matches = match (target, sample) {
-        (
-            Target::Call(target),
-            FilterSample::Call {
-                block_number,
-                tx_hash,
-                from,
-                to,
-                params,
-            },
-        ) => {
+        (Target::Call(target), FilterSample::Call { block_number, tx_hash, from, to, params }) => {
             let values = decode_sample_params(&target.inputs, false, params)?;
             filter.evaluate(FilterContext::Call {
                 block_number,
@@ -194,13 +177,7 @@ pub fn preview(
         }
         (
             Target::Event(target),
-            FilterSample::Event {
-                block_number,
-                tx_hash,
-                emitter,
-                log_index,
-                params,
-            },
+            FilterSample::Event { block_number, tx_hash, emitter, log_index, params },
         ) => {
             let values = decode_sample_params(&target.params, true, params)?;
             filter.evaluate(FilterContext::Event {
@@ -212,16 +189,10 @@ pub fn preview(
             })?
         }
         _ => {
-            return Err(FilterError::at(
-                "/sample/kind",
-                "sample kind does not match signature",
-            ));
+            return Err(FilterError::at("/sample/kind", "sample kind does not match signature"));
         }
     };
-    Ok(FilterPreview {
-        filter: definition.expression,
-        matches,
-    })
+    Ok(FilterPreview { filter: definition.expression, matches })
 }
 
 #[derive(Debug, Clone)]
@@ -229,11 +200,7 @@ pub enum CompiledExpression {
     And(Vec<Self>),
     Or(Vec<Self>),
     Not(Box<Self>),
-    Compare {
-        field: ResolvedField,
-        op: ComparisonOperator,
-        value: FilterValue,
-    },
+    Compare { field: ResolvedField, op: ComparisonOperator, value: FilterValue },
 }
 
 impl CompiledExpression {
@@ -323,16 +290,10 @@ fn validate_limits(expression: &FilterExpression) -> Result<(), FilterError> {
     ) -> Result<(), FilterError> {
         *nodes += 1;
         if *nodes > MAX_NODES {
-            return Err(FilterError::at(
-                path,
-                format!("filter exceeds {MAX_NODES} nodes"),
-            ));
+            return Err(FilterError::at(path, format!("filter exceeds {MAX_NODES} nodes")));
         }
         if depth > MAX_DEPTH {
-            return Err(FilterError::at(
-                path,
-                format!("filter exceeds depth {MAX_DEPTH}"),
-            ));
+            return Err(FilterError::at(path, format!("filter exceeds depth {MAX_DEPTH}")));
         }
         let children = match expression {
             FilterExpression::And(value) => Some((&value.and, "and")),
@@ -400,9 +361,7 @@ fn compile_expression(
             let (source, compiled) =
                 compile_expression(*value.not, target, &format!("{path}/not"))?;
             (
-                FilterExpression::Not(NotExpression {
-                    not: Box::new(source),
-                }),
+                FilterExpression::Not(NotExpression { not: Box::new(source) }),
                 CompiledExpression::Not(Box::new(compiled)),
             )
         }
@@ -421,14 +380,7 @@ fn compile_expression(
                 op: value.op,
                 value: canonical,
             });
-            (
-                source,
-                CompiledExpression::Compare {
-                    field,
-                    op: value.op,
-                    value: literal,
-                },
-            )
+            (source, CompiledExpression::Compare { field, op: value.op, value: literal })
         }
     })
 }
@@ -469,10 +421,7 @@ fn resolve_field(
         .enumerate()
         .find(|(_, param)| param.name == name)
         .ok_or_else(|| FilterError::at(path, format!("unknown parameter `{name}`")))?;
-    Ok((
-        ResolvedField::Parameter(index),
-        value_type(param, matches!(target, Target::Event(_)))?,
-    ))
+    Ok((ResolvedField::Parameter(index), value_type(param, matches!(target, Target::Event(_)))?))
 }
 
 fn value_type(param: &AbiParam, event: bool) -> Result<ValueType, FilterError> {
@@ -489,10 +438,7 @@ fn value_type(param: &AbiParam, event: bool) -> Result<ValueType, FilterError> {
         DynSolType::FixedBytes(size) => ValueType::Bytes(Some(*size)),
         DynSolType::Function => ValueType::Bytes(Some(24)),
         ty => {
-            return Err(FilterError::at(
-                "/filter",
-                format!("unsupported parameter type `{ty}`"),
-            ));
+            return Err(FilterError::at("/filter", format!("unsupported parameter type `{ty}`")));
         }
     })
 }
@@ -520,10 +466,7 @@ fn parse_value(
             else {
                 unreachable!()
             };
-            (
-                FilterValue::Uint(value),
-                serde_json::Value::String(value.to_string()),
-            )
+            (FilterValue::Uint(value), serde_json::Value::String(value.to_string()))
         }
         ValueType::Int(bits) => {
             let value = string(value, "a signed decimal string")?;
@@ -537,42 +480,28 @@ fn parse_value(
             else {
                 unreachable!()
             };
-            (
-                FilterValue::Int(value),
-                serde_json::Value::String(value.to_string()),
-            )
+            (FilterValue::Int(value), serde_json::Value::String(value.to_string()))
         }
         ValueType::Bool => {
-            let value = value
-                .as_bool()
-                .ok_or_else(|| FilterError::at(path, "expected a boolean"))?;
+            let value =
+                value.as_bool().ok_or_else(|| FilterError::at(path, "expected a boolean"))?;
             (FilterValue::Bool(value), serde_json::Value::Bool(value))
         }
         ValueType::Address => {
             let value = string(value, "a 20-byte 0x-prefixed address")?;
-            if value.len() != 42
-                || !value.starts_with("0x")
-                || !value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
-            {
-                return Err(FilterError::at(
-                    path,
-                    "expected a 20-byte 0x-prefixed address",
-                ));
+            if value.strip_prefix("0x").is_none_or(|hex| {
+                hex.len() != 40 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }) {
+                return Err(FilterError::at(path, "expected a 20-byte 0x-prefixed address"));
             }
             let address = value
                 .parse::<Address>()
                 .map_err(|error| FilterError::at(path, error.to_string()))?;
-            (
-                FilterValue::Address(address),
-                serde_json::Value::String(format!("{address:#x}")),
-            )
+            (FilterValue::Address(address), serde_json::Value::String(format!("{address:#x}")))
         }
         ValueType::String => {
             let value = string(value, "a string")?;
-            (
-                FilterValue::String(value.clone()),
-                serde_json::Value::String(value),
-            )
+            (FilterValue::String(value.clone()), serde_json::Value::String(value))
         }
         ValueType::Bytes(size) => {
             let value = string(value, "0x-prefixed hexadecimal bytes")?;
@@ -580,10 +509,7 @@ fn parse_value(
                 .strip_prefix("0x")
                 .ok_or_else(|| FilterError::at(path, "expected 0x-prefixed hexadecimal bytes"))?;
             if hex.len() % 2 != 0 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(FilterError::at(
-                    path,
-                    "expected even-length hexadecimal bytes",
-                ));
+                return Err(FilterError::at(path, "expected even-length hexadecimal bytes"));
             }
             let bytes = alloy::hex::decode(hex)
                 .map_err(|error| FilterError::at(path, error.to_string()))?;
@@ -593,10 +519,7 @@ fn parse_value(
                 return Err(FilterError::at(path, format!("expected {size} bytes")));
             }
             let canonical = format!("0x{}", alloy::hex::encode(&bytes));
-            (
-                FilterValue::Bytes(bytes),
-                serde_json::Value::String(canonical),
-            )
+            (FilterValue::Bytes(bytes), serde_json::Value::String(canonical))
         }
     })
 }
@@ -619,16 +542,14 @@ fn decode_sample_params(
             let value = values
                 .remove(&param.name)
                 .ok_or_else(|| FilterError::at(&path, "missing ABI parameter"))?;
-            Ok(
-                match parse_value(&value_type(param, event)?, value, &path)?.0 {
-                    FilterValue::Uint(value) => DecodedValue::Uint(value),
-                    FilterValue::Int(value) => DecodedValue::Int(value),
-                    FilterValue::Bool(value) => DecodedValue::Bool(value),
-                    FilterValue::Address(value) => DecodedValue::Address(value),
-                    FilterValue::String(value) => DecodedValue::String(value),
-                    FilterValue::Bytes(value) => DecodedValue::Bytes(value),
-                },
-            )
+            Ok(match parse_value(&value_type(param, event)?, value, &path)?.0 {
+                FilterValue::Uint(value) => DecodedValue::Uint(value),
+                FilterValue::Int(value) => DecodedValue::Int(value),
+                FilterValue::Bool(value) => DecodedValue::Bool(value),
+                FilterValue::Address(value) => DecodedValue::Address(value),
+                FilterValue::String(value) => DecodedValue::String(value),
+                FilterValue::Bytes(value) => DecodedValue::Bytes(value),
+            })
         })
         .collect()
 }
@@ -717,10 +638,7 @@ pub struct FilterError {
 
 impl FilterError {
     fn at(path: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            path: path.into(),
-            message: message.into(),
-        }
+        Self { path: path.into(), message: message.into() }
     }
 }
 

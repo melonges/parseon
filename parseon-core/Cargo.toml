@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 alloy = { version = "2.1", default-features = false, features = ["std", "dyn-abi", "json-abi", "sol-types", "transports"] }
 anyhow = "1.0"

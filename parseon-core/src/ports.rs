@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use super::filter::FilterDefinition;
 use super::monitor::Monitor;
 use super::{
@@ -10,6 +9,7 @@ use super::{
     SourceBlock, SourceLog, Target, TxHash, Url,
 };
 use alloy::primitives::{Address, B256};
+use chrono::{DateTime, Utc};
 
 pub struct BlockCommit {
     pub chain: Chain,
@@ -124,7 +124,11 @@ pub trait MonitorRepository: Send + Sync {
     async fn create_monitor(&self, monitor: NewMonitor) -> anyhow::Result<MonitorRecord>;
     async fn list_monitors(&self, chain: Option<Chain>) -> anyhow::Result<Vec<MonitorRecord>>;
     async fn get_monitor(&self, id: MonitorId) -> anyhow::Result<MonitorRecord>;
-    async fn update_monitor(&self, id: MonitorId, update: MonitorUpdate) -> anyhow::Result<MonitorRecord>;
+    async fn update_monitor(
+        &self,
+        id: MonitorId,
+        update: MonitorUpdate,
+    ) -> anyhow::Result<MonitorRecord>;
     async fn delete_monitor(&self, id: MonitorId) -> anyhow::Result<()>;
 }
 
@@ -203,18 +207,13 @@ pub struct InFlightGuard<'a> {
 impl<'a> InFlightGuard<'a> {
     pub fn new(telemetry: &'a dyn Telemetry, chain_id: ChainId, stage: &'static str) -> Self {
         telemetry.adjust_in_flight(chain_id, stage, 1);
-        Self {
-            telemetry,
-            chain_id,
-            stage,
-        }
+        Self { telemetry, chain_id, stage }
     }
 }
 
 impl Drop for InFlightGuard<'_> {
     fn drop(&mut self) {
-        self.telemetry
-            .adjust_in_flight(self.chain_id, self.stage, -1);
+        self.telemetry.adjust_in_flight(self.chain_id, self.stage, -1);
     }
 }
 
@@ -222,7 +221,15 @@ impl Drop for InFlightGuard<'_> {
 pub struct NoopTelemetry;
 
 impl Telemetry for NoopTelemetry {
-    fn record_rpc(&self, _: ChainId, _: &'static str, _: &'static str, _: &'static str, _: Duration) {}
+    fn record_rpc(
+        &self,
+        _: ChainId,
+        _: &'static str,
+        _: &'static str,
+        _: &'static str,
+        _: Duration,
+    ) {
+    }
     fn record_cache(&self, _: ChainId, _: bool) {}
     fn record_commit(&self, _: ChainId, _: u64, _: u64, _: &'static str, _: Duration) {}
     fn set_worker_lag(&self, _: ChainId, _: BlockNumber) {}

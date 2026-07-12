@@ -7,5 +7,37 @@ version = "0.7.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+future_incompatible = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+let_underscore_drop = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+allow_attributes_without_reason = "warn"
+await_holding_lock = "deny"
+dbg_macro = "deny"
+exit = "warn"
+let_underscore_must_use = "deny"
+lossy_float_literal = "warn"
+mem_forget = "deny"
+panic = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+redundant_clone = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "warn"
+unused_result_ok = "deny"
+
 [workspace.dependencies]
 url = { version = "2.5", features = ["serde"] }

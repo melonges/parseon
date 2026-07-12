@@ -71,7 +71,7 @@ fn histogram() -> Histogram {
 }
 
 #[derive(Clone)]
-pub struct Metrics {
+pub(crate) struct Metrics {
     inner: Arc<Inner>,
 }
 
@@ -146,11 +146,8 @@ impl Default for Metrics {
 
 impl Metrics {
     fn chain_labels(chain_id: u64) -> ChainLabels {
-        ChainLabels {
-            chain_id: chain_id.to_string(),
-        }
+        ChainLabels { chain_id: chain_id.to_string() }
     }
-
 }
 
 impl Telemetry for Metrics {
@@ -201,26 +198,17 @@ impl Telemetry for Metrics {
     ) {
         self.inner
             .db_commit_duration
-            .get_or_create(&OutcomeLabels {
-                chain_id: chain_id.to_string(),
-                outcome,
-            })
+            .get_or_create(&OutcomeLabels { chain_id: chain_id.to_string(), outcome })
             .observe(elapsed.as_secs_f64());
         if outcome != "success" {
             return;
         }
-        self.inner
-            .blocks_committed
-            .get_or_create(&Self::chain_labels(chain_id))
-            .inc();
+        self.inner.blocks_committed.get_or_create(&Self::chain_labels(chain_id)).inc();
         for (kind, count) in [("call", calls), ("event", events)] {
             if count > 0 {
                 self.inner
                     .results_committed
-                    .get_or_create(&ResultLabels {
-                        chain_id: chain_id.to_string(),
-                        kind,
-                    })
+                    .get_or_create(&ResultLabels { chain_id: chain_id.to_string(), kind })
                     .inc_by(count);
             }
         }
@@ -234,10 +222,10 @@ impl Telemetry for Metrics {
     }
 
     fn adjust_in_flight(&self, chain_id: u64, stage: &'static str, delta: i64) {
-        let gauge = self.inner.in_flight.get_or_create(&StageLabels {
-            chain_id: chain_id.to_string(),
-            stage,
-        });
+        let gauge = self
+            .inner
+            .in_flight
+            .get_or_create(&StageLabels { chain_id: chain_id.to_string(), stage });
         if delta > 0 {
             gauge.inc_by(delta);
         } else {
@@ -259,13 +247,7 @@ mod tests {
     #[test]
     fn renders_bounded_labels_without_rpc_urls() {
         let metrics = Metrics::default();
-        metrics.record_rpc(
-            8453,
-            "receipts",
-            "batch",
-            "success",
-            Duration::from_millis(2),
-        );
+        metrics.record_rpc(8453, "receipts", "batch", "success", Duration::from_millis(2));
         metrics.record_cache(8453, true);
         metrics.record_commit(8453, 2, 1, "success", Duration::from_millis(1));
         metrics.set_worker_lag(8453, 7);

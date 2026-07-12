@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use chrono::{DateTime, Utc};
 use crate::{BlockNumber, ChainId};
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerState {
@@ -74,9 +74,7 @@ impl ChainStatus {
     }
 
     fn new(snapshot: ChainStatusSnapshot) -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(snapshot)),
-        }
+        Self { inner: Arc::new(RwLock::new(snapshot)) }
     }
 
     pub fn record_success(&self, finalized_head: BlockNumber) {
@@ -96,10 +94,7 @@ impl ChainStatus {
     }
 
     pub fn snapshot(&self) -> ChainStatusSnapshot {
-        self.inner
-            .read()
-            .expect("runtime status lock poisoned")
-            .clone()
+        self.inner.read().expect("runtime status lock poisoned").clone()
     }
 }
 
@@ -117,10 +112,7 @@ impl RuntimeStatus {
     }
 
     pub fn remove(&self, chain_id: ChainId) {
-        self.inner
-            .write()
-            .expect("runtime status registry lock poisoned")
-            .remove(&chain_id);
+        self.inner.write().expect("runtime status registry lock poisoned").remove(&chain_id);
     }
 
     pub fn snapshot(&self) -> Vec<ChainStatusSnapshot> {
@@ -134,11 +126,10 @@ impl RuntimeStatus {
 }
 
 fn safe_error_message(error: &anyhow::Error) -> String {
-    if error.chain().any(|cause| {
-        cause
-            .downcast_ref::<alloy::transports::TransportError>()
-            .is_some()
-    }) {
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<alloy::transports::TransportError>().is_some())
+    {
         "RPC request failed".to_string()
     } else {
         format!("{error:#}")

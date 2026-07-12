@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use moka::sync::Cache;
 
@@ -61,10 +61,7 @@ mod tests {
     use super::*;
 
     fn block(number: BlockNumber) -> SourceBlock {
-        SourceBlock {
-            number,
-            transactions: Vec::new(),
-        }
+        SourceBlock { number, transactions: Vec::new() }
     }
 
     #[test]

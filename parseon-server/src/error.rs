@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use crate::api::dto::ErrorResponse;
 
 #[derive(Debug, thiserror::Error)]
-pub enum AppError {
+pub(crate) enum AppError {
     #[error("{0}")]
     BadRequest(String),
     #[error(transparent)]
@@ -35,4 +35,4 @@ impl IntoResponse for AppError {
     }
 }
 
-pub type AppResult<T> = Result<T, AppError>;
+pub(crate) type AppResult<T> = Result<T, AppError>;

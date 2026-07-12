@@ -1,14 +1,14 @@
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
 
-use parseon_core::{Chain, Url};
-use parseon_core::ports::RegisteredChain;
 use crate::dyn_table;
 use crate::pg_types;
+use parseon_core::ports::RegisteredChain;
+use parseon_core::{Chain, Url};
 type AppResult<T> = anyhow::Result<T>;
 
 #[derive(Clone, FromRow)]
-pub struct ChainRecord {
+pub(crate) struct ChainRecord {
     pub chain_id: i64,
     pub rpc_url: String,
     pub enabled: bool,
@@ -17,11 +17,11 @@ pub struct ChainRecord {
 }
 
 impl ChainRecord {
-    pub fn rpc_url(&self) -> anyhow::Result<Url> {
+    pub(crate) fn rpc_url(&self) -> anyhow::Result<Url> {
         Ok(self.rpc_url.parse()?)
     }
 
-    pub fn registered(&self) -> anyhow::Result<RegisteredChain> {
+    pub(crate) fn registered(&self) -> anyhow::Result<RegisteredChain> {
         Ok(RegisteredChain {
             chain: Chain::new(pg_types::from_i64(self.chain_id, "chain id")?),
             rpc_url: self.rpc_url()?,
@@ -30,7 +30,7 @@ impl ChainRecord {
     }
 }
 
-pub async fn create(
+pub(crate) async fn create(
     pool: &PgPool,
     chain: Chain,
     rpc_url: &Url,
@@ -49,15 +49,13 @@ pub async fn create(
     .await?)
 }
 
-pub async fn list(pool: &PgPool) -> AppResult<Vec<ChainRecord>> {
-    Ok(
-        sqlx::query_as::<_, ChainRecord>("SELECT * FROM chains ORDER BY chain_id")
-            .fetch_all(pool)
-            .await?,
-    )
+pub(crate) async fn list(pool: &PgPool) -> AppResult<Vec<ChainRecord>> {
+    Ok(sqlx::query_as::<_, ChainRecord>("SELECT * FROM chains ORDER BY chain_id")
+        .fetch_all(pool)
+        .await?)
 }
 
-pub async fn get(pool: &PgPool, chain_id: u64) -> AppResult<ChainRecord> {
+pub(crate) async fn get(pool: &PgPool, chain_id: u64) -> AppResult<ChainRecord> {
     let chain_id = pg_types::to_i64(chain_id, "chain id")?;
     sqlx::query_as::<_, ChainRecord>("SELECT * FROM chains WHERE chain_id = $1")
         .bind(chain_id)
@@ -66,7 +64,7 @@ pub async fn get(pool: &PgPool, chain_id: u64) -> AppResult<ChainRecord> {
         .ok_or_else(|| anyhow::anyhow!("chain {chain_id} not found"))
 }
 
-pub async fn update(
+pub(crate) async fn update(
     pool: &PgPool,
     chain_id: u64,
     rpc_url: Option<&Url>,
@@ -89,7 +87,7 @@ pub async fn update(
     .ok_or_else(|| anyhow::anyhow!("chain {chain_id} not found"))
 }
 
-pub async fn delete(pool: &PgPool, chain_id: u64) -> AppResult<()> {
+pub(crate) async fn delete(pool: &PgPool, chain_id: u64) -> AppResult<()> {
     let chain_id = pg_types::to_i64(chain_id, "chain id")?;
     let mut tx = pool.begin().await?;
     let exists: Option<i64> =
@@ -109,10 +107,7 @@ pub async fn delete(pool: &PgPool, chain_id: u64) -> AppResult<()> {
     for monitor_id in monitor_ids {
         dyn_table::drop_result_table(&mut tx, monitor_id).await?;
     }
-    sqlx::query("DELETE FROM chains WHERE chain_id = $1")
-        .bind(chain_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query("DELETE FROM chains WHERE chain_id = $1").bind(chain_id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }

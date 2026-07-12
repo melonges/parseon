@@ -1,5 +1,5 @@
-use crate::{Address, BlockNumber, ChainId, Url};
 use crate::filter::{FilterExpression, FilterSample};
+use crate::{Address, BlockNumber, ChainId, Url};
 
 #[derive(Debug, Clone)]
 pub struct CreateChain {

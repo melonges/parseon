@@ -47,20 +47,12 @@ impl From<MonitorRecord> for MonitorView {
     fn from(record: MonitorRecord) -> Self {
         let filter = record.filter.map(|filter| filter.expression);
         let (address, kind, selector, topic0, param_schema) = match record.target {
-            Target::Call(target) => (
-                target.address,
-                MonitorKind::Call,
-                Some(target.selector),
-                None,
-                target.inputs,
-            ),
-            Target::Event(target) => (
-                target.address,
-                MonitorKind::Event,
-                None,
-                Some(target.topic0),
-                target.params,
-            ),
+            Target::Call(target) => {
+                (target.address, MonitorKind::Call, Some(target.selector), None, target.inputs)
+            }
+            Target::Event(target) => {
+                (target.address, MonitorKind::Event, None, Some(target.topic0), target.params)
+            }
         };
         Self {
             id: record.id,
@@ -84,33 +76,19 @@ impl From<MonitorRecord> for MonitorView {
 
 #[derive(Debug, Clone)]
 pub enum MonitorResultView {
-    Call {
-        tx_hash: TxHash,
-        block_number: BlockNumber,
-        params: serde_json::Value,
-    },
-    Event {
-        tx_hash: TxHash,
-        log_index: u64,
-        block_number: BlockNumber,
-        params: serde_json::Value,
-    },
+    Call { tx_hash: TxHash, block_number: BlockNumber, params: serde_json::Value },
+    Event { tx_hash: TxHash, log_index: u64, block_number: BlockNumber, params: serde_json::Value },
 }
 
 impl From<ResultRecord> for MonitorResultView {
     fn from(record: ResultRecord) -> Self {
         match record {
-            ResultRecord::Call { tx_hash, block_number, params } => Self::Call {
-                tx_hash,
-                block_number,
-                params,
-            },
-            ResultRecord::Event { tx_hash, log_index, block_number, params } => Self::Event {
-                tx_hash,
-                log_index,
-                block_number,
-                params,
-            },
+            ResultRecord::Call { tx_hash, block_number, params } => {
+                Self::Call { tx_hash, block_number, params }
+            }
+            ResultRecord::Event { tx_hash, log_index, block_number, params } => {
+                Self::Event { tx_hash, log_index, block_number, params }
+            }
         }
     }
 }

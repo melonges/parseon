@@ -16,8 +16,8 @@ pub mod scheduler;
 pub mod services;
 pub mod status;
 pub mod supervisor;
-pub mod worker;
 pub mod views;
+pub mod worker;
 
 use self::abi::AbiParam;
 
@@ -37,9 +37,7 @@ pub struct MonitorId(NonZeroU64);
 
 impl MonitorId {
     pub fn new(id: u64) -> anyhow::Result<Self> {
-        NonZeroU64::new(id)
-            .map(Self)
-            .ok_or_else(|| anyhow::anyhow!("monitor id must be positive"))
+        NonZeroU64::new(id).map(Self).ok_or_else(|| anyhow::anyhow!("monitor id must be positive"))
     }
 
     pub const fn get(self) -> u64 {
@@ -185,9 +183,7 @@ mod tests {
             }
         });
 
-        let values = super::pipeline::ordered(futures, 3)
-            .collect::<Vec<_>>()
-            .await;
+        let values = super::pipeline::ordered(futures, 3).collect::<Vec<_>>().await;
 
         assert_eq!(values, (0..8).collect::<Vec<_>>());
         assert_eq!(maximum.load(Ordering::SeqCst), 3);

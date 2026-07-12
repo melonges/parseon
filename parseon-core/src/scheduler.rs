@@ -1,7 +1,7 @@
 use std::num::NonZeroU64;
 
-use super::monitor::Monitor;
 use super::BlockNumber;
+use super::monitor::Monitor;
 
 pub fn plan_blocks(
     monitors: &[&Monitor],
@@ -13,10 +13,7 @@ pub fn plan_blocks(
         let Some(from) = monitor.next_block() else {
             continue;
         };
-        let to = monitor
-            .end_block
-            .unwrap_or(finalized_head)
-            .min(finalized_head);
+        let to = monitor.end_block.unwrap_or(finalized_head).min(finalized_head);
         let to = to.min(from.saturating_add(batch_size.get() - 1));
         wanted.extend(from..=to);
     }
@@ -56,7 +53,10 @@ mod tests {
     fn deduplicates_and_bounds_ranges() {
         let first = monitor(1, 10, None, None);
         let second = monitor(2, 11, None, Some(12));
-        assert_eq!(plan_blocks(&[&first, &second], 20, NonZeroU64::new(3).unwrap()), vec![10, 11, 12]);
+        assert_eq!(
+            plan_blocks(&[&first, &second], 20, NonZeroU64::new(3).unwrap()),
+            vec![10, 11, 12]
+        );
     }
 
     #[test]

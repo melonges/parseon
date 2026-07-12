@@ -60,9 +60,7 @@ fn expression(value: serde_json::Value) -> FilterExpression {
 
 fn compiled(target: &Target, value: serde_json::Value) -> (FilterExpression, Filter) {
     let expression = expression(value);
-    let filter = FilterDefinition::prepare(expression.clone(), target)
-        .unwrap()
-        .1;
+    let filter = FilterDefinition::prepare(expression.clone(), target).unwrap().1;
     (expression, filter)
 }
 
@@ -92,10 +90,8 @@ fn benchmark(c: &mut Criterion) {
         topic0: B256::ZERO,
         params: vec![param],
     });
-    let (call_leaf_source, call_leaf) = compiled(
-        &call,
-        serde_json::json!({"field":"params.value","op":"gte","value":"128"}),
-    );
+    let (call_leaf_source, call_leaf) =
+        compiled(&call, serde_json::json!({"field":"params.value","op":"gte","value":"128"}));
     let (_, call_compound) = compiled(
         &call,
         serde_json::json!({"and":[
@@ -104,10 +100,8 @@ fn benchmark(c: &mut Criterion) {
             {"not":{"field":"tx.hash","op":"eq","value":format!("0x{}", "ff".repeat(32))}}
         ]}),
     );
-    let (event_leaf_source, event_leaf) = compiled(
-        &event,
-        serde_json::json!({"field":"event.log_index","op":"gte","value":"128"}),
-    );
+    let (event_leaf_source, event_leaf) =
+        compiled(&event, serde_json::json!({"field":"event.log_index","op":"gte","value":"128"}));
     let (_, event_compound) = compiled(
         &event,
         serde_json::json!({"or":[
@@ -133,8 +127,7 @@ fn benchmark(c: &mut Criterion) {
                 BenchmarkId::new(*name, concurrency),
                 &concurrency,
                 |b, concurrency| {
-                    b.to_async(&runtime)
-                        .iter(|| run_filters(filter.clone(), *event, *concurrency));
+                    b.to_async(&runtime).iter(|| run_filters(filter.clone(), *event, *concurrency));
                 },
             );
         }

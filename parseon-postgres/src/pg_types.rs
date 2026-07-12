@@ -1,36 +1,36 @@
 use parseon_core::{Address, B256, MonitorId, Selector};
 
-pub fn to_i64(value: u64, field: &str) -> anyhow::Result<i64> {
+pub(crate) fn to_i64(value: u64, field: &str) -> anyhow::Result<i64> {
     i64::try_from(value).map_err(|_| anyhow::anyhow!("{field} exceeds PostgreSQL BIGINT range"))
 }
 
-pub fn from_i64(value: i64, field: &str) -> anyhow::Result<u64> {
+pub(crate) fn from_i64(value: i64, field: &str) -> anyhow::Result<u64> {
     u64::try_from(value).map_err(|_| anyhow::anyhow!("stored {field} must be non-negative"))
 }
 
-pub fn to_monitor_id(value: MonitorId) -> anyhow::Result<i64> {
+pub(crate) fn to_monitor_id(value: MonitorId) -> anyhow::Result<i64> {
     to_i64(value.get(), "monitor id")
 }
 
-pub fn from_monitor_id(value: i64) -> anyhow::Result<MonitorId> {
+pub(crate) fn from_monitor_id(value: i64) -> anyhow::Result<MonitorId> {
     MonitorId::new(from_i64(value, "monitor id")?)
 }
 
-pub fn address(value: &[u8]) -> anyhow::Result<Address> {
+pub(crate) fn address(value: &[u8]) -> anyhow::Result<Address> {
     let bytes: [u8; 20] = value
         .try_into()
         .map_err(|_| anyhow::anyhow!("stored address must contain exactly 20 bytes"))?;
     Ok(Address::from(bytes))
 }
 
-pub fn selector(value: &[u8]) -> anyhow::Result<Selector> {
+pub(crate) fn selector(value: &[u8]) -> anyhow::Result<Selector> {
     let bytes: [u8; 4] = value
         .try_into()
         .map_err(|_| anyhow::anyhow!("stored selector must contain exactly 4 bytes"))?;
     Ok(Selector::from(bytes))
 }
 
-pub fn b256(value: &[u8], field: &str) -> anyhow::Result<B256> {
+pub(crate) fn b256(value: &[u8], field: &str) -> anyhow::Result<B256> {
     let bytes: [u8; 32] = value
         .try_into()
         .map_err(|_| anyhow::anyhow!("stored {field} must contain exactly 32 bytes"))?;

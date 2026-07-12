@@ -7,7 +7,7 @@ use parseon_core::Url;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "parseon", about = "Parseon — EVM indexer with runtime ABI decoding")]
-pub struct Config {
+pub(crate) struct Config {
     #[command(flatten)]
     pub database: DatabaseConfig,
     #[command(flatten)]
@@ -19,14 +19,14 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct DatabaseConfig {
+pub(crate) struct DatabaseConfig {
     /// PostgreSQL connection string
     #[arg(long, env = "DATABASE_URL")]
     pub database_url: Url,
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct ServerConfig {
+pub(crate) struct ServerConfig {
     /// HTTP listen address for the API
     #[arg(long, env = "HTTP_LISTEN", default_value = "0.0.0.0:8080")]
     pub http_listen: SocketAddr,
@@ -36,7 +36,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct IndexingConfig {
+pub(crate) struct IndexingConfig {
     /// Global poll interval used by the chain worker
     #[arg(long, env = "POLL_INTERVAL_MS", default_value = "2000", value_parser = parse_poll_interval)]
     pub poll_interval: Duration,
@@ -55,7 +55,7 @@ pub struct IndexingConfig {
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct RpcConfig {
+pub(crate) struct RpcConfig {
     /// Maximum concurrent RPC requests per registered chain
     #[arg(long, env = "RPC_REQUEST_CONCURRENCY", default_value = "16")]
     pub request_concurrency: NonZeroUsize,
@@ -65,9 +65,8 @@ pub struct RpcConfig {
 }
 
 fn parse_poll_interval(value: &str) -> Result<Duration, String> {
-    let milliseconds = value
-        .parse::<u64>()
-        .map_err(|error| format!("invalid poll interval: {error}"))?;
+    let milliseconds =
+        value.parse::<u64>().map_err(|error| format!("invalid poll interval: {error}"))?;
     if milliseconds < 100 {
         return Err("poll interval must be at least 100 ms".into());
     }
@@ -88,8 +87,8 @@ mod tests {
 }
 
 impl Config {
-    pub fn load() -> Self {
-        let _ = dotenvy::dotenv();
+    pub(crate) fn load() -> Self {
+        drop(dotenvy::dotenv());
         Self::parse()
     }
 }
