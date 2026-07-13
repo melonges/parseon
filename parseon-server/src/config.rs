@@ -73,6 +73,13 @@ fn parse_poll_interval(value: &str) -> Result<Duration, String> {
     Ok(Duration::from_millis(milliseconds))
 }
 
+impl Config {
+    pub(crate) fn load() -> Self {
+        drop(dotenvy::dotenv());
+        Self::parse()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_poll_interval;
@@ -80,15 +87,11 @@ mod tests {
 
     #[test]
     fn poll_interval_is_validated_once() {
-        assert_eq!(parse_poll_interval("100").unwrap(), Duration::from_millis(100));
+        assert_eq!(
+            parse_poll_interval("100").expect("valid poll interval"),
+            Duration::from_millis(100)
+        );
         assert!(parse_poll_interval("99").is_err());
         assert!(parse_poll_interval("invalid").is_err());
-    }
-}
-
-impl Config {
-    pub(crate) fn load() -> Self {
-        drop(dotenvy::dotenv());
-        Self::parse()
     }
 }

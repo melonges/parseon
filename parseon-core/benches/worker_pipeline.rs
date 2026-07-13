@@ -44,7 +44,7 @@ async fn run_filters(filter: Filter, event: bool, concurrency: usize) -> usize {
                             params: &params,
                         }
                     };
-                    filter.evaluate(context).unwrap()
+                    filter.evaluate(context).expect("compiled filter evaluation failed")
                 })
                 .count()
         }
@@ -55,17 +55,18 @@ async fn run_filters(filter: Filter, event: bool, concurrency: usize) -> usize {
 }
 
 fn expression(value: serde_json::Value) -> FilterExpression {
-    serde_json::from_value(value).unwrap()
+    serde_json::from_value(value).expect("invalid benchmark filter expression")
 }
 
 fn compiled(target: &Target, value: serde_json::Value) -> (FilterExpression, Filter) {
     let expression = expression(value);
-    let filter = FilterDefinition::prepare(expression.clone(), target).unwrap().1;
+    let filter =
+        FilterDefinition::prepare(expression.clone(), target).expect("invalid benchmark filter").1;
     (expression, filter)
 }
 
 fn benchmark(c: &mut Criterion) {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = tokio::runtime::Runtime::new().expect("failed to create benchmark runtime");
     let mut pipeline_group = c.benchmark_group("worker_pipeline");
     pipeline_group.sample_size(30);
     for concurrency in [1, 4] {
@@ -79,7 +80,8 @@ fn benchmark(c: &mut Criterion) {
     }
     pipeline_group.finish();
 
-    let param = AbiParam::new("value", DynSolType::Uint(256)).unwrap();
+    let param =
+        AbiParam::new("value", DynSolType::Uint(256)).expect("valid benchmark ABI parameter");
     let call = Target::Call(CallTarget {
         address: Address::ZERO,
         selector: [0; 4].into(),
@@ -136,10 +138,16 @@ fn benchmark(c: &mut Criterion) {
 
     let mut compile_group = c.benchmark_group("filter_compile");
     compile_group.bench_function("call_leaf", |b| {
-        b.iter(|| FilterDefinition::prepare(call_leaf_source.clone(), &call).unwrap())
+        b.iter(|| {
+            FilterDefinition::prepare(call_leaf_source.clone(), &call)
+                .expect("valid benchmark filter")
+        })
     });
     compile_group.bench_function("event_leaf", |b| {
-        b.iter(|| FilterDefinition::prepare(event_leaf_source.clone(), &event).unwrap())
+        b.iter(|| {
+            FilterDefinition::prepare(event_leaf_source.clone(), &event)
+                .expect("valid benchmark filter")
+        })
     });
     compile_group.finish();
 }

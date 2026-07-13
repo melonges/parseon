@@ -38,8 +38,8 @@ pub struct RpcConfig {
 impl Default for RpcConfig {
     fn default() -> Self {
         Self {
-            request_concurrency: NonZeroUsize::new(16).unwrap(),
-            batch_size: NonZeroUsize::new(20).unwrap(),
+            request_concurrency: NonZeroUsize::new(16).expect("16 is non-zero"),
+            batch_size: NonZeroUsize::new(20).expect("20 is non-zero"),
         }
     }
 }
@@ -136,7 +136,7 @@ impl JsonRpcBlockSource {
         let mut receipts =
             stream::iter(transactions.iter().cloned().map(|transaction| async move {
                 self.observed("receipts", "single", async {
-                    Ok(fetch::fetch_receipt(&self.provider, &transaction).await?)
+                    fetch::fetch_receipt(&self.provider, &transaction).await
                 })
                 .await
             }))
@@ -156,7 +156,7 @@ impl JsonRpcBlockSource {
             transactions.chunks(self.batch_size).map(|chunk| chunk.to_vec()).collect::<Vec<_>>();
         let mut batches = stream::iter(chunks.into_iter().map(|chunk| async move {
             self.observed("receipts", "batch", async {
-                Ok(fetch::fetch_receipt_batch(&self.provider, &chunk).await?)
+                fetch::fetch_receipt_batch(&self.provider, &chunk).await
             })
             .await
         }))
@@ -185,8 +185,7 @@ impl JsonRpcBlockSource {
         {
             let block_receipts = self
                 .observed("receipts", "block_receipts", async {
-                    Ok(fetch::fetch_block_receipts(&self.provider, block.number, transactions)
-                        .await?)
+                    fetch::fetch_block_receipts(&self.provider, block.number, transactions).await
                 })
                 .await;
             match block_receipts {
@@ -233,10 +232,10 @@ impl BlockSource for JsonRpcBlockSource {
     async fn chain_id(&self) -> anyhow::Result<u64> {
         let _permit = self.acquire().await?;
         let started = Instant::now();
-        let result = chain_id(&self.provider).await.map_err(anyhow::Error::from);
+        let result = chain_id(&self.provider).await;
         match result {
             Ok(chain_id) => {
-                let _ = self.chain_id.set(chain_id);
+                let _cached_chain_id = self.chain_id.get_or_init(|| chain_id);
                 self.telemetry.record_rpc(
                     chain_id,
                     "chain_id",
