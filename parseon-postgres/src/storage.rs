@@ -134,11 +134,25 @@ impl IndexStorage for PostgresStorage {
         monitor_ids.sort_unstable();
         monitor_ids.dedup();
 
+        let block_number = pg_types::to_i64(commit.block_number, "block number")?;
+        let chain_id = pg_types::to_i64(commit.chain.id, "chain id")?;
         let rows = sqlx::query_as::<_, monitor_repo::MonitorRecord>(
-            "SELECT * FROM monitors WHERE id = ANY($1) AND chain_id = $2 ORDER BY id FOR UPDATE",
+            r#"WITH locked AS MATERIALIZED (
+                 SELECT id FROM monitors
+                 WHERE id = ANY($2) AND chain_id = $3
+                 ORDER BY id FOR UPDATE
+               )
+               UPDATE monitors AS monitor
+               SET cursor = $1,
+                   completed = COALESCE(monitor.end_block <= $1, FALSE),
+                   updated_at = NOW()
+               FROM locked
+               WHERE monitor.id = locked.id
+               RETURNING monitor.*"#,
         )
+        .bind(block_number)
         .bind(&monitor_ids)
-        .bind(pg_types::to_i64(commit.chain.id, "chain id")?)
+        .bind(chain_id)
         .fetch_all(&mut *tx)
         .await?;
         anyhow::ensure!(
@@ -151,45 +165,46 @@ impl IndexStorage for PostgresStorage {
             .map(|row| Ok((pg_types::from_monitor_id(row.id)?, row)))
             .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
+        let (mut calls, mut events) = (HashMap::new(), HashMap::new());
         for result in &commit.results {
             match result {
                 DecodedResult::Call(call) => {
                     let row = rows.get(&call.monitor_id).ok_or_else(|| {
                         anyhow::anyhow!("monitor {} was not locked", call.monitor_id)
                     })?;
-                    let executed = &call.transaction;
-                    let result = CallResultInput {
-                        tx_hash: executed.transaction.hash,
+                    anyhow::ensure!(row.kind == "call", "call result references event monitor");
+                    calls.entry(call.monitor_id).or_insert_with(Vec::new).push(CallResultInput {
+                        tx_hash: call.transaction.transaction.hash,
                         block_number: call.block_number,
-                        params: call.params.clone(),
-                    };
-                    dyn_table::insert_call(&mut tx, row.id, &row.param_schema.0, &result).await?;
+                        params: &call.params,
+                    });
                 }
                 DecodedResult::Event(event) => {
                     let row = rows.get(&event.monitor_id).ok_or_else(|| {
                         anyhow::anyhow!("monitor {} was not locked", event.monitor_id)
                     })?;
-                    let result = EventResultInput {
-                        tx_hash: event.transaction_hash,
-                        log_index: event.log_index,
-                        block_number: event.block_number,
-                        params: event.params.clone(),
-                    };
-                    dyn_table::insert_event(&mut tx, row.id, &row.param_schema.0, &result).await?;
+                    anyhow::ensure!(row.kind == "event", "event result references call monitor");
+                    events.entry(event.monitor_id).or_insert_with(Vec::new).push(
+                        EventResultInput {
+                            tx_hash: event.transaction_hash,
+                            log_index: event.log_index,
+                            block_number: event.block_number,
+                            params: &event.params,
+                        },
+                    );
                 }
             }
         }
 
-        for monitor in &commit.monitors {
-            let completed = monitor.end_block.is_some_and(|end| commit.block_number >= end);
-            monitor_repo::set_cursor(
-                &mut tx,
-                monitor.id,
-                commit.chain.id,
-                commit.block_number,
-                completed,
-            )
-            .await?;
+        for (id, inputs) in calls {
+            let row =
+                rows.get(&id).ok_or_else(|| anyhow::anyhow!("monitor {id} was not locked"))?;
+            dyn_table::insert_calls(&mut tx, row.id, &row.param_schema.0, &inputs).await?;
+        }
+        for (id, inputs) in events {
+            let row =
+                rows.get(&id).ok_or_else(|| anyhow::anyhow!("monitor {id} was not locked"))?;
+            dyn_table::insert_events(&mut tx, row.id, &row.param_schema.0, &inputs).await?;
         }
 
         tx.commit().await?;

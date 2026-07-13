@@ -11,6 +11,7 @@ use parseon_core::abi::parse_abi_type;
 use parseon_core::commands::PageLimit;
 use parseon_core::{BlockNumber, DecodedValue, TxHash};
 type AppResult<T> = anyhow::Result<T>;
+const BIND_LIMIT: usize = u16::MAX as usize;
 
 const CALL_COLUMNS: &[(&str, &str)] = &[
     ("tx_hash", "BYTEA NOT NULL PRIMARY KEY CHECK (octet_length(tx_hash) = 32)"),
@@ -145,16 +146,16 @@ pub(crate) async fn drop_result_table(
     Ok(())
 }
 
-pub(crate) struct CallResultInput {
+pub(crate) struct CallResultInput<'a> {
     pub tx_hash: TxHash,
     pub block_number: BlockNumber,
-    pub params: Vec<DecodedValue>,
+    pub params: &'a [DecodedValue],
 }
-pub(crate) struct EventResultInput {
+pub(crate) struct EventResultInput<'a> {
     pub tx_hash: TxHash,
     pub log_index: u64,
     pub block_number: BlockNumber,
-    pub params: Vec<DecodedValue>,
+    pub params: &'a [DecodedValue],
 }
 
 fn push_values(qb: &mut QueryBuilder<sqlx::Postgres>, values: &[DecodedValue]) -> AppResult<()> {
@@ -182,50 +183,76 @@ fn push_param_columns(qb: &mut QueryBuilder<sqlx::Postgres>, params: &[PgParam])
     Ok(())
 }
 
-pub(crate) async fn insert_call(
+pub(crate) async fn insert_calls(
     conn: &mut PgConnection,
     id: i64,
     schema: &[StoredParam],
-    input: &CallResultInput,
+    inputs: &[CallResultInput<'_>],
 ) -> AppResult<()> {
     let params = postgres_params("call", schema)?;
-    if params.len() != input.params.len() {
-        anyhow::bail!("parameter count mismatch");
+    anyhow::ensure!(
+        inputs.iter().all(|input| params.len() == input.params.len()),
+        "parameter count mismatch"
+    );
+    let width = params.len() + 2;
+    anyhow::ensure!(width <= BIND_LIMIT, "result row exceeds PostgreSQL bind limit");
+    let table = Identifier::new(result_table_name(id)?)?;
+    for chunk in inputs.chunks(BIND_LIMIT / width) {
+        let mut qb = QueryBuilder::new("INSERT INTO ");
+        qb.push(table.clone()).push(" (tx_hash,block_number");
+        push_param_columns(&mut qb, &params)?;
+        qb.push(") VALUES ");
+        for (index, input) in chunk.iter().enumerate() {
+            if index > 0 {
+                qb.push(",");
+            }
+            qb.push("(")
+                .push_bind(input.tx_hash.as_slice())
+                .push(",")
+                .push_bind(pg_types::to_i64(input.block_number, "block number")?);
+            push_values(&mut qb, input.params)?;
+            qb.push(")");
+        }
+        let inserted = qb.build().persistent(false).execute(&mut *conn).await?.rows_affected();
+        anyhow::ensure!(inserted == u64::try_from(chunk.len())?, "result row count mismatch");
     }
-    let mut qb = QueryBuilder::new("INSERT INTO ");
-    qb.push(Identifier::new(result_table_name(id)?)?).push(" (tx_hash,block_number");
-    push_param_columns(&mut qb, &params)?;
-    qb.push(") VALUES (")
-        .push_bind(input.tx_hash.as_slice())
-        .push(",")
-        .push_bind(pg_types::to_i64(input.block_number, "block number")?);
-    push_values(&mut qb, &input.params)?;
-    qb.push(") ON CONFLICT DO NOTHING");
-    qb.build().execute(conn).await?;
     Ok(())
 }
-pub(crate) async fn insert_event(
+pub(crate) async fn insert_events(
     conn: &mut PgConnection,
     id: i64,
     schema: &[StoredParam],
-    input: &EventResultInput,
+    inputs: &[EventResultInput<'_>],
 ) -> AppResult<()> {
     let params = postgres_params("event", schema)?;
-    if params.len() != input.params.len() {
-        anyhow::bail!("parameter count mismatch");
+    anyhow::ensure!(
+        inputs.iter().all(|input| params.len() == input.params.len()),
+        "parameter count mismatch"
+    );
+    let width = params.len() + 3;
+    anyhow::ensure!(width <= BIND_LIMIT, "result row exceeds PostgreSQL bind limit");
+    let table = Identifier::new(result_table_name(id)?)?;
+    for chunk in inputs.chunks(BIND_LIMIT / width) {
+        let mut qb = QueryBuilder::new("INSERT INTO ");
+        qb.push(table.clone()).push(" (tx_hash,log_index,block_number");
+        push_param_columns(&mut qb, &params)?;
+        qb.push(") VALUES ");
+        for (index, input) in chunk.iter().enumerate() {
+            if index > 0 {
+                qb.push(",");
+            }
+            qb.push("(")
+                .push_bind(input.tx_hash.as_slice())
+                .push(",")
+                .push_bind(pg_types::to_i64(input.log_index, "log index")?)
+                .push(",")
+                .push_bind(pg_types::to_i64(input.block_number, "block number")?);
+            push_values(&mut qb, input.params)?;
+            qb.push(")");
+        }
+        let inserted = qb.build().persistent(false).execute(&mut *conn).await?.rows_affected();
+        anyhow::ensure!(inserted == u64::try_from(chunk.len())?, "result row count mismatch");
     }
-    let mut qb = QueryBuilder::new("INSERT INTO ");
-    qb.push(Identifier::new(result_table_name(id)?)?).push(" (tx_hash,log_index,block_number");
-    push_param_columns(&mut qb, &params)?;
-    qb.push(") VALUES (")
-        .push_bind(input.tx_hash.as_slice())
-        .push(",")
-        .push_bind(pg_types::to_i64(input.log_index, "log index")?)
-        .push(",")
-        .push_bind(pg_types::to_i64(input.block_number, "block number")?);
-    push_values(&mut qb, &input.params)?;
-    qb.push(") ON CONFLICT DO NOTHING");
-    qb.build().execute(conn).await?;
     Ok(())
 }
 
@@ -257,15 +284,17 @@ fn read_params(row: &PgRow, params: &[PgParam]) -> AppResult<serde_json::Value> 
     for p in params {
         let value = match p.kind {
             PgColumnType::Numeric => row
-                .try_get::<Option<BigDecimal>, _>(&p.column[..])?
+                .try_get::<Option<BigDecimal>, _>(p.column.as_str())?
                 .map(|v| serde_json::Value::String(v.to_plain_string()))
                 .unwrap_or_default(),
-            PgColumnType::Bool => serde_json::json!(row.try_get::<Option<bool>, _>(&p.column[..])?),
+            PgColumnType::Bool => {
+                serde_json::json!(row.try_get::<Option<bool>, _>(p.column.as_str())?)
+            }
             PgColumnType::Text => {
-                serde_json::json!(row.try_get::<Option<String>, _>(&p.column[..])?)
+                serde_json::json!(row.try_get::<Option<String>, _>(p.column.as_str())?)
             }
             PgColumnType::Bytea => row
-                .try_get::<Option<Vec<u8>>, _>(&p.column[..])?
+                .try_get::<Option<Vec<u8>>, _>(p.column.as_str())?
                 .map(|v| serde_json::Value::String(format!("0x{}", alloy::hex::encode(v))))
                 .unwrap_or_default(),
         };

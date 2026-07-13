@@ -1,13 +1,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
-use sqlx::{FromRow, PgConnection, PgPool};
+use sqlx::{FromRow, PgPool};
 
 use crate::{dyn_table, pg_types};
 use parseon_core::abi::{AbiParam, parse_abi_type};
 use parseon_core::filter::FilterExpression;
 use parseon_core::ports::{MonitorKind, NewMonitor};
-use parseon_core::{BlockNumber, ChainId, MonitorId, Target};
+use parseon_core::{ChainId, MonitorId, Target};
 type AppResult<T> = anyhow::Result<T>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -167,28 +167,6 @@ pub(crate) async fn set_enabled(
     .fetch_one(pool)
     .await?;
     Ok(row)
-}
-
-pub(crate) async fn set_cursor(
-    conn: &mut PgConnection,
-    id: MonitorId,
-    chain_id: ChainId,
-    cursor: BlockNumber,
-    completed: bool,
-) -> AppResult<()> {
-    let id = pg_types::to_monitor_id(id)?;
-    let chain_id = pg_types::to_i64(chain_id, "chain id")?;
-    let cursor = pg_types::to_i64(cursor, "cursor")?;
-    sqlx::query(
-        "UPDATE monitors SET cursor = $1, completed = $2, updated_at = NOW() WHERE id = $3 AND chain_id = $4",
-    )
-    .bind(cursor)
-    .bind(completed)
-    .bind(id)
-    .bind(chain_id)
-    .execute(conn)
-    .await?;
-    Ok(())
 }
 
 #[cfg(test)]
