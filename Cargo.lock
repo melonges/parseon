@@ -3145,7 +3145,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-core"
-version = "0.8.0"
+version = "0.7.1"
 dependencies = [
  "alloy",
  "anyhow",
@@ -3164,7 +3164,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-memory-cache"
-version = "0.8.0"
+version = "0.7.1"
 dependencies = [
  "moka",
  "parseon-core",
@@ -3172,7 +3172,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-postgres"
-version = "0.8.0"
+version = "0.7.1"
 dependencies = [
  "alloy",
  "anyhow",
@@ -3188,7 +3188,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-rpc"
-version = "0.8.0"
+version = "0.7.1"
 dependencies = [
  "alloy",
  "alloy-rpc-types-any",
@@ -3202,7 +3202,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-server"
-version = "0.8.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "axum",

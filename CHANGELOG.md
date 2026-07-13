@@ -4,7 +4,7 @@ All notable changes to Parseon are documented in this file.
 
 ## Unreleased
 
-## 0.8.0 - 2026-07-13
+## 0.7.1 - 2026-07-13
 
 ### Changed
 
