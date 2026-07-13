@@ -86,11 +86,10 @@ fn method_spec(func: &Function) -> Result<MethodSpec, AbiError> {
         .inputs
         .iter()
         .enumerate()
-        .map(|(index, param)| -> Result<AbiParam, AbiError> {
+        .map(|(idx, param)| -> Result<AbiParam, AbiError> {
             let ty = Specifier::<DynSolType>::resolve(param)
                 .map_err(|error| AbiError::Type(format!("param `{}`: {error}", param.name)))?;
-            let name =
-                if param.name.is_empty() { format!("arg_{index}") } else { param.name.clone() };
+            let name = if param.name.is_empty() { format!("arg{idx}") } else { param.name.clone() };
             if !names.insert(name.clone()) {
                 return Err(AbiError::Parse(format!("duplicate parameter name `{name}`")));
             }
@@ -128,10 +127,11 @@ fn event_spec(event: &Event) -> Result<EventSpec, AbiError> {
             let ty = Specifier::<DynSolType>::resolve(param)
                 .map_err(|error| AbiError::Type(format!("param `{}`: {error}", param.name)))?;
             let name =
-                if param.name.is_empty() { format!("arg_{index}") } else { param.name.clone() };
+                if param.name.is_empty() { format!("arg{index}") } else { param.name.clone() };
             if !names.insert(name.clone()) {
                 return Err(AbiError::Parse(format!("duplicate parameter name `{name}`")));
             }
+
             Ok(AbiParam::new(name, ty)?.with_indexed(param.indexed))
         })
         .collect::<Result<Vec<_>, AbiError>>()?;

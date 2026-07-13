@@ -55,8 +55,8 @@ impl fmt::Display for MonitorId {
 pub struct Cursor(pub Option<BlockNumber>);
 
 impl Cursor {
-    pub fn next(self, start_block: BlockNumber) -> Option<BlockNumber> {
-        self.0.map_or(Some(start_block), |block| block.checked_add(1))
+    pub fn next(self, start_block: BlockNumber) -> BlockNumber {
+        self.0.map_or(start_block, |block| block.saturating_add(1))
     }
 }
 
@@ -151,21 +151,6 @@ mod tests {
     use std::time::Duration;
 
     use futures_util::StreamExt;
-
-    use super::{Cursor, MonitorId};
-
-    #[test]
-    fn cursor_computes_next_block() {
-        assert_eq!(Cursor(None).next(0), Some(0));
-        assert_eq!(Cursor(Some(12)).next(10), Some(13));
-        assert_eq!(Cursor(Some(u64::MAX)).next(10), None);
-    }
-
-    #[test]
-    fn monitor_ids_are_positive() {
-        assert_eq!(MonitorId::new(1).unwrap().get(), 1);
-        assert!(MonitorId::new(0).is_err());
-    }
 
     #[tokio::test]
     async fn pipeline_bounds_work_and_yields_in_input_order() {

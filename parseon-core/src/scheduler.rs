@@ -10,9 +10,7 @@ pub fn plan_blocks(
 ) -> Vec<BlockNumber> {
     let mut wanted = Vec::new();
     for monitor in monitors {
-        let Some(from) = monitor.next_block() else {
-            continue;
-        };
+        let from = monitor.next_block();
         let to = monitor.end_block.unwrap_or(finalized_head).min(finalized_head);
         let to = to.min(from.saturating_add(batch_size.get() - 1));
         wanted.extend(from..=to);

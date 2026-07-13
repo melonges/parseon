@@ -187,7 +187,7 @@ pub async fn run_once(
 
     if let Some(min_next) = active
         .iter()
-        .filter_map(|monitor| {
+        .map(|monitor| {
             Cursor(*progress.get(&monitor.id).unwrap_or(&monitor.cursor.0))
                 .next(monitor.start_block)
         })
@@ -199,11 +199,13 @@ pub async fn run_once(
         .iter()
         .map(|monitor| {
             let target = monitor.end_block.unwrap_or(finalized_head).min(finalized_head);
-            Cursor(*progress.get(&monitor.id).unwrap_or(&monitor.cursor.0))
-                .next(monitor.start_block)
-                .map_or(0, |next| {
-                    if next > target { 0 } else { target.saturating_sub(next).saturating_add(1) }
-                })
+            match *progress.get(&monitor.id).unwrap_or(&monitor.cursor.0) {
+                Some(cursor) => target.saturating_sub(cursor),
+                None if monitor.start_block <= target => {
+                    target.saturating_sub(monitor.start_block).saturating_add(1)
+                }
+                None => 0,
+            }
         })
         .max()
         .unwrap_or(0);

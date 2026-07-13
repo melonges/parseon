@@ -22,7 +22,7 @@ impl Monitor {
             && self.end_block.is_none_or(|end| block_number <= end)
     }
 
-    pub fn next_block(&self) -> Option<BlockNumber> {
+    pub fn next_block(&self) -> BlockNumber {
         self.cursor.next(self.start_block)
     }
 
