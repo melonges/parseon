@@ -4,6 +4,19 @@ All notable changes to Parseon are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Configurable process-wide PostgreSQL pool capacity through `DATABASE_MAX_CONNECTIONS`.
+
+### Changed
+
+- Load the worker chain registry once at process startup; chain additions, endpoint updates, and enablement changes affect workers after restart.
+- Delete chain data immediately while retiring its in-memory worker and status after restart.
+
+### Breaking
+
+- Return `202 Accepted` from chain create, update, and delete endpoints to signal restart-delayed worker changes.
+
 ## 0.7.1 - 2026-07-13
 
 ### Changed

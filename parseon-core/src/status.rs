@@ -6,9 +6,13 @@ use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerState {
+    /// The worker has started but has not completed its first poll.
     Starting,
+    /// The worker's latest poll succeeded.
     Running,
+    /// Source validation or the worker's latest poll failed.
     Degraded,
+    /// The chain was disabled when the process started.
     Disabled,
 }
 
@@ -109,10 +113,6 @@ impl RuntimeStatus {
             .write()
             .expect("runtime status registry lock poisoned")
             .insert(status.snapshot().chain_id, status);
-    }
-
-    pub fn remove(&self, chain_id: ChainId) {
-        self.inner.write().expect("runtime status registry lock poisoned").remove(&chain_id);
     }
 
     pub fn snapshot(&self) -> Vec<ChainStatusSnapshot> {

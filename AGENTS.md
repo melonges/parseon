@@ -42,12 +42,14 @@
 3. Run the Parseon app on the host. Its default `DATABASE_URL` connects to the
    Compose PostgreSQL instance.
 4. Register RPC endpoints with `POST /chains`. Parseon discovers and stores each endpoint's chain ID.
+5. Restart Parseon after chain registry changes; workers load the registry once at process startup.
 
 PostgreSQL data is retained in the `pgdata` named volume. Check database logs
 with `docker compose logs -f postgres`. The Dockerfile remains available for
 building a standalone production image with `docker build -t parseon .`.
 
-Default `HTTP_LISTEN=0.0.0.0:8080`. Override if port is taken (e.g. `HTTP_LISTEN=0.0.0.0:8081`).
+Default `HTTP_LISTEN=0.0.0.0:8080` and `DATABASE_MAX_CONNECTIONS=16`. Override the listen
+address if the port is taken (e.g. `HTTP_LISTEN=0.0.0.0:8081`).
 
 Swagger UI is served at `/swagger-ui/`; the generated OpenAPI document is at
 `/api-docs/openapi.json`.
@@ -116,7 +118,7 @@ Core must not depend on the server or any adapter crate. HTTP handlers call core
 
 ## Key design decisions
 
-- **Database-backed chain registry**: Each enabled chain has one isolated worker, source, cache, cancellation token, and status record.
+- **Startup-loaded chain registry**: Each chain enabled at process startup gets one isolated worker, source, cache, cancellation token, and status record. Registry changes require a restart to affect workers.
 - **Direct RPC endpoints**: Registered endpoints determine their EIP-155 chain IDs and must support the `finalized` block tag.
 - **Write-only RPC URLs**: Provider endpoints are persisted for workers but never returned or logged.
 - **Database-backed monitor state**: The worker reloads monitors each poll; no in-memory registry can retain stale cursors.

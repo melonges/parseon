@@ -95,7 +95,7 @@ Run one Parseon instance across multiple EVM chains.
 - Make result storage chain-aware.
 - Run one worker per chain.
 - Isolate chain state, errors, cache, and finality settings.
-- Allow chains to be enabled, disabled, or updated without restarting the service.
+- Persist chain additions, updates, enablement changes, and deletions through the API for the next process startup.
 
 ## v0.6 — Parallel execution and performance
 

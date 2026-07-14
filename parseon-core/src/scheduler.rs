@@ -3,6 +3,7 @@ use std::num::NonZeroU64;
 use super::BlockNumber;
 use super::monitor::Monitor;
 
+/// Plans deduplicated finalized blocks, capped to `batch_size` per monitor.
 pub fn plan_blocks(
     monitors: &[&Monitor],
     finalized_head: BlockNumber,
@@ -61,5 +62,11 @@ mod tests {
     fn skips_ranges_beyond_head() {
         let monitor = monitor(1, 20, None, None);
         assert!(plan_blocks(&[&monitor], 19, NonZeroU64::new(10).unwrap()).is_empty());
+    }
+
+    #[test]
+    fn stops_at_finalized_head() {
+        let monitor = monitor(1, 10, None, Some(30));
+        assert_eq!(plan_blocks(&[&monitor], 12, NonZeroU64::new(10).unwrap()), vec![10, 11, 12]);
     }
 }

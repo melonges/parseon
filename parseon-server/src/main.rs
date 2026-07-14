@@ -5,6 +5,7 @@ mod metrics;
 
 use std::sync::Arc;
 
+use parseon_core::ports::ChainRepository;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -25,7 +26,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("starting parseon");
 
     // Database.
-    let pool = parseon_postgres::pool::connect(&config.database.database_url).await?;
+    let pool = parseon_postgres::pool::connect(
+        &config.database.database_url,
+        config.database.max_connections,
+    )
+    .await?;
+    let storage = Arc::new(parseon_postgres::PostgresStorage::new(pool));
+    let registered_chains = storage.list_registered_chains().await?;
 
     // Cancellation token shared by the supervisor and API.
     let cancel = CancellationToken::new();
@@ -35,7 +42,6 @@ async fn main() -> anyhow::Result<()> {
         block_concurrency: config.indexing.block_concurrency,
         db_write_concurrency: config.indexing.db_write_concurrency,
     };
-    let storage = Arc::new(parseon_postgres::PostgresStorage::new(pool.clone()));
     let telemetry = Arc::new(metrics::Metrics::default());
     let source_factory = Arc::new(parseon_rpc::JsonRpcBlockSourceFactory::new(
         parseon_rpc::RpcConfig {
@@ -53,12 +59,12 @@ async fn main() -> anyhow::Result<()> {
         source_factory.clone(),
     );
 
-    // Reconciles the database registry and runs one isolated worker per enabled chain.
+    // Runs one isolated worker per chain enabled in the startup registry snapshot.
     let supervisor_handle = tokio::spawn({
         let cancel = cancel.clone();
         let supervisor = parseon_core::supervisor::Supervisor::new(
             supervisor_config,
-            storage.clone(),
+            registered_chains,
             storage.clone(),
             source_factory.clone(),
             Arc::new(parseon_memory_cache::MemoryBlockCacheFactory::new(

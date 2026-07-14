@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 use clap::{Args, Parser};
@@ -23,6 +23,9 @@ pub(crate) struct DatabaseConfig {
     /// PostgreSQL connection string
     #[arg(long, env = "DATABASE_URL")]
     pub database_url: Url,
+    /// Maximum PostgreSQL connections in the process-wide pool
+    #[arg(long, env = "DATABASE_MAX_CONNECTIONS", default_value = "16")]
+    pub max_connections: NonZeroU32,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -82,7 +85,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_poll_interval;
+    use super::{Config, parse_poll_interval};
+    use clap::Parser;
     use std::time::Duration;
 
     #[test]
@@ -93,5 +97,21 @@ mod tests {
         );
         assert!(parse_poll_interval("99").is_err());
         assert!(parse_poll_interval("invalid").is_err());
+    }
+
+    #[test]
+    fn validates_database_pool_size() {
+        let args = ["parseon", "--database-url", "postgres://localhost/parseon"];
+        assert_eq!(Config::try_parse_from(args).unwrap().database.max_connections.get(), 16);
+        assert!(
+            Config::try_parse_from([
+                "parseon",
+                "--database-url",
+                "postgres://localhost/parseon",
+                "--database-max-connections",
+                "0",
+            ])
+            .is_err()
+        );
     }
 }
