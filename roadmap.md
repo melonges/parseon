@@ -128,22 +128,28 @@ Future filter-language work can add a textual expression frontend, arithmetic,
 composite ABI values, table-state references, SQL compilation, and a typed map
 stage while reusing the versioned source-to-typed-IR boundary introduced here.
 
-## v0.8 — Optional adapters
+## v0.8 — Optional adapters I
 
 Expand the ecosystem around the core after internal traits are stable.
 
 - Add Redis block cache adapter.
 - Add eRPC block source adapter for multi-provider routing, failover, and RPC caching.
+- Add MongoDB storage adapter for document-oriented decoded results.
+- Add webhook sink adapter.
+- Reevaluate whether any adapter should become a separate crate based on dependency weight and reuse.
+
+## v0.9 — Optional adapters II
+
+Continue expanding the adapter ecosystem.
+
 - Add indexed-data adapters for services such as Etherscan, Blockscout, Alchemy, and Moralis, with room for providers such as QuickNode and GoldRush as demand proves useful.
 - Use address- and contract-oriented APIs for faster historical backfills, fallback reads, ABI discovery, and metadata enrichment while keeping direct JSON-RPC as the canonical chain and finality source.
 - Evaluate provider-specific ERC-20 and ERC-721 transfer APIs as optimized sources for transfer monitors; their indexed transfer results can avoid scanning unrelated blocks, transactions, receipts, and logs, reducing indexing latency and JSON-RPC traffic.
-- Experiment with MongoDB storage for document-oriented decoded results.
 - Add PostgreSQL `NOTIFY` for committed monitor-result notifications.
-- Add stream sink adapters for webhooks and Kafka.
-- Consider additional sink adapters such as files or ClickHouse.
-- Reevaluate whether any adapter should become a separate crate based on dependency weight and reuse.
+- Add Kafka and ClickHouse sink adapters.
+- Consider a file sink adapter.
 
-## v0.9 — Rich API and management surface
+## v0.10 — Rich API and management surface
 
 Prepare Parseon for a future frontend.
 
@@ -157,7 +163,7 @@ Prepare Parseon for a future frontend.
 - Keep OpenAPI first-class.
 - Consider GraphQL after the HTTP model stabilizes.
 
-## v0.10 — Crate split evaluation
+## v0.11 — Crate split evaluation
 
 Status: implemented ahead of schedule.
 
@@ -166,7 +172,7 @@ Status: implemented ahead of schedule.
 - Keep adapter dependency trees outside core.
 - Preserve one production `parseon` binary.
 
-## v0.11 — Provisional indexing and rollback engine
+## v0.12 — Provisional indexing and rollback engine
 
 Add near-head indexing only together with the machinery required to make it correct.
 
@@ -200,5 +206,5 @@ Make Parseon reliable to operate as infrastructure.
 2. Add optional adapters only after the core traits are stable.
 3. Build richer APIs for management and querying.
 4. Evolve the filter language only after the JSON AST is proven in production.
-5. Reevaluate separate crates near v0.10, not before the domain model settles.
-6. Add provisional indexing and rollback only as a coherent v0.11 feature.
+5. Reevaluate adapter crates during v0.8 based on dependency weight and reuse.
+6. Add provisional indexing and rollback only as a coherent v0.12 feature.

@@ -10,6 +10,7 @@ All notable changes to Parseon are documented in this file.
 
 ### Changed
 
+- Split optional adapter work across v0.8 and v0.9 and shift later roadmap milestones accordingly.
 - Load the worker chain registry once at process startup; chain additions, endpoint updates, and enablement changes affect workers after restart.
 - Delete chain data immediately while retiring its in-memory worker and status after restart.
 
