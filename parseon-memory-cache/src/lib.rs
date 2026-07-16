@@ -39,19 +39,34 @@ impl BlockCache for MemoryBlockCache {
 }
 
 pub struct MemoryBlockCacheFactory {
-    capacity: NonZeroUsize,
+    capacity: usize,
 }
 
 impl MemoryBlockCacheFactory {
-    pub fn new(capacity: NonZeroUsize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self { capacity }
     }
 }
 
 impl BlockCacheFactory for MemoryBlockCacheFactory {
     fn create(&self) -> Arc<dyn BlockCache> {
-        Arc::new(MemoryBlockCache::new(self.capacity))
+        match NonZeroUsize::new(self.capacity) {
+            Some(capacity) => Arc::new(MemoryBlockCache::new(capacity)),
+            None => Arc::new(DisabledBlockCache),
+        }
     }
+}
+
+struct DisabledBlockCache;
+
+impl BlockCache for DisabledBlockCache {
+    fn get(&self, _chain: Chain, _block_number: BlockNumber) -> Option<SourceBlock> {
+        None
+    }
+
+    fn put(&self, _chain: Chain, _block: SourceBlock) {}
+
+    fn evict_before(&self, _chain: Chain, _block_number: BlockNumber) {}
 }
 
 #[cfg(test)]
@@ -105,5 +120,14 @@ mod tests {
         for block_number in 0..THREADS * BLOCKS_PER_THREAD {
             assert!(cache.get(chain, block_number).is_some());
         }
+    }
+
+    #[test]
+    fn zero_capacity_disables_caching() {
+        let cache = MemoryBlockCacheFactory::new(0).create();
+        let chain = Chain::new(1);
+        cache.put(chain, block(10));
+        assert!(cache.get(chain, 10).is_none());
+        cache.evict_before(chain, 11);
     }
 }

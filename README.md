@@ -28,7 +28,7 @@ See the [roadmap](./roadmap.md) for planned milestones, the [terminology guide](
 
 ## Adapters
 
-Parseon supports compile-time PostgreSQL or MongoDB storage, direct JSON-RPC endpoints including full eRPC gateway routes, an unconditional in-memory block cache, and an optional best-effort webhook sink.
+Parseon supports compile-time PostgreSQL or MongoDB storage, direct JSON-RPC endpoints including full eRPC gateway routes, a configurable in-memory block cache, and an optional best-effort webhook sink.
 
 ```text
 parseon-server

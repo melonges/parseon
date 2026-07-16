@@ -4,6 +4,10 @@ All notable changes to Parseon are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Allow operators to disable the per-worker in-memory block cache by setting `BLOCK_CACHE_SIZE=0`.
+
 ## 0.8.0 - 2026-07-14
 
 ### Added

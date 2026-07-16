@@ -50,9 +50,9 @@ pub(crate) struct IndexingConfig {
     /// Default batch size applied to each chain
     #[arg(long, env = "DEFAULT_BATCH_SIZE", default_value = "10")]
     pub default_batch_size: NonZeroU64,
-    /// Block cache capacity per chain worker
+    /// Block cache capacity per chain worker; zero disables caching
     #[arg(long, env = "BLOCK_CACHE_SIZE", default_value = "512")]
-    pub block_cache_size: NonZeroUsize,
+    pub block_cache_size: usize,
     /// Blocks prepared concurrently by each chain worker
     #[arg(long, env = "BLOCK_CONCURRENCY", default_value = "4")]
     pub block_concurrency: NonZeroUsize,
@@ -123,6 +123,20 @@ mod tests {
             Config::try_parse_from(args).unwrap().storage.storage_url.as_str(),
             "postgres://localhost/parseon"
         );
+    }
+
+    #[test]
+    fn accepts_zero_block_cache_size() {
+        let mut args = vec![
+            "parseon",
+            "--storage-url",
+            "postgres://localhost/parseon",
+            "--block-cache-size",
+            "0",
+        ];
+        #[cfg(feature = "webhook-sink")]
+        args.extend(["--webhook-url", "http://localhost/hook"]);
+        assert_eq!(Config::try_parse_from(args).unwrap().indexing.block_cache_size, 0);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Adapters
 
-Parseon selects exactly one storage adapter at compile time. PostgreSQL is the default; the memory block cache is always present and is not feature-gated.
+Parseon selects exactly one storage adapter at compile time. PostgreSQL is the default; the memory block cache is not feature-gated and can be disabled by setting `BLOCK_CACHE_SIZE=0`.
 
 ## Feature builds
 
