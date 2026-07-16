@@ -26,6 +26,24 @@ The project is moving quickly. Issues, ideas, and early contributions are welcom
 
 See the [roadmap](./roadmap.md) for planned milestones, the [terminology guide](./terminology.md) for domain language, and the [changelog](./CHANGELOG.md) for completed work.
 
+## Adapters
+
+Parseon supports compile-time PostgreSQL or MongoDB storage, direct JSON-RPC endpoints including full eRPC gateway routes, an unconditional in-memory block cache, and an optional best-effort webhook sink.
+
+```text
+parseon-server
+├── parseon-core
+├── parseon-rpc ─────────────> parseon-core
+├── parseon-postgres ────────> parseon-core
+├── parseon-mongodb ─────────> parseon-core
+├── parseon-memory-cache ────> parseon-core
+└── parseon-webhook-sink ────> parseon-core
+```
+
+Start PostgreSQL with `docker compose up -d`, or start the MongoDB development replica set and eRPC gateway with `docker compose --profile mongodb --profile erpc up -d`. Configure the selected backend through `STORAGE_URL`, then register direct RPC or complete eRPC URLs through `POST /chains`.
+
+See [adapter configuration and guarantees](./docs/adapters.md) for feature builds, MongoDB requirements, eRPC smoke checks, the webhook JSON contract, and Compose profiles.
+
 ## License
 
 Licensed under either the [Apache License, Version 2.0](./LICENSE-APACHE) or the [MIT license](./LICENSE-MIT), at your option.

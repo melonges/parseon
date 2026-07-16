@@ -1,0 +1,1054 @@
+use std::collections::HashMap;
+use std::str::FromStr;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use futures_util::TryStreamExt;
+use mongodb::bson::{self, Binary, Bson, Document, doc};
+use mongodb::options::{IndexOptions, ReturnDocument};
+use mongodb::{Client, ClientSession, Collection, Database, IndexModel};
+use serde::{Deserialize, Serialize};
+
+use parseon_core::abi::{AbiParam, parse_abi_type};
+use parseon_core::commands::ResultQuery;
+use parseon_core::filter::{Filter, FilterDefinition, FilterExpression};
+use parseon_core::monitor::Monitor;
+use parseon_core::ports::{
+    BlockCommit, ChainRecord, ChainRepository, ChainUpdate, IndexStorage, MonitorRecord,
+    MonitorRepository, NewChain, NewMonitor, RegisteredChain, ResultRecord, ResultRepository,
+};
+use parseon_core::{
+    Address, B256, CallTarget, Chain, Cursor, DecodedResult, DecodedValue, EventTarget, MonitorId,
+    Selector, Target, TxHash, Url,
+};
+
+type AppResult<T> = anyhow::Result<T>;
+
+#[derive(Clone)]
+pub struct MongoStorage {
+    client: Client,
+    database: Database,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChainDocument {
+    chain_id: i64,
+    rpc_url: String,
+    enabled: bool,
+    created_at: bson::DateTime,
+    updated_at: bson::DateTime,
+    #[serde(default)]
+    monitor_revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredParam {
+    name: String,
+    sol_type: String,
+    #[serde(default)]
+    indexed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MonitorDocument {
+    id: i64,
+    chain_id: i64,
+    address: String,
+    kind: String,
+    signature_hash: String,
+    param_schema: Vec<StoredParam>,
+    start_block: i64,
+    end_block: Option<i64>,
+    cursor: Option<i64>,
+    completed: bool,
+    enabled: bool,
+    filter_ast: Option<FilterExpression>,
+    filter_version: Option<i16>,
+    created_at: bson::DateTime,
+    updated_at: bson::DateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ResultDocument {
+    chain_id: i64,
+    monitor_id: i64,
+    kind: String,
+    tx_hash: String,
+    log_index: Option<i64>,
+    block_number: i64,
+    params: Document,
+}
+
+impl MongoStorage {
+    pub async fn connect(storage_url: &Url, database: &str) -> AppResult<Self> {
+        anyhow::ensure!(!database.is_empty(), "storage database must not be empty");
+        let client = Client::with_uri_str(storage_url.as_str()).await?;
+        let hello = client.database("admin").run_command(doc! { "hello": 1 }).await?;
+        anyhow::ensure!(
+            supports_transactions(&hello),
+            "MongoDB storage requires a replica set or sharded deployment"
+        );
+        let storage = Self { database: client.database(database), client };
+        storage.create_indexes().await?;
+        tracing::info!(database, "MongoDB storage initialized");
+        Ok(storage)
+    }
+
+    fn chains(&self) -> Collection<ChainDocument> {
+        self.database.collection("chains")
+    }
+
+    fn monitors(&self) -> Collection<MonitorDocument> {
+        self.database.collection("monitors")
+    }
+
+    fn results(&self) -> Collection<ResultDocument> {
+        self.database.collection("results")
+    }
+
+    fn counters(&self) -> Collection<Document> {
+        self.database.collection("counters")
+    }
+
+    async fn create_indexes(&self) -> AppResult<()> {
+        for (collection, index) in indexes() {
+            self.database.collection::<Document>(collection).create_index(index).await?;
+        }
+        Ok(())
+    }
+
+    async fn transaction<T>(
+        &self,
+        mut operation: impl for<'a> FnMut(
+            &'a mut ClientSession,
+        ) -> futures_util::future::BoxFuture<'a, AppResult<T>>,
+    ) -> AppResult<T> {
+        let mut session = self.client.start_session().await?;
+        'transaction: loop {
+            session.start_transaction().await?;
+            let value = match operation(&mut session).await {
+                Ok(value) => value,
+                Err(error) => {
+                    drop(session.abort_transaction().await);
+                    if transient(&error) {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            };
+            loop {
+                match session.commit_transaction().await {
+                    Ok(()) => return Ok(value),
+                    Err(error) if error.contains_label("UnknownTransactionCommitResult") => {}
+                    Err(error) if error.contains_label("TransientTransactionError") => {
+                        drop(session.abort_transaction().await);
+                        continue 'transaction;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+    }
+
+    fn target(row: &MonitorDocument) -> AppResult<Target> {
+        let address = Address::from_str(&row.address)?;
+        let params = row
+            .param_schema
+            .iter()
+            .map(|param| {
+                Ok(AbiParam::new(param.name.clone(), parse_abi_type(&param.sol_type)?)?
+                    .with_indexed(param.indexed))
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        match row.kind.as_str() {
+            "call" => Ok(Target::Call(CallTarget {
+                address,
+                selector: Selector::from_str(&row.signature_hash)?,
+                inputs: params,
+            })),
+            "event" => Ok(Target::Event(EventTarget {
+                address,
+                topic0: B256::from_str(&row.signature_hash)?,
+                params,
+            })),
+            kind => anyhow::bail!("invalid monitor kind {kind}"),
+        }
+    }
+
+    fn monitor(row: &MonitorDocument) -> AppResult<Monitor> {
+        let target = Self::target(row)?;
+        let filter = match (&row.filter_ast, row.filter_version) {
+            (None, None) => Filter::All,
+            (Some(expression), Some(version)) => {
+                FilterDefinition { version, expression: expression.clone() }.compile(&target)?
+            }
+            _ => anyhow::bail!("monitor {} has incomplete filter state", row.id),
+        };
+        Ok(Monitor {
+            id: MonitorId::new(from_i64(row.id, "monitor id")?)?,
+            chain: Chain::new(from_i64(row.chain_id, "chain id")?),
+            target,
+            start_block: from_i64(row.start_block, "start block")?,
+            end_block: row.end_block.map(|value| from_i64(value, "end block")).transpose()?,
+            cursor: Cursor(row.cursor.map(|value| from_i64(value, "cursor")).transpose()?),
+            completed: row.completed,
+            enabled: row.enabled,
+            filter,
+        })
+    }
+
+    fn chain_record(row: ChainDocument) -> AppResult<ChainRecord> {
+        Ok(ChainRecord {
+            chain: Chain::new(from_i64(row.chain_id, "chain id")?),
+            rpc_url: row.rpc_url.parse()?,
+            enabled: row.enabled,
+            created_at: chrono(row.created_at)?,
+            updated_at: chrono(row.updated_at)?,
+        })
+    }
+
+    fn monitor_record(row: MonitorDocument) -> AppResult<MonitorRecord> {
+        let filter = match (row.filter_ast.clone(), row.filter_version) {
+            (None, None) => None,
+            (Some(expression), Some(version)) => Some(FilterDefinition { version, expression }),
+            _ => anyhow::bail!("monitor {} has incomplete filter state", row.id),
+        };
+        Ok(MonitorRecord {
+            id: MonitorId::new(from_i64(row.id, "monitor id")?)?,
+            chain: Chain::new(from_i64(row.chain_id, "chain id")?),
+            target: Self::target(&row)?,
+            start_block: from_i64(row.start_block, "start block")?,
+            end_block: row.end_block.map(|value| from_i64(value, "end block")).transpose()?,
+            cursor: row.cursor.map(|value| from_i64(value, "cursor")).transpose()?,
+            completed: row.completed,
+            enabled: row.enabled,
+            filter,
+            created_at: chrono(row.created_at)?,
+            updated_at: chrono(row.updated_at)?,
+        })
+    }
+}
+
+#[async_trait]
+impl IndexStorage for MongoStorage {
+    async fn load_monitors(&self, chain: Chain) -> AppResult<Vec<Monitor>> {
+        let mut rows = self
+            .monitors()
+            .find(doc! { "chain_id": to_i64(chain.id, "chain id")? })
+            .sort(doc! { "id": 1 })
+            .await?;
+        let mut monitors = Vec::new();
+        while let Some(row) = rows.try_next().await? {
+            let monitor = Self::monitor(&row)?;
+            if monitor.enabled && !monitor.completed {
+                monitors.push(monitor);
+            }
+        }
+        Ok(monitors)
+    }
+
+    async fn commit_block(&self, commit: BlockCommit) -> AppResult<usize> {
+        anyhow::ensure!(
+            commit.monitors.iter().all(|monitor| monitor.chain == commit.chain),
+            "cross-chain monitor set rejected for chain {}",
+            commit.chain.id
+        );
+        let chain_id = to_i64(commit.chain.id, "chain id")?;
+        let block_number = to_i64(commit.block_number, "block number")?;
+        let mut ids = commit
+            .monitors
+            .iter()
+            .map(|monitor| to_i64(monitor.id.get(), "monitor id"))
+            .collect::<AppResult<Vec<_>>>()?;
+        ids.sort_unstable();
+        ids.dedup();
+        let monitors =
+            commit.monitors.iter().map(|monitor| (monitor.id, monitor)).collect::<HashMap<_, _>>();
+        let documents = commit
+            .results
+            .iter()
+            .map(|result| result_document(chain_id, &monitors, result))
+            .collect::<AppResult<Vec<_>>>()?;
+        let count = documents.len();
+        let collection = self.monitors();
+        let results = self.results();
+        self.transaction(move |session| {
+            let collection = collection.clone();
+            let results = results.clone();
+            let ids = ids.clone();
+            let documents = documents.clone();
+            Box::pin(async move {
+                let updated = collection
+                    .update_many(
+                        doc! { "id": { "$in": &ids }, "chain_id": chain_id },
+                        vec![doc! { "$set": {
+                            "cursor": block_number,
+                            "completed": { "$and": [
+                                { "$ne": ["$end_block", null] },
+                                { "$lte": ["$end_block", block_number] }
+                            ] },
+                            "updated_at": bson::DateTime::now()
+                        } }],
+                    )
+                    .session(&mut *session)
+                    .await?;
+                anyhow::ensure!(
+                    updated.matched_count == ids.len() as u64,
+                    "monitor set changed before block {block_number} could be committed"
+                );
+                if !documents.is_empty() {
+                    drop(results.insert_many(documents).session(&mut *session).await?);
+                }
+                Ok(())
+            })
+        })
+        .await?;
+        Ok(count)
+    }
+}
+
+#[async_trait]
+impl ChainRepository for MongoStorage {
+    async fn list_registered_chains(&self) -> AppResult<Vec<RegisteredChain>> {
+        let mut rows = self.chains().find(doc! {}).sort(doc! { "chain_id": 1 }).await?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.try_next().await? {
+            result.push(RegisteredChain {
+                chain: Chain::new(from_i64(row.chain_id, "chain id")?),
+                rpc_url: row.rpc_url.parse()?,
+                enabled: row.enabled,
+            });
+        }
+        Ok(result)
+    }
+
+    async fn create_chain(&self, input: NewChain) -> AppResult<ChainRecord> {
+        let now = bson::DateTime::now();
+        let row = ChainDocument {
+            chain_id: to_i64(input.chain.id, "chain id")?,
+            rpc_url: input.rpc_url.to_string(),
+            enabled: input.enabled,
+            created_at: now,
+            updated_at: now,
+            monitor_revision: 0,
+        };
+        drop(self.chains().insert_one(&row).await?);
+        Self::chain_record(row)
+    }
+
+    async fn list_chains(&self) -> AppResult<Vec<ChainRecord>> {
+        let mut rows = self.chains().find(doc! {}).sort(doc! { "chain_id": 1 }).await?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.try_next().await? {
+            result.push(Self::chain_record(row)?);
+        }
+        Ok(result)
+    }
+
+    async fn get_chain(&self, chain: Chain) -> AppResult<ChainRecord> {
+        let id = to_i64(chain.id, "chain id")?;
+        let row = self
+            .chains()
+            .find_one(doc! { "chain_id": id })
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("chain {id} not found"))?;
+        Self::chain_record(row)
+    }
+
+    async fn update_chain(&self, chain: Chain, update: ChainUpdate) -> AppResult<ChainRecord> {
+        let id = to_i64(chain.id, "chain id")?;
+        let mut set = doc! { "updated_at": bson::DateTime::now() };
+        if let Some(url) = update.rpc_url {
+            set.insert("rpc_url", url.to_string());
+        }
+        if let Some(enabled) = update.enabled {
+            set.insert("enabled", enabled);
+        }
+        let row = self
+            .chains()
+            .find_one_and_update(doc! { "chain_id": id }, doc! { "$set": set })
+            .return_document(ReturnDocument::After)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("chain {id} not found"))?;
+        Self::chain_record(row)
+    }
+
+    async fn delete_chain(&self, chain: Chain) -> AppResult<()> {
+        let chain_id = to_i64(chain.id, "chain id")?;
+        let chains = self.chains();
+        let monitors = self.monitors();
+        let results = self.results();
+        self.transaction(move |session| {
+            let chains = chains.clone();
+            let monitors = monitors.clone();
+            let results = results.clone();
+            Box::pin(async move {
+                let deleted =
+                    chains.delete_one(doc! { "chain_id": chain_id }).session(&mut *session).await?;
+                anyhow::ensure!(deleted.deleted_count == 1, "chain {chain_id} not found");
+                drop(
+                    monitors
+                        .delete_many(doc! { "chain_id": chain_id })
+                        .session(&mut *session)
+                        .await?,
+                );
+                drop(
+                    results
+                        .delete_many(doc! { "chain_id": chain_id })
+                        .session(&mut *session)
+                        .await?,
+                );
+                Ok(())
+            })
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl MonitorRepository for MongoStorage {
+    async fn count_monitors(&self) -> AppResult<usize> {
+        Ok(usize::try_from(self.monitors().count_documents(doc! {}).await?)?)
+    }
+
+    async fn create_monitor(&self, input: NewMonitor) -> AppResult<MonitorRecord> {
+        let (address, kind, signature_hash, params) = match &input.target {
+            Target::Call(target) => (
+                format!("{:#x}", target.address),
+                "call",
+                format!("{:#x}", target.selector),
+                &target.inputs,
+            ),
+            Target::Event(target) => (
+                format!("{:#x}", target.address),
+                "event",
+                format!("{:#x}", target.topic0),
+                &target.params,
+            ),
+        };
+        let now = bson::DateTime::now();
+        let template = MonitorDocument {
+            id: 1,
+            chain_id: to_i64(input.chain.id, "chain id")?,
+            address,
+            kind: kind.into(),
+            signature_hash,
+            param_schema: params
+                .iter()
+                .map(|param| StoredParam {
+                    name: param.name.clone(),
+                    sol_type: param.sol_type(),
+                    indexed: param.indexed,
+                })
+                .collect(),
+            start_block: to_i64(input.start_block, "start block")?,
+            end_block: input.end_block.map(|value| to_i64(value, "end block")).transpose()?,
+            cursor: None,
+            completed: false,
+            enabled: true,
+            filter_ast: input.filter.as_ref().map(|filter| filter.expression.clone()),
+            filter_version: input.filter.as_ref().map(|filter| filter.version),
+            created_at: now,
+            updated_at: now,
+        };
+        let chains = self.chains();
+        let counters = self.counters();
+        let monitors = self.monitors();
+        let row = self
+            .transaction(move |session| {
+                let chains = chains.clone();
+                let counters = counters.clone();
+                let monitors = monitors.clone();
+                let mut row = template.clone();
+                Box::pin(async move {
+                    let owner = chains
+                        .update_one(
+                            doc! { "chain_id": row.chain_id },
+                            doc! { "$inc": { "monitor_revision": 1_i64 } },
+                        )
+                        .session(&mut *session)
+                        .await?;
+                    anyhow::ensure!(owner.matched_count == 1, "chain {} not found", row.chain_id);
+                    let counter = counters
+                        .find_one_and_update(
+                            doc! { "_id": "monitors" },
+                            doc! { "$inc": { "value": 1_i64 } },
+                        )
+                        .upsert(true)
+                        .return_document(ReturnDocument::After)
+                        .session(&mut *session)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("monitor counter update returned no row"))?;
+                    row.id = counter.get_i64("value")?;
+                    drop(monitors.insert_one(&row).session(&mut *session).await?);
+                    Ok(row)
+                })
+            })
+            .await?;
+        Self::monitor_record(row)
+    }
+
+    async fn list_monitors(&self, chain: Option<Chain>) -> AppResult<Vec<MonitorRecord>> {
+        let filter = match chain {
+            Some(chain) => doc! { "chain_id": to_i64(chain.id, "chain id")? },
+            None => doc! {},
+        };
+        let mut rows = self.monitors().find(filter).sort(doc! { "id": 1 }).await?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.try_next().await? {
+            result.push(Self::monitor_record(row)?);
+        }
+        Ok(result)
+    }
+
+    async fn get_monitor(&self, id: MonitorId) -> AppResult<MonitorRecord> {
+        let id = to_i64(id.get(), "monitor id")?;
+        let row = self
+            .monitors()
+            .find_one(doc! { "id": id })
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("monitor {id} not found"))?;
+        Self::monitor_record(row)
+    }
+
+    async fn set_monitor_enabled(&self, id: MonitorId, enabled: bool) -> AppResult<MonitorRecord> {
+        let id = to_i64(id.get(), "monitor id")?;
+        let row = self
+            .monitors()
+            .find_one_and_update(
+                doc! { "id": id },
+                doc! { "$set": { "enabled": enabled, "updated_at": bson::DateTime::now() } },
+            )
+            .return_document(ReturnDocument::After)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("monitor {id} not found"))?;
+        Self::monitor_record(row)
+    }
+
+    async fn delete_monitor(&self, id: MonitorId) -> AppResult<()> {
+        let id = to_i64(id.get(), "monitor id")?;
+        let monitors = self.monitors();
+        let results = self.results();
+        self.transaction(move |session| {
+            let monitors = monitors.clone();
+            let results = results.clone();
+            Box::pin(async move {
+                let deleted = monitors.delete_one(doc! { "id": id }).session(&mut *session).await?;
+                anyhow::ensure!(deleted.deleted_count == 1, "monitor {id} not found");
+                drop(results.delete_many(doc! { "monitor_id": id }).session(&mut *session).await?);
+                Ok(())
+            })
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl ResultRepository for MongoStorage {
+    async fn query_results(
+        &self,
+        monitor: &MonitorRecord,
+        query: ResultQuery,
+    ) -> AppResult<Vec<ResultRecord>> {
+        let kind = match monitor.target {
+            Target::Call(_) => "call",
+            Target::Event(_) => "event",
+        };
+        let (filter, sort) = result_query(to_i64(monitor.id.get(), "monitor id")?, kind)?;
+        let mut rows = self
+            .results()
+            .find(filter)
+            .sort(sort)
+            .skip(query.offset)
+            .limit(i64::from(query.limit.get()))
+            .await?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.try_next().await? {
+            let tx_hash = TxHash::from_str(&row.tx_hash)?;
+            let block_number = from_i64(row.block_number, "block number")?;
+            let params = bson_params_to_json(row.params)?;
+            result.push(if kind == "call" {
+                ResultRecord::Call { tx_hash, block_number, params }
+            } else {
+                ResultRecord::Event {
+                    tx_hash,
+                    log_index: from_i64(
+                        row.log_index.ok_or_else(|| anyhow::anyhow!("missing log index"))?,
+                        "log index",
+                    )?,
+                    block_number,
+                    params,
+                }
+            });
+        }
+        Ok(result)
+    }
+}
+
+fn result_document(
+    chain_id: i64,
+    monitors: &HashMap<MonitorId, &Monitor>,
+    result: &DecodedResult,
+) -> AppResult<ResultDocument> {
+    match result {
+        DecodedResult::Call(call) => {
+            let monitor = monitors
+                .get(&call.monitor_id)
+                .ok_or_else(|| anyhow::anyhow!("monitor {} was not locked", call.monitor_id))?;
+            let Target::Call(target) = &monitor.target else {
+                anyhow::bail!("call result references event monitor")
+            };
+            Ok(ResultDocument {
+                chain_id,
+                monitor_id: to_i64(call.monitor_id.get(), "monitor id")?,
+                kind: "call".into(),
+                tx_hash: format!("{:#x}", call.transaction.transaction.hash),
+                log_index: None,
+                block_number: to_i64(call.block_number, "block number")?,
+                params: bson_params(&target.inputs, &call.params)?,
+            })
+        }
+        DecodedResult::Event(event) => {
+            let monitor = monitors
+                .get(&event.monitor_id)
+                .ok_or_else(|| anyhow::anyhow!("monitor {} was not locked", event.monitor_id))?;
+            let Target::Event(target) = &monitor.target else {
+                anyhow::bail!("event result references call monitor")
+            };
+            Ok(ResultDocument {
+                chain_id,
+                monitor_id: to_i64(event.monitor_id.get(), "monitor id")?,
+                kind: "event".into(),
+                tx_hash: format!("{:#x}", event.transaction_hash),
+                log_index: Some(to_i64(event.log_index, "log index")?),
+                block_number: to_i64(event.block_number, "block number")?,
+                params: bson_params(&target.params, &event.params)?,
+            })
+        }
+    }
+}
+
+fn bson_params(schema: &[AbiParam], values: &[DecodedValue]) -> AppResult<Document> {
+    anyhow::ensure!(schema.len() == values.len(), "parameter count mismatch");
+    Ok(schema
+        .iter()
+        .zip(values)
+        .map(|(param, value)| {
+            let value = match value {
+                DecodedValue::Uint(value) => Bson::String(value.to_string()),
+                DecodedValue::Int(value) => Bson::String(value.to_string()),
+                DecodedValue::Bool(value) => Bson::Boolean(*value),
+                DecodedValue::Address(value) => Bson::String(format!("{value:#x}")),
+                DecodedValue::String(value) => Bson::String(value.clone()),
+                DecodedValue::Bytes(value) => Bson::Binary(Binary {
+                    subtype: bson::spec::BinarySubtype::Generic,
+                    bytes: value.clone(),
+                }),
+            };
+            (param.name.clone(), value)
+        })
+        .collect())
+}
+
+fn bson_params_to_json(params: Document) -> AppResult<serde_json::Value> {
+    Ok(serde_json::Value::Object(
+        params
+            .into_iter()
+            .map(|(name, value)| {
+                let value = match value {
+                    Bson::String(value) => serde_json::Value::String(value),
+                    Bson::Boolean(value) => serde_json::Value::Bool(value),
+                    Bson::Binary(value) => {
+                        serde_json::Value::String(format!("0x{}", alloy::hex::encode(value.bytes)))
+                    }
+                    value => anyhow::bail!("invalid stored parameter value {value:?}"),
+                };
+                Ok((name, value))
+            })
+            .collect::<AppResult<_>>()?,
+    ))
+}
+
+fn indexes() -> Vec<(&'static str, IndexModel)> {
+    let index =
+        |keys: Document, name: &str, unique: bool, partial_filter_expression: Option<Document>| {
+            IndexModel::builder()
+                .keys(keys)
+                .options(Some(
+                    IndexOptions::builder()
+                        .name(Some(name.into()))
+                        .unique(unique.then_some(true))
+                        .partial_filter_expression(partial_filter_expression)
+                        .build(),
+                ))
+                .build()
+        };
+    vec![
+        ("chains", index(doc! { "chain_id": 1 }, "chains_chain_id", true, None)),
+        ("monitors", index(doc! { "id": 1 }, "monitors_id", true, None)),
+        (
+            "monitors",
+            index(
+                doc! { "chain_id": 1, "kind": 1, "address": 1, "signature_hash": 1 },
+                "monitors_target",
+                true,
+                None,
+            ),
+        ),
+        ("monitors", index(doc! { "chain_id": 1, "id": 1 }, "monitors_chain_order", false, None)),
+        (
+            "results",
+            index(
+                doc! { "monitor_id": 1, "tx_hash": 1 },
+                "results_call_identity",
+                true,
+                Some(doc! { "kind": "call" }),
+            ),
+        ),
+        (
+            "results",
+            index(
+                doc! { "monitor_id": 1, "tx_hash": 1, "log_index": 1 },
+                "results_event_identity",
+                true,
+                Some(doc! { "kind": "event" }),
+            ),
+        ),
+        (
+            "results",
+            index(
+                doc! { "monitor_id": 1, "block_number": -1, "tx_hash": -1 },
+                "results_call_order",
+                false,
+                Some(doc! { "kind": "call" }),
+            ),
+        ),
+        (
+            "results",
+            index(
+                doc! { "monitor_id": 1, "block_number": -1, "log_index": -1 },
+                "results_event_order",
+                false,
+                Some(doc! { "kind": "event" }),
+            ),
+        ),
+    ]
+}
+
+fn result_query(monitor_id: i64, kind: &str) -> AppResult<(Document, Document)> {
+    let sort = match kind {
+        "call" => doc! { "block_number": -1, "tx_hash": -1 },
+        "event" => doc! { "block_number": -1, "log_index": -1 },
+        _ => anyhow::bail!("invalid monitor kind {kind}"),
+    };
+    Ok((doc! { "monitor_id": monitor_id, "kind": kind }, sort))
+}
+
+fn transient(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<mongodb::error::Error>()
+        .is_some_and(|error| error.contains_label("TransientTransactionError"))
+}
+
+fn supports_transactions(hello: &Document) -> bool {
+    hello.get_str("setName").is_ok() || hello.get_str("msg") == Ok("isdbgrid")
+}
+
+fn to_i64(value: u64, name: &str) -> AppResult<i64> {
+    i64::try_from(value).map_err(|_| anyhow::anyhow!("{name} exceeds MongoDB integer range"))
+}
+
+fn from_i64(value: i64, name: &str) -> AppResult<u64> {
+    u64::try_from(value).map_err(|_| anyhow::anyhow!("{name} must not be negative"))
+}
+
+fn chrono(value: bson::DateTime) -> AppResult<DateTime<Utc>> {
+    DateTime::from_timestamp_millis(value.timestamp_millis())
+        .ok_or_else(|| anyhow::anyhow!("invalid MongoDB timestamp"))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy::primitives::{I256, U256};
+    use parseon_core::commands::{PageLimit, ResultQuery};
+    use parseon_core::{BlockTransaction, DecodedCall, DecodedEvent, ExecutedTransaction};
+
+    use super::*;
+    use parseon_core::ports::Storage;
+
+    fn assert_storage<T: Storage>() {}
+
+    #[test]
+    fn implements_unified_storage_port() {
+        assert_storage::<MongoStorage>();
+    }
+
+    fn param(name: &str) -> AbiParam {
+        AbiParam::new(name, parse_abi_type("uint256").unwrap()).unwrap()
+    }
+
+    #[test]
+    fn bson_values_round_trip_to_canonical_json() {
+        let schema = [
+            param("uint"),
+            AbiParam::new("int", parse_abi_type("int256").unwrap()).unwrap(),
+            AbiParam::new("flag", parse_abi_type("bool").unwrap()).unwrap(),
+            AbiParam::new("owner", parse_abi_type("address").unwrap()).unwrap(),
+            AbiParam::new("label", parse_abi_type("string").unwrap()).unwrap(),
+            AbiParam::new("data", parse_abi_type("bytes").unwrap()).unwrap(),
+        ];
+        let values = [
+            DecodedValue::Uint(U256::from(42)),
+            DecodedValue::Int(I256::try_from(-7).unwrap()),
+            DecodedValue::Bool(true),
+            DecodedValue::Address(Address::repeat_byte(1)),
+            DecodedValue::String("hello".into()),
+            DecodedValue::Bytes(vec![0xde, 0xad]),
+        ];
+        let stored = bson_params(&schema, &values).unwrap();
+        assert!(matches!(stored.get("data"), Some(Bson::Binary(_))));
+        assert_eq!(
+            bson_params_to_json(stored).unwrap(),
+            serde_json::json!({
+                "uint": "42",
+                "int": "-7",
+                "flag": true,
+                "owner": format!("{:#x}", Address::repeat_byte(1)),
+                "label": "hello",
+                "data": "0xdead"
+            })
+        );
+    }
+
+    #[test]
+    fn declares_unique_identity_and_query_order_indexes() {
+        let indexes = indexes();
+        assert_eq!(indexes.len(), 8);
+        let names = indexes
+            .iter()
+            .map(|(_, index)| index.options.as_ref().unwrap().name.as_deref().unwrap())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"monitors_target"));
+        assert!(names.contains(&"results_call_identity"));
+        assert!(names.contains(&"results_event_identity"));
+        assert!(names.contains(&"results_call_order"));
+        assert!(names.contains(&"results_event_order"));
+        assert_eq!(
+            result_query(7, "call").unwrap(),
+            (
+                doc! { "monitor_id": 7_i64, "kind": "call" },
+                doc! { "block_number": -1, "tx_hash": -1 }
+            )
+        );
+        assert_eq!(
+            result_query(8, "event").unwrap().1,
+            doc! { "block_number": -1, "log_index": -1 }
+        );
+        assert!(result_query(7, "unknown").is_err());
+    }
+
+    #[test]
+    fn accepts_only_transaction_capable_topologies() {
+        assert!(supports_transactions(&doc! { "setName": "rs0" }));
+        assert!(supports_transactions(&doc! { "msg": "isdbgrid" }));
+        assert!(!supports_transactions(&doc! { "isWritablePrimary": true }));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose --profile mongodb up -d`"]
+    async fn compose_crud_uniqueness_transactions_ordering_pagination_and_cascades() {
+        let url: Url = std::env::var("MONGODB_TEST_URL")
+            .unwrap_or_else(|_| "mongodb://localhost:27017/?replicaSet=rs0".into())
+            .parse()
+            .unwrap();
+        let database = format!(
+            "parseon_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        );
+        let storage = MongoStorage::connect(&url, &database).await.unwrap();
+        let chain = Chain::new(8453);
+        let rpc_url: Url = "http://localhost:4000/main/evm/8453".parse().unwrap();
+        storage
+            .create_chain(NewChain { chain, rpc_url: rpc_url.clone(), enabled: true })
+            .await
+            .unwrap();
+        assert!(
+            storage
+                .create_chain(NewChain { chain, rpc_url: rpc_url.clone(), enabled: true })
+                .await
+                .is_err()
+        );
+        assert_eq!(storage.list_chains().await.unwrap().len(), 1);
+        assert!(
+            !storage
+                .update_chain(chain, ChainUpdate { rpc_url: None, enabled: Some(false) })
+                .await
+                .unwrap()
+                .enabled
+        );
+
+        let target = Target::Call(CallTarget {
+            address: Address::repeat_byte(1),
+            selector: Selector::repeat_byte(2),
+            inputs: Vec::new(),
+        });
+        let input = NewMonitor {
+            chain,
+            target: target.clone(),
+            start_block: 10,
+            end_block: None,
+            filter: None,
+        };
+        let monitor = storage.create_monitor(input.clone()).await.unwrap();
+        assert_eq!(monitor.id.get(), 1);
+        assert!(storage.create_monitor(input).await.is_err());
+        let event = storage
+            .create_monitor(NewMonitor {
+                chain,
+                target: Target::Event(EventTarget {
+                    address: Address::repeat_byte(3),
+                    topic0: B256::repeat_byte(4),
+                    params: Vec::new(),
+                }),
+                start_block: 10,
+                end_block: None,
+                filter: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(event.id.get(), 2, "failed monitor transactions must roll back counters");
+
+        let runtime_monitor = storage
+            .load_monitors(chain)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == monitor.id)
+            .unwrap();
+        let call = |hash: u8, block_number| {
+            DecodedResult::Call(DecodedCall {
+                monitor_id: monitor.id,
+                block_number,
+                transaction: ExecutedTransaction {
+                    transaction: BlockTransaction {
+                        hash: B256::repeat_byte(hash),
+                        from: Address::repeat_byte(5),
+                        to: Address::repeat_byte(1),
+                        input: vec![2; 4],
+                    },
+                    succeeded: true,
+                },
+                params: Vec::new(),
+            })
+        };
+        for (hash, block_number) in [(1, 10), (2, 11), (3, 12)] {
+            storage
+                .commit_block(BlockCommit {
+                    chain,
+                    block_number,
+                    monitors: vec![runtime_monitor.clone()],
+                    results: vec![call(hash, block_number)],
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(storage.get_monitor(monitor.id).await.unwrap().cursor, Some(12));
+        assert!(
+            storage
+                .commit_block(BlockCommit {
+                    chain,
+                    block_number: 13,
+                    monitors: vec![runtime_monitor.clone()],
+                    results: vec![call(3, 12)],
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            storage.get_monitor(monitor.id).await.unwrap().cursor,
+            Some(12),
+            "duplicate result must roll back cursor advancement"
+        );
+        let page = storage
+            .query_results(&monitor, ResultQuery { limit: PageLimit::new(1), offset: 1 })
+            .await
+            .unwrap();
+        assert!(matches!(page.as_slice(), [ResultRecord::Call { block_number: 11, .. }]));
+        assert!(
+            storage
+                .commit_block(BlockCommit {
+                    chain: Chain::new(1),
+                    block_number: 13,
+                    monitors: vec![runtime_monitor.clone()],
+                    results: Vec::new(),
+                })
+                .await
+                .is_err()
+        );
+
+        let deleting = storage.clone();
+        let committing = storage.clone();
+        let runtime = runtime_monitor.clone();
+        let (deleted, committed) = tokio::join!(
+            deleting.delete_monitor(monitor.id),
+            committing.commit_block(BlockCommit {
+                chain,
+                block_number: 13,
+                monitors: vec![runtime],
+                results: vec![call(4, 13)],
+            })
+        );
+        deleted.unwrap();
+        drop(committed);
+        assert_eq!(
+            storage
+                .results()
+                .count_documents(doc! { "monitor_id": i64::try_from(monitor.id.get()).unwrap() })
+                .await
+                .unwrap(),
+            0
+        );
+
+        let runtime_event = storage
+            .load_monitors(chain)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == event.id)
+            .unwrap();
+        storage
+            .commit_block(BlockCommit {
+                chain,
+                block_number: 14,
+                monitors: vec![runtime_event],
+                results: [1, 2]
+                    .into_iter()
+                    .map(|log_index| {
+                        DecodedResult::Event(DecodedEvent {
+                            monitor_id: event.id,
+                            block_number: 14,
+                            transaction_hash: B256::repeat_byte(9),
+                            log_index,
+                            params: Vec::new(),
+                        })
+                    })
+                    .collect(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            storage
+                .query_results(&event, ResultQuery { limit: PageLimit::new(1), offset: 0 })
+                .await
+                .unwrap()
+                .as_slice(),
+            [ResultRecord::Event { log_index: 2, .. }]
+        ));
+        assert_eq!(storage.results().count_documents(doc! {}).await.unwrap(), 2);
+        storage.delete_chain(chain).await.unwrap();
+        assert_eq!(storage.count_monitors().await.unwrap(), 0);
+        assert_eq!(storage.results().count_documents(doc! {}).await.unwrap(), 0);
+        storage.database.drop().await.unwrap();
+    }
+}

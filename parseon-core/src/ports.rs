@@ -2,11 +2,12 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::abi::AbiParam;
 use super::filter::FilterDefinition;
 use super::monitor::Monitor;
 use super::{
-    BlockNumber, BlockTransaction, Chain, ChainId, DecodedResult, ExecutedTransaction, MonitorId,
-    SourceBlock, SourceLog, Target, TxHash, Url,
+    BlockNumber, BlockTransaction, Chain, ChainId, DecodedResult, DecodedValue,
+    ExecutedTransaction, MonitorId, SourceBlock, SourceLog, Target, TxHash, Url,
 };
 use alloy::primitives::{Address, B256};
 use chrono::{DateTime, Utc};
@@ -131,6 +132,136 @@ pub trait ResultRepository: Send + Sync {
     ) -> anyhow::Result<Vec<ResultRecord>>;
 }
 
+pub trait Storage:
+    IndexStorage + ChainRepository + MonitorRepository + ResultRepository + Send + Sync
+{
+}
+
+impl<T> Storage for T where
+    T: IndexStorage + ChainRepository + MonitorRepository + ResultRepository + Send + Sync
+{
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SinkBatch {
+    pub version: u8,
+    pub chain_id: ChainId,
+    pub block_number: BlockNumber,
+    pub results: Vec<SinkResult>,
+}
+
+impl SinkBatch {
+    pub fn new(
+        chain: Chain,
+        block_number: BlockNumber,
+        monitors: &[Monitor],
+        results: &[DecodedResult],
+    ) -> anyhow::Result<Option<Self>> {
+        if results.is_empty() {
+            return Ok(None);
+        }
+        let monitors = monitors
+            .iter()
+            .map(|monitor| (monitor.id, monitor))
+            .collect::<std::collections::HashMap<_, _>>();
+        let results = results
+            .iter()
+            .map(|result| match result {
+                DecodedResult::Call(call) => {
+                    let monitor = monitors.get(&call.monitor_id).ok_or_else(|| {
+                        anyhow::anyhow!("result references unknown monitor {}", call.monitor_id)
+                    })?;
+                    let Target::Call(target) = &monitor.target else {
+                        anyhow::bail!("call result references event monitor")
+                    };
+                    Ok(SinkResult::Call {
+                        monitor_id: call.monitor_id.get(),
+                        tx_hash: call.transaction.transaction.hash,
+                        from: call.transaction.transaction.from,
+                        to: call.transaction.transaction.to,
+                        params: canonical_params(&target.inputs, &call.params)?,
+                    })
+                }
+                DecodedResult::Event(event) => {
+                    let monitor = monitors.get(&event.monitor_id).ok_or_else(|| {
+                        anyhow::anyhow!("result references unknown monitor {}", event.monitor_id)
+                    })?;
+                    let Target::Event(target) = &monitor.target else {
+                        anyhow::bail!("event result references call monitor")
+                    };
+                    Ok(SinkResult::Event {
+                        monitor_id: event.monitor_id.get(),
+                        tx_hash: event.transaction_hash,
+                        emitter: target.address,
+                        log_index: event.log_index,
+                        params: canonical_params(&target.params, &event.params)?,
+                    })
+                }
+            })
+            .collect::<anyhow::Result<_>>()?;
+        Ok(Some(Self { version: 1, chain_id: chain.id, block_number, results }))
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SinkResult {
+    Call {
+        monitor_id: u64,
+        tx_hash: TxHash,
+        from: Address,
+        to: Address,
+        params: serde_json::Value,
+    },
+    Event {
+        monitor_id: u64,
+        tx_hash: TxHash,
+        emitter: Address,
+        log_index: u64,
+        params: serde_json::Value,
+    },
+}
+
+pub fn canonical_params(
+    schema: &[AbiParam],
+    values: &[DecodedValue],
+) -> anyhow::Result<serde_json::Value> {
+    anyhow::ensure!(schema.len() == values.len(), "parameter count mismatch");
+    Ok(serde_json::Value::Object(
+        schema
+            .iter()
+            .zip(values)
+            .map(|(param, value)| {
+                let value = match value {
+                    DecodedValue::Uint(value) => serde_json::Value::String(value.to_string()),
+                    DecodedValue::Int(value) => serde_json::Value::String(value.to_string()),
+                    DecodedValue::Bool(value) => serde_json::Value::Bool(*value),
+                    DecodedValue::Address(value) => {
+                        serde_json::Value::String(format!("{value:#x}"))
+                    }
+                    DecodedValue::String(value) => serde_json::Value::String(value.clone()),
+                    DecodedValue::Bytes(value) => {
+                        serde_json::Value::String(format!("0x{}", alloy::hex::encode(value)))
+                    }
+                };
+                (param.name.clone(), value)
+            })
+            .collect(),
+    ))
+}
+
+pub trait Sink: Send + Sync {
+    fn submit(&self, batch: SinkBatch);
+    fn shutdown(&self) {}
+}
+
+#[derive(Default)]
+pub struct NoopSink;
+
+impl Sink for NoopSink {
+    fn submit(&self, _: SinkBatch) {}
+}
+
 pub trait BlockSourceFactory: Send + Sync {
     fn connect(&self, rpc_url: &Url) -> anyhow::Result<Arc<dyn BlockSource>>;
 }
@@ -226,5 +357,51 @@ impl Telemetry for NoopTelemetry {
     fn adjust_in_flight(&self, _: ChainId, _: &'static str, _: i64) {}
     fn render(&self) -> anyhow::Result<String> {
         Ok(String::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy::primitives::{I256, U256};
+
+    use super::*;
+    use crate::abi::parse_abi_type;
+
+    #[test]
+    fn canonically_encodes_every_scalar_parameter_kind() {
+        let param = |name, ty| AbiParam::new(name, parse_abi_type(ty).unwrap()).unwrap();
+        let schema = [
+            param("uint", "uint256"),
+            param("int", "int256"),
+            param("flag", "bool"),
+            param("owner", "address"),
+            param("label", "string"),
+            param("data", "bytes"),
+        ];
+        let values = [
+            DecodedValue::Uint(U256::from(42)),
+            DecodedValue::Int(I256::try_from(-7).unwrap()),
+            DecodedValue::Bool(true),
+            DecodedValue::Address(Address::repeat_byte(1)),
+            DecodedValue::String("hello".into()),
+            DecodedValue::Bytes(vec![0xde, 0xad]),
+        ];
+        assert_eq!(
+            canonical_params(&schema, &values).unwrap(),
+            serde_json::json!({
+                "uint": "42",
+                "int": "-7",
+                "flag": true,
+                "owner": format!("{:#x}", Address::repeat_byte(1)),
+                "label": "hello",
+                "data": "0xdead"
+            })
+        );
+        assert!(canonical_params(&schema, &values[..5]).is_err());
+    }
+
+    #[test]
+    fn suppresses_empty_sink_batches() {
+        assert!(SinkBatch::new(Chain::new(1), 10, &[], &[]).unwrap().is_none());
     }
 }

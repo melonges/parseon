@@ -7,6 +7,12 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["postgres-storage"]
+postgres-storage = ["dep:parseon-postgres"]
+mongodb-storage = ["dep:parseon-mongodb"]
+webhook-sink = ["dep:parseon-webhook-sink"]
+
 [[bin]]
 name = "parseon"
 path = "src/main.rs"
@@ -14,8 +20,10 @@ path = "src/main.rs"
 [dependencies]
 parseon-core = { path = "../parseon-core" }
 parseon-memory-cache = { path = "../parseon-memory-cache" }
-parseon-postgres = { path = "../parseon-postgres" }
+parseon-mongodb = { path = "../parseon-mongodb", optional = true }
+parseon-postgres = { path = "../parseon-postgres", optional = true }
 parseon-rpc = { path = "../parseon-rpc" }
+parseon-webhook-sink = { path = "../parseon-webhook-sink", optional = true }
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -35,5 +43,6 @@ dotenvy = "0.15"
 prometheus-client = "0.23"
 
 [dev-dependencies]
+parseon-postgres = { path = "../parseon-postgres" }
 sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "tls-rustls"] }
 tower = { version = "0.5", features = ["util"] }

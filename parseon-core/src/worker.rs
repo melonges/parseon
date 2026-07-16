@@ -7,7 +7,10 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::indexer;
-use super::ports::{BlockCache, BlockCommit, BlockSource, InFlightGuard, IndexStorage, Telemetry};
+use super::ports::{
+    BlockCache, BlockCommit, BlockSource, InFlightGuard, IndexStorage, Sink, SinkBatch, Storage,
+    Telemetry,
+};
 use super::status::ChainStatus;
 use super::{BlockNumber, Chain, Cursor, DecodedResult, MonitorId, Target, scheduler};
 
@@ -25,10 +28,11 @@ pub struct WorkerConfig {
 )]
 pub async fn run(
     config: WorkerConfig,
-    storage: Arc<dyn IndexStorage>,
+    storage: Arc<dyn Storage>,
     source: Arc<dyn BlockSource>,
     cache: Arc<dyn BlockCache>,
-    db_writes: Arc<Semaphore>,
+    storage_writes: Arc<Semaphore>,
+    sink: Arc<dyn Sink>,
     telemetry: Arc<dyn Telemetry>,
     status: ChainStatus,
     cancel: CancellationToken,
@@ -43,7 +47,8 @@ pub async fn run(
             storage.as_ref(),
             source.as_ref(),
             cache.as_ref(),
-            db_writes.as_ref(),
+            storage_writes.as_ref(),
+            sink.as_ref(),
             telemetry.as_ref(),
             &cancel,
         )
@@ -88,7 +93,8 @@ pub async fn run_once(
     storage: &dyn IndexStorage,
     source: &dyn BlockSource,
     cache: &dyn BlockCache,
-    db_writes: &Semaphore,
+    storage_writes: &Semaphore,
+    sink: &dyn Sink,
     telemetry: &dyn Telemetry,
     cancel: &CancellationToken,
 ) -> anyhow::Result<PollResult> {
@@ -152,8 +158,14 @@ pub async fn run_once(
             .filter(|result| matches!(result, DecodedResult::Call(_)))
             .count() as u64;
         let events = prepared.results.len() as u64 - calls;
-        let permit = db_writes.acquire().await?;
-        let _in_flight = InFlightGuard::new(telemetry, config.chain.id, "db");
+        let batch = SinkBatch::new(
+            config.chain,
+            prepared.block_number,
+            &prepared.monitors,
+            &prepared.results,
+        )?;
+        let permit = storage_writes.acquire().await?;
+        let _in_flight = InFlightGuard::new(telemetry, config.chain.id, "storage");
         let started = std::time::Instant::now();
         let result = storage
             .commit_block(BlockCommit {
@@ -174,6 +186,9 @@ pub async fn run_once(
                     started.elapsed(),
                 );
                 decoded += count;
+                if let Some(batch) = batch {
+                    sink.submit(batch);
+                }
                 for monitor_id in prepared.monitor_ids {
                     progress.insert(monitor_id, Some(prepared.block_number));
                 }
@@ -317,12 +332,25 @@ mod tests {
     use super::*;
     use crate::filter::Filter;
     use crate::monitor::Monitor;
-    use crate::ports::{BlockCache, BlockCommit, BlockSource, IndexStorage, NoopTelemetry};
+    use crate::ports::{
+        BlockCache, BlockCommit, BlockSource, IndexStorage, NoopSink, NoopTelemetry,
+    };
     use crate::{BlockTransaction, CallTarget, Cursor, ExecutedTransaction, SourceBlock, Target};
 
     struct FakeStorage {
         monitor: Monitor,
         commits: Mutex<Vec<BlockCommit>>,
+    }
+
+    struct RejectingStorage(Monitor);
+
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<SinkBatch>>);
+
+    impl Sink for RecordingSink {
+        fn submit(&self, batch: SinkBatch) {
+            self.0.lock().unwrap().push(batch);
+        }
     }
 
     #[async_trait]
@@ -335,6 +363,17 @@ mod tests {
             let count = commit.results.len();
             self.commits.lock().unwrap().push(commit);
             Ok(count)
+        }
+    }
+
+    #[async_trait]
+    impl IndexStorage for RejectingStorage {
+        async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>> {
+            Ok((self.0.chain == chain).then(|| self.0.clone()).into_iter().collect())
+        }
+
+        async fn commit_block(&self, _: BlockCommit) -> anyhow::Result<usize> {
+            anyhow::bail!("storage commit failed")
         }
     }
 
@@ -455,7 +494,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .extend(transactions.iter().map(|transaction| transaction.hash));
-            Ok(Vec::new())
+            Ok(transactions
+                .iter()
+                .cloned()
+                .map(|transaction| ExecutedTransaction { transaction, succeeded: true })
+                .collect())
         }
     }
 
@@ -549,14 +592,15 @@ mod tests {
             block_concurrency: NonZeroUsize::new(1).unwrap(),
             poll_interval: Duration::from_millis(100),
         };
-        let db_writes = Semaphore::new(1);
+        let storage_writes = Semaphore::new(1);
         let telemetry = NoopTelemetry;
         let poll = run_once(
             &config,
             &storage,
             &FakeSource,
             &FakeCache::default(),
-            &db_writes,
+            &storage_writes,
+            &NoopSink,
             &telemetry,
             &CancellationToken::new(),
         )
@@ -605,6 +649,7 @@ mod tests {
             &source,
             &FakeCache::default(),
             &Semaphore::new(1),
+            &NoopSink,
             &NoopTelemetry,
             &CancellationToken::new(),
         )
@@ -612,6 +657,65 @@ mod tests {
         .unwrap();
 
         assert_eq!(*source.candidates.lock().unwrap(), [B256::repeat_byte(1)]);
+    }
+
+    #[tokio::test]
+    async fn submits_non_empty_batches_only_after_successful_commit() {
+        let monitor = Monitor {
+            id: MonitorId::new(7).unwrap(),
+            chain: Chain::new(1),
+            target: Target::Call(CallTarget {
+                address: Address::ZERO,
+                selector: [1, 2, 3, 4].into(),
+                inputs: Vec::new(),
+            }),
+            start_block: 10,
+            end_block: None,
+            cursor: Cursor(None),
+            completed: false,
+            enabled: true,
+            filter: Filter::All,
+        };
+        let config = WorkerConfig {
+            chain: Chain::new(1),
+            batch_size: NonZeroU64::new(1).unwrap(),
+            block_concurrency: NonZeroUsize::new(1).unwrap(),
+            poll_interval: Duration::from_millis(100),
+        };
+        let sink = RecordingSink::default();
+        let storage = FakeStorage { monitor: monitor.clone(), commits: Mutex::new(Vec::new()) };
+        run_once(
+            &config,
+            &storage,
+            &CandidateSource::default(),
+            &FakeCache::default(),
+            &Semaphore::new(1),
+            &sink,
+            &NoopTelemetry,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(storage.commits.lock().unwrap().len(), 1);
+        assert_eq!(sink.0.lock().unwrap().len(), 1);
+        assert_eq!(sink.0.lock().unwrap()[0].results.len(), 1);
+
+        let sink = RecordingSink::default();
+        assert!(
+            run_once(
+                &config,
+                &RejectingStorage(monitor),
+                &CandidateSource::default(),
+                &FakeCache::default(),
+                &Semaphore::new(1),
+                &sink,
+                &NoopTelemetry,
+                &CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(sink.0.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -640,7 +744,7 @@ mod tests {
             block_concurrency: NonZeroUsize::new(1).unwrap(),
             poll_interval: Duration::from_millis(100),
         };
-        let db_writes = Semaphore::new(1);
+        let storage_writes = Semaphore::new(1);
         let telemetry = NoopTelemetry;
 
         let poll = run_once(
@@ -648,7 +752,8 @@ mod tests {
             &storage,
             &FakeSource,
             &FakeCache::default(),
-            &db_writes,
+            &storage_writes,
+            &NoopSink,
             &telemetry,
             &CancellationToken::new(),
         )
@@ -686,7 +791,7 @@ mod tests {
             block_concurrency: NonZeroUsize::new(1).unwrap(),
             poll_interval: Duration::from_millis(100),
         };
-        let db_writes = Semaphore::new(1);
+        let storage_writes = Semaphore::new(1);
         let telemetry = NoopTelemetry;
 
         let poll = run_once(
@@ -694,7 +799,8 @@ mod tests {
             &storage,
             &FakeSource,
             &FakeCache::default(),
-            &db_writes,
+            &storage_writes,
+            &NoopSink,
             &telemetry,
             &CancellationToken::new(),
         )
@@ -707,7 +813,8 @@ mod tests {
             &storage,
             &UnsupportedFinalizedSource,
             &FakeCache::default(),
-            &db_writes,
+            &storage_writes,
+            &NoopSink,
             &telemetry,
             &CancellationToken::new(),
         )
@@ -755,6 +862,7 @@ mod tests {
             &source,
             &FakeCache::default(),
             &Semaphore::new(1),
+            &NoopSink,
             &NoopTelemetry,
             &CancellationToken::new(),
         )
@@ -806,6 +914,7 @@ mod tests {
             &source,
             &FakeCache::default(),
             &Semaphore::new(1),
+            &NoopSink,
             &NoopTelemetry,
             &CancellationToken::new(),
         )

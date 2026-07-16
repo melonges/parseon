@@ -340,6 +340,14 @@ mod tests {
     use super::*;
     use parseon_core::filter::Filter;
     use parseon_core::monitor::Monitor;
+    use parseon_core::ports::Storage;
+
+    fn assert_storage<T: Storage>() {}
+
+    #[test]
+    fn implements_unified_storage_port() {
+        assert_storage::<PostgresStorage>();
+    }
 
     fn monitor(chain_id: u64) -> Monitor {
         Monitor {

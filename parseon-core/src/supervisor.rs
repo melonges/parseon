@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::ports::{
-    BlockCacheFactory, BlockSource, BlockSourceFactory, IndexStorage, RegisteredChain, Telemetry,
+    BlockCacheFactory, BlockSource, BlockSourceFactory, RegisteredChain, Sink, Storage, Telemetry,
 };
 use super::status::{ChainStatus, RuntimeStatus};
 use super::worker::{self, WorkerConfig};
@@ -19,7 +19,7 @@ pub struct SupervisorConfig {
     pub batch_size: NonZeroU64,
     pub poll_interval: Duration,
     pub block_concurrency: NonZeroUsize,
-    pub db_write_concurrency: NonZeroUsize,
+    pub storage_write_concurrency: NonZeroUsize,
 }
 
 struct WorkerRuntime {
@@ -30,12 +30,13 @@ struct WorkerRuntime {
 pub struct Supervisor {
     config: SupervisorConfig,
     chains: Vec<RegisteredChain>,
-    storage: Arc<dyn IndexStorage>,
+    storage: Arc<dyn Storage>,
+    sink: Arc<dyn Sink>,
     source_factory: Arc<dyn BlockSourceFactory>,
     cache_factory: Arc<dyn BlockCacheFactory>,
     statuses: RuntimeStatus,
     telemetry: Arc<dyn Telemetry>,
-    db_writes: Arc<Semaphore>,
+    storage_writes: Arc<Semaphore>,
     workers: HashMap<ChainId, WorkerRuntime>,
 }
 
@@ -43,22 +44,24 @@ impl Supervisor {
     pub fn new(
         config: SupervisorConfig,
         chains: Vec<RegisteredChain>,
-        storage: Arc<dyn IndexStorage>,
+        storage: Arc<dyn Storage>,
+        sink: Arc<dyn Sink>,
         source_factory: Arc<dyn BlockSourceFactory>,
         cache_factory: Arc<dyn BlockCacheFactory>,
         statuses: RuntimeStatus,
         telemetry: Arc<dyn Telemetry>,
     ) -> Self {
-        let db_write_concurrency = config.db_write_concurrency.get();
+        let storage_write_concurrency = config.storage_write_concurrency.get();
         Self {
             config,
             chains,
             storage,
+            sink,
             source_factory,
             cache_factory,
             statuses,
             telemetry,
-            db_writes: Arc::new(Semaphore::new(db_write_concurrency)),
+            storage_writes: Arc::new(Semaphore::new(storage_write_concurrency)),
             workers: HashMap::new(),
         }
     }
@@ -121,7 +124,8 @@ impl Supervisor {
             self.storage.clone(),
             source,
             self.cache_factory.create(),
-            self.db_writes.clone(),
+            self.storage_writes.clone(),
+            self.sink.clone(),
             self.telemetry.clone(),
             status,
             cancel.clone(),

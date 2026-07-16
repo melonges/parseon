@@ -3,9 +3,13 @@
 ## Build & test
 
 - `rtk cargo fmt --all -- --check` — verify the repository's stable Rustfmt policy.
-- `rtk cargo clippy -q --workspace --all-targets --all-features --message-format=short -- -D warnings` — enforce workspace Rust and Clippy lints.
-- `rtk cargo test -q --workspace --all-features --message-format=short` — unit and HTTP router tests; fast, no services needed.
-- `rtk cargo build -q --release --message-format=short` — release binary at `target/release/parseon`.
+- `rtk cargo clippy -q --workspace --all-targets --no-default-features --features postgres-storage --message-format=short -- -D warnings`
+- `rtk cargo clippy -q --workspace --all-targets --no-default-features --features postgres-storage,webhook-sink --message-format=short -- -D warnings`
+- `rtk cargo clippy -q --workspace --all-targets --no-default-features --features mongodb-storage --message-format=short -- -D warnings`
+- `rtk cargo clippy -q --workspace --all-targets --no-default-features --features mongodb-storage,webhook-sink --message-format=short -- -D warnings`
+- Run the same four feature combinations with `rtk cargo test -q --workspace ... --message-format=short` for service-free unit, webhook, and HTTP router tests.
+- Build `parseon-server` in release mode with the same four feature combinations; the binary is `target/release/parseon`.
+- `rtk cargo test -p parseon-mongodb compose_crud -- --ignored --nocapture` — optional MongoDB replica-set integration coverage after starting its Compose profile.
 - Agents may run all verification commands. Prefer Cargo's `-q` flag to suppress successful compilation progress while preserving diagnostics and test failures.
 - No CI exists; run format, lint, and test checks before handing off code changes.
 
@@ -37,19 +41,21 @@
 
 ## Running Parseon
 
-1. `docker compose up -d` — starts PostgreSQL 16 on `localhost:5432`.
+1. `docker compose up -d` — starts PostgreSQL 16 on `localhost:5432`; `docker compose --profile mongodb --profile erpc up -d` also starts the MongoDB replica set and eRPC gateway.
 2. `cp .env.example .env` — `.env` is gitignored; loaded via `dotenvy` + clap env vars.
-3. Run the Parseon app on the host. Its default `DATABASE_URL` connects to the
+3. Run the Parseon app on the host. Its default `STORAGE_URL` connects to the
    Compose PostgreSQL instance.
 4. Register RPC endpoints with `POST /chains`. Parseon discovers and stores each endpoint's chain ID.
 5. Restart Parseon after chain registry changes; workers load the registry once at process startup.
 
 PostgreSQL data is retained in the `pgdata` named volume. Check database logs
 with `docker compose logs -f postgres`. The Dockerfile remains available for
-building a standalone production image with `docker build -t parseon .`.
+building a standalone production image with `docker build -t parseon .`. Select
+other adapters with `--build-arg PARSEON_FEATURES=mongodb-storage,webhook-sink`.
 
-Default `HTTP_LISTEN=0.0.0.0:8080` and `DATABASE_MAX_CONNECTIONS=16`. Override the listen
-address if the port is taken (e.g. `HTTP_LISTEN=0.0.0.0:8081`).
+Default `HTTP_LISTEN=0.0.0.0:8080`. Override the listen address if the port is
+taken (e.g. `HTTP_LISTEN=0.0.0.0:8081`). Both storage drivers use pool defaults.
+MongoDB builds accept `STORAGE_DATABASE=parseon`; webhook builds require `WEBHOOK_URL`.
 
 Swagger UI is served at `/swagger-ui/`; the generated OpenAPI document is at
 `/api-docs/openapi.json`.
@@ -58,6 +64,8 @@ Prometheus-compatible metrics are served at `/metrics`.
 The chain API validates each RPC endpoint's chain ID and `finalized` tag before
 registration. The supervisor runs one finalized-only worker per enabled chain.
 Base's public endpoint is rate-limited; register a private endpoint for sustained workloads.
+Complete eRPC routes such as `http://localhost:4000/main/evm/8453` are registered
+through the same API. See `docs/adapters.md`.
 
 ### sqlx migrations are embedded at compile time
 
@@ -105,13 +113,17 @@ parseon-server
 ├── parseon-core
 ├── parseon-rpc ──────────> parseon-core
 ├── parseon-postgres ─────> parseon-core
-└── parseon-memory-cache ─> parseon-core
+├── parseon-mongodb ──────> parseon-core
+├── parseon-memory-cache ─> parseon-core
+└── parseon-webhook-sink ─> parseon-core
 ```
 
 - `parseon-core`: domain models, ABI decoding, commands, views, application services, workers, supervisor, and ports.
 - `parseon-rpc`: Alloy JSON-RPC `BlockSource` adapter, receipt batching, and log fetching.
 - `parseon-postgres`: SQLx repositories, dynamic result tables, migrations, and atomic block commits.
+- `parseon-mongodb`: transactional MongoDB repositories, shared results collection, BSON conversion, and indexes.
 - `parseon-memory-cache`: chain-aware LRU `BlockCache` and per-worker factory.
+- `parseon-webhook-sink`: optional post-commit, best-effort webhook delivery.
 - `parseon-server`: grouped CLI/env configuration, Axum/OpenAPI, Prometheus telemetry, and dependency wiring.
 
 Core must not depend on the server or any adapter crate. HTTP handlers call core application services and serialize core-derived views; adapters implement core ports.
@@ -124,11 +136,13 @@ Core must not depend on the server or any adapter crate. HTTP handlers call core
 - **Database-backed monitor state**: The worker reloads monitors each poll; no in-memory registry can retain stale cursors.
 - **Immutable monitor definitions**: A monitor's chain, target, block range, and filter are fixed at creation. Only `enabled` is user-mutable for pause/resume; workers own cursor and completion state.
 - **`poll_interval_ms` is a global config param** (env `POLL_INTERVAL_MS`). `batch_size` is global (env `DEFAULT_BATCH_SIZE`).
-- **Bounded indexing**: `BLOCK_CONCURRENCY` and `RPC_REQUEST_CONCURRENCY` apply per chain; `DB_WRITE_CONCURRENCY` limits atomic commits across the process; `RPC_BATCH_SIZE` controls targeted receipt batches.
+- **Bounded indexing**: `BLOCK_CONCURRENCY` and `RPC_REQUEST_CONCURRENCY` apply per chain; `STORAGE_WRITE_CONCURRENCY` limits atomic commits across the process; `RPC_BATCH_SIZE` controls targeted receipt batches.
 - **Chain-scoped monitors**: Each monitor belongs to one immutable registered chain; identical targets may exist on different chains.
 - **Per-monitor dynamic tables**: each monitor gets a `monitor_<id>_results` table containing minimal result identity and decoded ABI parameter columns. PostgreSQL column names and types are derived inside `parseon-postgres/src/dyn_table.rs`; they are not part of the core ABI model.
 - **Monitors use a surrogate `BIGSERIAL id`** for REST endpoints (`/monitors/{id}`) and result-table names.
-- **Atomic block persistence**: decoded call/event rows and all covering monitor cursors commit in one PostgreSQL transaction.
+- **Atomic block persistence**: decoded call/event rows and all covering monitor cursors commit in one selected-storage transaction.
+- **Selected storage**: exactly one of `postgres-storage` or `mongodb-storage` is compiled; PostgreSQL is the default.
+- **Post-commit sinks**: workers commit results and cursors before submitting non-empty batches; sink failure cannot rewind or fail committed indexing work.
 
 ## Roadmap
 

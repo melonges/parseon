@@ -60,7 +60,7 @@ struct Inner {
     rpc_duration: Family<RpcDurationLabels, Histogram>,
     blocks_committed: Family<ChainLabels, Counter>,
     results_committed: Family<ResultLabels, Counter>,
-    db_commit_duration: Family<OutcomeLabels, Histogram>,
+    storage_commit_duration: Family<OutcomeLabels, Histogram>,
     worker_lag: Family<ChainLabels, Gauge>,
     in_flight: Family<StageLabels, Gauge>,
     cache_access: Family<CacheLabels, Counter>,
@@ -81,7 +81,7 @@ impl Default for Metrics {
         let rpc_duration = Family::new_with_constructor(histogram as fn() -> Histogram);
         let blocks_committed = Family::default();
         let results_committed = Family::default();
-        let db_commit_duration = Family::new_with_constructor(histogram as fn() -> Histogram);
+        let storage_commit_duration = Family::new_with_constructor(histogram as fn() -> Histogram);
         let worker_lag = Family::default();
         let in_flight = Family::default();
         let cache_access = Family::default();
@@ -108,9 +108,9 @@ impl Default for Metrics {
             results_committed.clone(),
         );
         registry.register(
-            "parseon_db_commit_duration_seconds",
+            "parseon_storage_commit_duration_seconds",
             "Atomic block commit duration in seconds.",
-            db_commit_duration.clone(),
+            storage_commit_duration.clone(),
         );
         registry.register(
             "parseon_worker_lag_blocks",
@@ -135,7 +135,7 @@ impl Default for Metrics {
                 rpc_duration,
                 blocks_committed,
                 results_committed,
-                db_commit_duration,
+                storage_commit_duration,
                 worker_lag,
                 in_flight,
                 cache_access,
@@ -197,7 +197,7 @@ impl Telemetry for Metrics {
         elapsed: Duration,
     ) {
         self.inner
-            .db_commit_duration
+            .storage_commit_duration
             .get_or_create(&OutcomeLabels { chain_id: chain_id.to_string(), outcome })
             .observe(elapsed.as_secs_f64());
         if outcome != "success" {
@@ -251,11 +251,14 @@ mod tests {
         metrics.record_cache(8453, true);
         metrics.record_commit(8453, 2, 1, "success", Duration::from_millis(1));
         metrics.set_worker_lag(8453, 7);
+        metrics.adjust_in_flight(8453, "storage", 1);
 
         let output = metrics.render().unwrap();
         assert!(output.contains("parseon_rpc_operations_total"));
         assert!(output.contains("chain_id=\"8453\""));
         assert!(output.contains("strategy=\"batch\""));
+        assert!(output.contains("parseon_storage_commit_duration_seconds"));
+        assert!(output.contains("stage=\"storage\""));
         assert!(!output.contains("rpc_url"));
     }
 }

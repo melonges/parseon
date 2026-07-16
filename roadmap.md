@@ -13,7 +13,9 @@ parseon-server
 ├── parseon-core
 ├── parseon-rpc ──────────> parseon-core
 ├── parseon-postgres ─────> parseon-core
-└── parseon-memory-cache ─> parseon-core
+├── parseon-mongodb ──────> parseon-core
+├── parseon-memory-cache ─> parseon-core
+└── parseon-webhook-sink ─> parseon-core
 ```
 
 The core logic should stay independent from a specific database, block source, cache backend, or API surface. Adapters should customize how Parseon reads chain data, stores decoded results, and caches fetched blocks without changing the indexing logic itself.
@@ -21,11 +23,11 @@ The core logic should stay independent from a specific database, block source, c
 The stable adapter boundaries are:
 
 ```text
-IndexStorage / repository ports -> PostgreSQL implementation first
+Storage / repository ports      -> PostgreSQL or MongoDB implementation
 BlockSource port              -> JSON-RPC implementation first
 BlockCache port               -> in-memory implementation first
 Telemetry port                -> Prometheus implementation in the server
-Sink port                     -> optional later
+Sink port                     -> optional webhook implementation
 ```
 
 Core never depends on Axum, SQLx, Reqwest, Prometheus, the server, or adapter crates. Handlers invoke application services and return core-derived views. The production binary remains `parseon`.
@@ -132,16 +134,19 @@ stage while reusing the versioned source-to-typed-IR boundary introduced here.
 
 Expand the ecosystem around the core after internal traits are stable.
 
-- Add Redis block cache adapter.
-- Add eRPC block source adapter for multi-provider routing, failover, and RPC caching.
-- Add MongoDB storage adapter for document-oriented decoded results.
-- Add webhook sink adapter.
-- Reevaluate whether any adapter should become a separate crate based on dependency weight and reuse.
+Status: implemented in v0.8.0.
+
+- Add a compile-time MongoDB storage adapter for document-oriented decoded results.
+- Add a compile-time best-effort webhook sink adapter.
+- Support full per-chain eRPC gateway URLs through the existing JSON-RPC adapter and chain API.
+- Include development Compose profiles for a MongoDB replica set and public-discovery eRPC gateway.
+- Keep the in-memory block cache unconditional.
 
 ## v0.9 — Optional adapters II
 
 Continue expanding the adapter ecosystem.
 
+- Add a Redis block cache adapter.
 - Add indexed-data adapters for services such as Etherscan, Blockscout, Alchemy, and Moralis, with room for providers such as QuickNode and GoldRush as demand proves useful.
 - Use address- and contract-oriented APIs for faster historical backfills, fallback reads, ABI discovery, and metadata enrichment while keeping direct JSON-RPC as the canonical chain and finality source.
 - Evaluate provider-specific ERC-20 and ERC-721 transfer APIs as optimized sources for transfer monitors; their indexed transfer results can avoid scanning unrelated blocks, transactions, receipts, and logs, reducing indexing latency and JSON-RPC traffic.
@@ -203,8 +208,8 @@ Make Parseon reliable to operate as infrastructure.
 ## Current priorities
 
 1. Optimize parallel indexing.
-2. Add optional adapters only after the core traits are stable.
+2. Add Redis block caching and further optional adapters after the v0.8 boundaries settle.
 3. Build richer APIs for management and querying.
 4. Evolve the filter language only after the JSON AST is proven in production.
-5. Reevaluate adapter crates during v0.8 based on dependency weight and reuse.
+5. Keep external gateways behind complete registered JSON-RPC URLs unless they require a distinct core source contract.
 6. Add provisional indexing and rollback only as a coherent v0.12 feature.

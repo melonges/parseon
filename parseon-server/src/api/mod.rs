@@ -76,7 +76,7 @@ mod tests {
         let sources = std::sync::Arc::new(JsonRpcBlockSourceFactory::default());
         router(AppState::new(
             ChainService::new(storage.clone(), sources.clone()),
-            MonitorService::new(storage.clone(), storage.clone(), storage, sources),
+            MonitorService::new(storage, sources),
             statuses,
             std::sync::Arc::new(crate::metrics::Metrics::default()),
         ))

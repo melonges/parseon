@@ -3,9 +3,14 @@ mod config;
 mod error;
 mod metrics;
 
+#[cfg(all(feature = "postgres-storage", feature = "mongodb-storage"))]
+compile_error!("enable exactly one of `postgres-storage` or `mongodb-storage`");
+#[cfg(not(any(feature = "postgres-storage", feature = "mongodb-storage")))]
+compile_error!("enable exactly one of `postgres-storage` or `mongodb-storage`");
+
 use std::sync::Arc;
 
-use parseon_core::ports::ChainRepository;
+use parseon_core::ports::{NoopSink, Sink, Storage};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -25,14 +30,28 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("starting parseon");
 
-    // Database.
-    let pool = parseon_postgres::pool::connect(
-        &config.database.database_url,
-        config.database.max_connections,
-    )
-    .await?;
-    let storage = Arc::new(parseon_postgres::PostgresStorage::new(pool));
+    // Storage.
+    #[cfg(feature = "postgres-storage")]
+    let storage: Arc<dyn Storage> = Arc::new(parseon_postgres::PostgresStorage::new(
+        parseon_postgres::pool::connect(&config.storage.storage_url).await?,
+    ));
+    #[cfg(feature = "mongodb-storage")]
+    let storage: Arc<dyn Storage> = Arc::new(
+        parseon_mongodb::MongoStorage::connect(
+            &config.storage.storage_url,
+            &config.storage.storage_database,
+        )
+        .await?,
+    );
     let registered_chains = storage.list_registered_chains().await?;
+
+    #[cfg(feature = "webhook-sink")]
+    let sink: Arc<dyn Sink> = Arc::new(parseon_webhook_sink::WebhookSink::new(
+        config.webhook.url.clone(),
+        config.webhook.concurrency,
+    )?);
+    #[cfg(not(feature = "webhook-sink"))]
+    let sink: Arc<dyn Sink> = Arc::new(NoopSink);
 
     // Cancellation token shared by the supervisor and API.
     let cancel = CancellationToken::new();
@@ -40,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
         batch_size: config.indexing.default_batch_size,
         poll_interval: config.indexing.poll_interval,
         block_concurrency: config.indexing.block_concurrency,
-        db_write_concurrency: config.indexing.db_write_concurrency,
+        storage_write_concurrency: config.indexing.storage_write_concurrency,
     };
     let telemetry = Arc::new(metrics::Metrics::default());
     let source_factory = Arc::new(parseon_rpc::JsonRpcBlockSourceFactory::new(
@@ -52,12 +71,8 @@ async fn main() -> anyhow::Result<()> {
     ));
     let runtime_status = parseon_core::status::RuntimeStatus::default();
     let chains = parseon_core::services::ChainService::new(storage.clone(), source_factory.clone());
-    let monitors = parseon_core::services::MonitorService::new(
-        storage.clone(),
-        storage.clone(),
-        storage.clone(),
-        source_factory.clone(),
-    );
+    let monitors =
+        parseon_core::services::MonitorService::new(storage.clone(), source_factory.clone());
 
     // Runs one isolated worker per chain enabled in the startup registry snapshot.
     let supervisor_handle = tokio::spawn({
@@ -66,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
             supervisor_config,
             registered_chains,
             storage.clone(),
+            sink.clone(),
             source_factory.clone(),
             Arc::new(parseon_memory_cache::MemoryBlockCacheFactory::new(
                 config.indexing.block_cache_size,
@@ -102,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("shutting down");
     cancel.cancel();
+    sink.shutdown();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     tracing::info!("bye");
     Ok(())

@@ -4,19 +4,28 @@ All notable changes to Parseon are documented in this file.
 
 ## Unreleased
 
+## 0.8.0 - 2026-07-14
+
 ### Added
 
-- Configurable process-wide PostgreSQL pool capacity through `DATABASE_MAX_CONNECTIONS`.
+- Compile-time MongoDB storage with retryable transactions, shared document results, canonical API encoding, idempotent indexes, and replica-set enforcement.
+- Optional best-effort webhook delivery for non-empty post-commit result batches.
+- Docker Compose profiles for a persistent MongoDB development replica set and an eRPC gateway with public discovery and finalized-response memory caching.
+- Adapter build, deployment, smoke-check, and webhook contract documentation.
 
 ### Changed
 
 - Split optional adapter work across v0.8 and v0.9 and shift later roadmap milestones accordingly.
 - Load the worker chain registry once at process startup; chain additions, endpoint updates, and enablement changes affect workers after restart.
 - Delete chain data immediately while retiring its in-memory worker and status after restart.
+- Select exactly one unified storage implementation at compile time while keeping the in-memory block cache unconditional.
+- Accept complete eRPC per-chain routes through the unchanged JSON-RPC chain API instead of adding a redundant Rust source adapter.
+- Use driver-default PostgreSQL and MongoDB connection pools.
 
 ### Breaking
 
 - Return `202 Accepted` from chain create, update, and delete endpoints to signal restart-delayed worker changes.
+- Rename `DATABASE_URL` to `STORAGE_URL`, `DB_WRITE_CONCURRENCY` to `STORAGE_WRITE_CONCURRENCY`, the database commit metric to `parseon_storage_commit_duration_seconds`, and the in-flight `db` stage to `storage` without compatibility aliases.
 
 ## 0.7.1 - 2026-07-13
 

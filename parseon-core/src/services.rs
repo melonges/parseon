@@ -6,10 +6,7 @@ use anyhow::Context;
 use crate::abi::{TargetSpec, parse_target_signature};
 use crate::commands::{CreateChain, CreateMonitor, PreviewFilter, ResultQuery, UpdateChain};
 use crate::filter::{self, FilterDefinition, FilterPreview};
-use crate::ports::{
-    BlockSourceFactory, ChainRepository, ChainUpdate, MonitorRepository, NewChain, NewMonitor,
-    ResultRepository,
-};
+use crate::ports::{BlockSourceFactory, ChainUpdate, NewChain, NewMonitor, Storage};
 use crate::views::{ChainView, MonitorResultView, MonitorView};
 use crate::{CallTarget, Chain, ChainId, EventTarget, MonitorId, Target, Url, worker};
 
@@ -34,13 +31,13 @@ pub fn is_invalid_command(error: &anyhow::Error) -> bool {
 
 #[derive(Clone)]
 pub struct ChainService {
-    repository: Arc<dyn ChainRepository>,
+    storage: Arc<dyn Storage>,
     sources: Arc<dyn BlockSourceFactory>,
 }
 
 impl ChainService {
-    pub fn new(repository: Arc<dyn ChainRepository>, sources: Arc<dyn BlockSourceFactory>) -> Self {
-        Self { repository, sources }
+    pub fn new(storage: Arc<dyn Storage>, sources: Arc<dyn BlockSourceFactory>) -> Self {
+        Self { storage, sources }
     }
 
     async fn validate_source(
@@ -64,7 +61,7 @@ impl ChainService {
 
     pub async fn create(&self, command: CreateChain) -> anyhow::Result<ChainView> {
         let chain = self.validate_source(&command.rpc_url, None).await?;
-        self.repository
+        self.storage
             .create_chain(NewChain { chain, rpc_url: command.rpc_url, enabled: command.enabled })
             .await
             .context("create chain")
@@ -73,7 +70,7 @@ impl ChainService {
 
     pub async fn list(&self) -> anyhow::Result<Vec<ChainView>> {
         Ok(self
-            .repository
+            .storage
             .list_chains()
             .await
             .context("list chains")?
@@ -84,7 +81,7 @@ impl ChainService {
 
     pub async fn get(&self, chain_id: ChainId) -> anyhow::Result<ChainView> {
         let chain = Chain::new(chain_id);
-        self.repository.get_chain(chain).await.context("get chain").map(Into::into)
+        self.storage.get_chain(chain).await.context("get chain").map(Into::into)
     }
 
     pub async fn update(
@@ -96,11 +93,11 @@ impl ChainService {
             return Err(invalid("at least one of rpc_url or enabled is required"));
         }
         let chain = Chain::new(chain_id);
-        self.repository.get_chain(chain).await.context("get chain before update")?;
+        self.storage.get_chain(chain).await.context("get chain before update")?;
         if let Some(url) = command.rpc_url.as_ref() {
             self.validate_source(url, Some(chain)).await?;
         }
-        self.repository
+        self.storage
             .update_chain(chain, ChainUpdate { rpc_url: command.rpc_url, enabled: command.enabled })
             .await
             .context("update chain")
@@ -109,35 +106,28 @@ impl ChainService {
 
     pub async fn delete(&self, chain_id: ChainId) -> anyhow::Result<()> {
         let chain = Chain::new(chain_id);
-        self.repository.delete_chain(chain).await.context("delete chain")
+        self.storage.delete_chain(chain).await.context("delete chain")
     }
 }
 
 #[derive(Clone)]
 pub struct MonitorService {
-    chains: Arc<dyn ChainRepository>,
-    monitors: Arc<dyn MonitorRepository>,
-    results: Arc<dyn ResultRepository>,
+    storage: Arc<dyn Storage>,
     sources: Arc<dyn BlockSourceFactory>,
 }
 
 impl MonitorService {
-    pub fn new(
-        chains: Arc<dyn ChainRepository>,
-        monitors: Arc<dyn MonitorRepository>,
-        results: Arc<dyn ResultRepository>,
-        sources: Arc<dyn BlockSourceFactory>,
-    ) -> Self {
-        Self { chains, monitors, results, sources }
+    pub fn new(storage: Arc<dyn Storage>, sources: Arc<dyn BlockSourceFactory>) -> Self {
+        Self { storage, sources }
     }
 
     pub async fn count(&self) -> anyhow::Result<usize> {
-        self.monitors.count_monitors().await.context("count monitors")
+        self.storage.count_monitors().await.context("count monitors")
     }
 
     pub async fn create(&self, command: CreateMonitor) -> anyhow::Result<MonitorView> {
         let chain = Chain::new(command.chain_id);
-        let registered = self.chains.get_chain(chain).await.context("get monitor chain")?;
+        let registered = self.storage.get_chain(chain).await.context("get monitor chain")?;
         let start_block = match command.start_block {
             Some(block) => block,
             None => self
@@ -168,7 +158,7 @@ impl MonitorService {
             .map(|expression| FilterDefinition::prepare(expression, &target).map(|value| value.0))
             .transpose()
             .map_err(|error| invalid(error.to_string()))?;
-        self.monitors
+        self.storage
             .create_monitor(NewMonitor {
                 chain,
                 target,
@@ -184,7 +174,7 @@ impl MonitorService {
     pub async fn list(&self, chain_id: Option<ChainId>) -> anyhow::Result<Vec<MonitorView>> {
         let chain = chain_id.map(Chain::new);
         Ok(self
-            .monitors
+            .storage
             .list_monitors(chain)
             .await
             .context("list monitors")?
@@ -194,11 +184,11 @@ impl MonitorService {
     }
 
     pub async fn get(&self, id: MonitorId) -> anyhow::Result<MonitorView> {
-        self.monitors.get_monitor(id).await.context("get monitor").map(Into::into)
+        self.storage.get_monitor(id).await.context("get monitor").map(Into::into)
     }
 
     pub async fn set_enabled(&self, id: MonitorId, enabled: bool) -> anyhow::Result<MonitorView> {
-        self.monitors
+        self.storage
             .set_monitor_enabled(id, enabled)
             .await
             .context("set monitor enabled state")
@@ -206,7 +196,7 @@ impl MonitorService {
     }
 
     pub async fn delete(&self, id: MonitorId) -> anyhow::Result<()> {
-        self.monitors.delete_monitor(id).await.context("delete monitor")
+        self.storage.delete_monitor(id).await.context("delete monitor")
     }
 
     pub async fn results(
@@ -214,10 +204,9 @@ impl MonitorService {
         id: MonitorId,
         query: ResultQuery,
     ) -> anyhow::Result<Vec<MonitorResultView>> {
-        let monitor =
-            self.monitors.get_monitor(id).await.context("get monitor for result query")?;
+        let monitor = self.storage.get_monitor(id).await.context("get monitor for result query")?;
         Ok(self
-            .results
+            .storage
             .query_results(&monitor, query)
             .await
             .context("query monitor results")?

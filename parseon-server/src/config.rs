@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 use clap::{Args, Parser};
@@ -9,23 +9,27 @@ use parseon_core::Url;
 #[command(name = "parseon", about = "Parseon — EVM indexer with runtime ABI decoding")]
 pub(crate) struct Config {
     #[command(flatten)]
-    pub database: DatabaseConfig,
+    pub storage: StorageConfig,
     #[command(flatten)]
     pub server: ServerConfig,
     #[command(flatten)]
     pub indexing: IndexingConfig,
     #[command(flatten)]
     pub rpc: RpcConfig,
+    #[cfg(feature = "webhook-sink")]
+    #[command(flatten)]
+    pub webhook: WebhookConfig,
 }
 
 #[derive(Debug, Clone, Args)]
-pub(crate) struct DatabaseConfig {
-    /// PostgreSQL connection string
-    #[arg(long, env = "DATABASE_URL")]
-    pub database_url: Url,
-    /// Maximum PostgreSQL connections in the process-wide pool
-    #[arg(long, env = "DATABASE_MAX_CONNECTIONS", default_value = "16")]
-    pub max_connections: NonZeroU32,
+pub(crate) struct StorageConfig {
+    /// Selected storage adapter connection string
+    #[arg(long, env = "STORAGE_URL")]
+    pub storage_url: Url,
+    /// MongoDB database name
+    #[cfg(feature = "mongodb-storage")]
+    #[arg(long, env = "STORAGE_DATABASE", default_value = "parseon")]
+    pub storage_database: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -52,9 +56,20 @@ pub(crate) struct IndexingConfig {
     /// Blocks prepared concurrently by each chain worker
     #[arg(long, env = "BLOCK_CONCURRENCY", default_value = "4")]
     pub block_concurrency: NonZeroUsize,
-    /// Maximum concurrent atomic database commits across all chains
-    #[arg(long, env = "DB_WRITE_CONCURRENCY", default_value = "4")]
-    pub db_write_concurrency: NonZeroUsize,
+    /// Maximum concurrent atomic storage commits across all chains
+    #[arg(long, env = "STORAGE_WRITE_CONCURRENCY", default_value = "4")]
+    pub storage_write_concurrency: NonZeroUsize,
+}
+
+#[cfg(feature = "webhook-sink")]
+#[derive(Debug, Clone, Args)]
+pub(crate) struct WebhookConfig {
+    /// Destination for best-effort post-commit result batches
+    #[arg(long = "webhook-url", env = "WEBHOOK_URL")]
+    pub url: Url,
+    /// Maximum in-flight webhook attempts before new batches are dropped
+    #[arg(long = "webhook-concurrency", env = "WEBHOOK_CONCURRENCY", default_value = "16")]
+    pub concurrency: NonZeroUsize,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -100,18 +115,38 @@ mod tests {
     }
 
     #[test]
-    fn validates_database_pool_size() {
-        let args = ["parseon", "--database-url", "postgres://localhost/parseon"];
-        assert_eq!(Config::try_parse_from(args).unwrap().database.max_connections.get(), 16);
-        assert!(
-            Config::try_parse_from([
-                "parseon",
-                "--database-url",
-                "postgres://localhost/parseon",
-                "--database-max-connections",
-                "0",
-            ])
-            .is_err()
+    fn accepts_storage_url() {
+        let mut args = vec!["parseon", "--storage-url", "postgres://localhost/parseon"];
+        #[cfg(feature = "webhook-sink")]
+        args.extend(["--webhook-url", "http://localhost/hook"]);
+        assert_eq!(
+            Config::try_parse_from(args).unwrap().storage.storage_url.as_str(),
+            "postgres://localhost/parseon"
         );
+    }
+
+    #[test]
+    fn rejects_removed_database_configuration_names() {
+        let mut args = vec![
+            "parseon",
+            "--storage-url",
+            "postgres://localhost/parseon",
+            "--database-url",
+            "postgres://localhost/legacy",
+        ];
+        #[cfg(feature = "webhook-sink")]
+        args.extend(["--webhook-url", "http://localhost/hook"]);
+        assert!(Config::try_parse_from(args).is_err());
+
+        let mut args = vec![
+            "parseon",
+            "--storage-url",
+            "postgres://localhost/parseon",
+            "--db-write-concurrency",
+            "1",
+        ];
+        #[cfg(feature = "webhook-sink")]
+        args.extend(["--webhook-url", "http://localhost/hook"]);
+        assert!(Config::try_parse_from(args).is_err());
     }
 }

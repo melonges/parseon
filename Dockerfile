@@ -14,23 +14,26 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # ---- development: cached debug dependencies + hot reload ----
 FROM chef AS development
+ARG PARSEON_FEATURES=postgres-storage
+ENV PARSEON_FEATURES=${PARSEON_FEATURES}
 RUN apk add --no-cache watchexec
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --recipe-path recipe.json
+RUN cargo chef cook --recipe-path recipe.json --no-default-features --features "${PARSEON_FEATURES}"
 COPY . .
 EXPOSE 8080
-CMD ["watchexec", "--restart", "--stop-signal", "SIGINT", "--exts", "rs,toml,lock,sql", "--", "cargo", "run"]
+CMD ["sh", "-c", "exec watchexec --restart --stop-signal SIGINT --exts rs,toml,lock,sql -- cargo run --no-default-features --features \"${PARSEON_FEATURES}\""]
 
 # ---- builder: pre-build deps, then the real binary ----
 FROM chef AS builder
+ARG PARSEON_FEATURES=postgres-storage
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo chef cook --release --recipe-path recipe.json
+    cargo chef cook --release --recipe-path recipe.json --no-default-features --features "${PARSEON_FEATURES}"
 COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release && \
+    cargo build --release --no-default-features --features "${PARSEON_FEATURES}" && \
     cp /app/target/release/parseon /usr/local/bin/parseon
 
 # ---- runtime: minimal alpine, non-root, healthcheck ----

@@ -1,0 +1,17 @@
+logLevel: info
+
+metrics:
+  enabled: true
+  port: 4001
+
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: memory
+        driver: memory
+    policies:
+      - connector: memory
+        finality: finalized
+
+projects:
+  - id: main

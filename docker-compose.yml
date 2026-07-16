@@ -15,5 +15,47 @@ services:
       timeout: 3s
       retries: 10
 
+  mongodb:
+    profiles: ["mongodb"]
+    image: mongo:8
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mongodb-init:
+    profiles: ["mongodb"]
+    image: mongo:8
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: "no"
+    command:
+      - mongosh
+      - mongodb://mongodb:27017/admin
+      - --quiet
+      - --eval
+      - >-
+        try { rs.status() } catch (error) {
+          rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]})
+        }
+
+  erpc:
+    profiles: ["erpc"]
+    image: ghcr.io/erpc/erpc:latest
+    command: ["--config", "/root/erpc.yaml"]
+    ports:
+      - "4000:4000"
+      - "4001:4001"
+    volumes:
+      - ./erpc.yaml:/root/erpc.yaml:ro
+
 volumes:
   pgdata:
+  mongodata:
