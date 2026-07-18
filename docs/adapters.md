@@ -37,6 +37,16 @@ cargo test -p parseon-mongodb compose_crud -- --ignored --nocapture
 
 Use `STORAGE_URL=mongodb://localhost:27017/?replicaSet=rs0`. There is intentionally no PostgreSQL importer, dual-write mode, or cross-storage migration path.
 
+## JSON-RPC block source
+
+The Alloy adapter requests full transaction objects and rejects a block response when its number differs from the request or the endpoint returns hashes instead of full transactions. Call monitors request receipts only for transactions that match an indexed address and selector. Receipt outcomes must remain in the requested hash order; Parseon validates that invariant before decoding.
+
+For larger candidate sets, Parseon tries `eth_getBlockReceipts`, then JSON-RPC batches, then bounded individual receipt calls. An endpoint capability is cached as unsupported only when the RPC response identifies an incompatible method, parameters, or batch envelope. Authentication, transport, timeout, and rate-limit failures stop the poll without fanning out into more requests.
+
+Event monitors use inclusive `eth_getLogs` ranges across each contiguous worker window. Address and topic pairs remain exact: Parseon groups compatible pairs into independent filters and executes those groups within `RPC_REQUEST_CONCURRENCY`. When a provider reports a range or result-size limit, the adapter bisects the range and retries each half. A limit on a single block is terminal because splitting cannot make that query smaller. Successful results are sorted by block and log index before core decoding.
+
+`RPC_REQUEST_CONCURRENCY` applies to every physical request, including split log queries and receipt fallbacks. RPC transport details are omitted from runtime status and logs so registered write-only endpoint URLs and credentials are not exposed.
+
 ## eRPC gateway
 
 eRPC is an external JSON-RPC gateway, not a Rust `BlockSource` adapter. Start the included development gateway with:
