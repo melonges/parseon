@@ -8,7 +8,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-alloy = { version = "2.1", default-features = false, features = ["std", "dyn-abi", "json-abi", "sol-types", "transports"] }
+alloy = { version = "2.1", default-features = false, features = ["std", "dyn-abi", "json-abi", "sol-types"] }
 anyhow = "1.0"
 async-trait = "0.1"
 chrono = "0.4"

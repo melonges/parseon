@@ -3535,11 +3535,14 @@ name = "parseon-rpc"
 version = "0.8.0"
 dependencies = [
  "alloy",
+ "alloy-json-rpc",
  "alloy-rpc-types-any",
  "anyhow",
  "async-trait",
  "futures-util",
  "parseon-core",
+ "serde_json",
+ "thiserror",
  "tokio",
  "tracing",
 ]

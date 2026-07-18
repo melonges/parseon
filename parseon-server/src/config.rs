@@ -104,6 +104,17 @@ mod tests {
     use clap::Parser;
     use std::time::Duration;
 
+    #[cfg(feature = "webhook-sink")]
+    fn with_webhook(mut args: Vec<&'static str>) -> Vec<&'static str> {
+        args.extend(["--webhook-url", "http://localhost/hook"]);
+        args
+    }
+
+    #[cfg(not(feature = "webhook-sink"))]
+    fn with_webhook(args: Vec<&'static str>) -> Vec<&'static str> {
+        args
+    }
+
     #[test]
     fn poll_interval_is_validated_once() {
         assert_eq!(
@@ -116,9 +127,7 @@ mod tests {
 
     #[test]
     fn accepts_storage_url() {
-        let mut args = vec!["parseon", "--storage-url", "postgres://localhost/parseon"];
-        #[cfg(feature = "webhook-sink")]
-        args.extend(["--webhook-url", "http://localhost/hook"]);
+        let args = with_webhook(vec!["parseon", "--storage-url", "postgres://localhost/parseon"]);
         assert_eq!(
             Config::try_parse_from(args).unwrap().storage.storage_url.as_str(),
             "postgres://localhost/parseon"
@@ -127,40 +136,34 @@ mod tests {
 
     #[test]
     fn accepts_zero_block_cache_size() {
-        let mut args = vec![
+        let args = with_webhook(vec![
             "parseon",
             "--storage-url",
             "postgres://localhost/parseon",
             "--block-cache-size",
             "0",
-        ];
-        #[cfg(feature = "webhook-sink")]
-        args.extend(["--webhook-url", "http://localhost/hook"]);
+        ]);
         assert_eq!(Config::try_parse_from(args).unwrap().indexing.block_cache_size, 0);
     }
 
     #[test]
     fn rejects_removed_database_configuration_names() {
-        let mut args = vec![
+        let args = with_webhook(vec![
             "parseon",
             "--storage-url",
             "postgres://localhost/parseon",
             "--database-url",
             "postgres://localhost/legacy",
-        ];
-        #[cfg(feature = "webhook-sink")]
-        args.extend(["--webhook-url", "http://localhost/hook"]);
+        ]);
         assert!(Config::try_parse_from(args).is_err());
 
-        let mut args = vec![
+        let args = with_webhook(vec![
             "parseon",
             "--storage-url",
             "postgres://localhost/parseon",
             "--db-write-concurrency",
             "1",
-        ];
-        #[cfg(feature = "webhook-sink")]
-        args.extend(["--webhook-url", "http://localhost/hook"]);
+        ]);
         assert!(Config::try_parse_from(args).is_err());
     }
 }

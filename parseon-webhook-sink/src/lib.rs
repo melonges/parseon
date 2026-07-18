@@ -85,6 +85,8 @@ mod tests {
 
     use super::*;
 
+    type CapturedRequests = Arc<Mutex<Vec<(HeaderMap, serde_json::Value)>>>;
+
     fn batch() -> SinkBatch {
         SinkBatch {
             version: 1,
@@ -148,7 +150,7 @@ mod tests {
             .route(
                 "/hook",
                 post(
-                    |State(bodies): State<Arc<Mutex<Vec<(HeaderMap, serde_json::Value)>>>>,
+                    |State(bodies): State<CapturedRequests>,
                      headers: HeaderMap,
                      Json(body)| async move {
                         bodies.lock().await.push((headers, body));

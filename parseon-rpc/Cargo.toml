@@ -16,3 +16,8 @@ async-trait = "0.1"
 futures-util = "0.3"
 tokio = { version = "1.52", features = ["sync"] }
 tracing = "0.1"
+thiserror = "2.0"
+
+[dev-dependencies]
+alloy-json-rpc = "2.1"
+serde_json = "1.0"

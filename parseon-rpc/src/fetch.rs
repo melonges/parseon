@@ -6,10 +6,18 @@ use alloy::providers::Provider;
 use alloy_rpc_types_any::AnyTransactionReceipt;
 use anyhow::Context;
 
-use crate::provider::HttpProvider;
-use alloy::primitives::{Address, B256};
 use alloy::rpc::types::Filter;
-use parseon_core::{BlockTransaction, ExecutedTransaction, SourceBlock, SourceLog};
+use parseon_core::{BlockTransaction, ExecutionOutcome, SourceBlock, SourceLog, TxHash};
+
+use crate::provider::HttpProvider;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum BlockReceiptsResponseError {
+    #[error("block receipts response missing for block {0}")]
+    MissingBlock(u64),
+    #[error("block receipts response is missing transaction {0}")]
+    MissingTransaction(TxHash),
+}
 
 /// Fetch and cache the transaction fields needed for monitor matching.
 pub(crate) async fn fetch_block(
@@ -21,15 +29,23 @@ pub(crate) async fn fetch_block(
         .kind(BlockTransactionsKind::Full)
         .await?
         .with_context(|| format!("block {block_number} not found"))?;
+    anyhow::ensure!(
+        block.header().number == block_number,
+        "block source returned block {} for request {block_number}",
+        block.header().number
+    );
+    let transactions = block
+        .try_into_transactions()
+        .map_err(|_| anyhow::anyhow!("block {block_number} did not contain full transactions"))?;
 
-    let mut out = Vec::new();
-    for tx in block.transactions().txns() {
+    let mut out = Vec::with_capacity(transactions.len());
+    for tx in transactions {
         let Some(to) = tx.to() else { continue };
         out.push(BlockTransaction {
             hash: tx.tx_hash(),
             from: tx.from(),
             to,
-            input: tx.input().to_vec(),
+            input: tx.input().clone(),
         });
     }
 
@@ -38,26 +54,22 @@ pub(crate) async fn fetch_block(
 
 pub(crate) async fn fetch_logs(
     provider: &HttpProvider,
-    block_number: u64,
-    addresses: &[Address],
-    topic0s: &[B256],
+    filter: &Filter,
 ) -> anyhow::Result<Vec<SourceLog>> {
-    let filter = Filter::new()
-        .select(block_number)
-        .address(addresses.to_vec())
-        .event_signature(topic0s.to_vec());
     provider
-        .get_logs(&filter)
+        .get_logs(filter)
         .await?
         .into_iter()
         .map(|log| {
+            let address = log.inner.address;
+            let (topics, data) = log.inner.data.split();
             Ok(SourceLog {
                 block_number: log.block_number,
                 transaction_hash: log.transaction_hash,
                 log_index: log.log_index,
-                address: log.address(),
-                topics: log.topics().to_vec(),
-                data: log.data().data.to_vec(),
+                address,
+                topics,
+                data,
                 removed: log.removed,
             })
         })
@@ -66,38 +78,46 @@ pub(crate) async fn fetch_logs(
 
 pub(crate) async fn fetch_receipt(
     provider: &HttpProvider,
-    tx: &BlockTransaction,
-) -> anyhow::Result<ExecutedTransaction> {
+    transaction_hash: TxHash,
+) -> anyhow::Result<ExecutionOutcome> {
     let receipt = provider
-        .get_transaction_receipt(tx.hash)
+        .get_transaction_receipt(transaction_hash)
         .await?
-        .with_context(|| format!("receipt for {} not found", tx.hash))?;
-    Ok(ExecutedTransaction { transaction: tx.clone(), succeeded: receipt.status() })
+        .with_context(|| format!("receipt for {transaction_hash} not found"))?;
+    anyhow::ensure!(
+        receipt.transaction_hash() == transaction_hash,
+        "receipt response hash does not match request {transaction_hash}"
+    );
+    Ok(ExecutionOutcome { transaction_hash, succeeded: receipt.status() })
 }
 
 pub(crate) async fn fetch_receipt_batch(
     provider: &HttpProvider,
-    txs: &[BlockTransaction],
-) -> anyhow::Result<Vec<ExecutedTransaction>> {
+    transaction_hashes: &[TxHash],
+) -> anyhow::Result<Vec<ExecutionOutcome>> {
     let mut batch = alloy::rpc::client::BatchRequest::new(provider.client());
-    let waiters = txs
+    let waiters = transaction_hashes
         .iter()
-        .map(|tx| {
+        .map(|transaction_hash| {
             batch
                 .add_call::<_, Option<AnyTransactionReceipt>>(
                     "eth_getTransactionReceipt",
-                    &(tx.hash,),
+                    &(*transaction_hash,),
                 )
                 .map_err(anyhow::Error::from)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     batch.send().await?;
 
-    let mut out = Vec::with_capacity(txs.len());
-    for (tx, waiter) in txs.iter().zip(waiters) {
+    let mut out = Vec::with_capacity(transaction_hashes.len());
+    for (transaction_hash, waiter) in transaction_hashes.iter().copied().zip(waiters) {
         let receipt =
-            waiter.await?.with_context(|| format!("receipt for {} not found", tx.hash))?;
-        out.push(ExecutedTransaction { transaction: tx.clone(), succeeded: receipt.status() });
+            waiter.await?.with_context(|| format!("receipt for {transaction_hash} not found"))?;
+        anyhow::ensure!(
+            receipt.transaction_hash() == transaction_hash,
+            "receipt response hash does not match request {transaction_hash}"
+        );
+        out.push(ExecutionOutcome { transaction_hash, succeeded: receipt.status() });
     }
     Ok(out)
 }
@@ -105,22 +125,24 @@ pub(crate) async fn fetch_receipt_batch(
 pub(crate) async fn fetch_block_receipts(
     provider: &HttpProvider,
     block_number: u64,
-    txs: &[BlockTransaction],
-) -> anyhow::Result<Vec<ExecutedTransaction>> {
+    transaction_hashes: &[TxHash],
+) -> anyhow::Result<Vec<ExecutionOutcome>> {
     let receipts = provider
         .get_block_receipts(BlockNumberOrTag::Number(block_number).into())
         .await?
-        .with_context(|| format!("receipts for block {block_number} not found"))?;
+        .ok_or(BlockReceiptsResponseError::MissingBlock(block_number))?;
     let mut statuses = receipts
         .into_iter()
         .map(|receipt| (receipt.transaction_hash(), receipt.status()))
         .collect::<std::collections::HashMap<_, _>>();
-    txs.iter()
-        .map(|tx| {
+    transaction_hashes
+        .iter()
+        .copied()
+        .map(|transaction_hash| {
             let succeeded = statuses
-                .remove(&tx.hash)
-                .with_context(|| format!("receipt for {} not found", tx.hash))?;
-            Ok(ExecutedTransaction { transaction: tx.clone(), succeeded })
+                .remove(&transaction_hash)
+                .ok_or(BlockReceiptsResponseError::MissingTransaction(transaction_hash))?;
+            Ok(ExecutionOutcome { transaction_hash, succeeded })
         })
         .collect()
 }

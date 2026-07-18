@@ -7,6 +7,14 @@ All notable changes to Parseon are documented in this file.
 ### Changed
 
 - Allow operators to disable the per-worker in-memory block cache by setting `BLOCK_CACHE_SIZE=0`.
+- Reuse compiled ABI decoders per monitor snapshot, share cached blocks and monitor definitions, and pass only ordered transaction outcomes through the call-indexing hot path.
+- Fetch exact event targets over contiguous finalized block ranges, adaptively split provider-limited log requests, and run independent exact-target groups concurrently.
+- Fall back between block, batch, and individual receipt strategies only for incompatible endpoint capabilities instead of amplifying transient RPC failures.
+- Cancel startup and polling I/O promptly, finish any atomic commit already in progress, and await every worker before shutting down sinks and the HTTP server.
+
+### Breaking
+
+- Replace the core adapter contracts for executed transactions, per-block log requests, cache ownership, and atomic commits with ordered outcomes, exact ranged log targets, shared immutable blocks, and borrowed commits.
 
 ## 0.8.0 - 2026-07-14
 

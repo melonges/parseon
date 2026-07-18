@@ -6,23 +6,24 @@ use super::abi::AbiParam;
 use super::filter::FilterDefinition;
 use super::monitor::Monitor;
 use super::{
-    BlockNumber, BlockTransaction, Chain, ChainId, DecodedResult, DecodedValue,
-    ExecutedTransaction, MonitorId, SourceBlock, SourceLog, Target, TxHash, Url,
+    BlockNumber, Chain, ChainId, DecodedResult, DecodedValue, ExecutionOutcome, MonitorId,
+    SourceBlock, SourceLog, Target, TxHash, Url,
 };
 use alloy::primitives::{Address, B256};
 use chrono::{DateTime, Utc};
 
+#[derive(Debug, Clone)]
 pub struct BlockCommit {
     pub chain: Chain,
     pub block_number: BlockNumber,
-    pub monitors: Vec<Monitor>,
+    pub monitors: Vec<Arc<Monitor>>,
     pub results: Vec<DecodedResult>,
 }
 
 #[async_trait]
 pub trait IndexStorage: Send + Sync {
     async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>>;
-    async fn commit_block(&self, commit: BlockCommit) -> anyhow::Result<usize>;
+    async fn commit_block(&self, commit: &BlockCommit) -> anyhow::Result<()>;
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -154,7 +155,7 @@ impl SinkBatch {
     pub fn new(
         chain: Chain,
         block_number: BlockNumber,
-        monitors: &[Monitor],
+        monitors: &[Arc<Monitor>],
         results: &[DecodedResult],
     ) -> anyhow::Result<Option<Self>> {
         if results.is_empty() {
@@ -176,9 +177,9 @@ impl SinkBatch {
                     };
                     Ok(SinkResult::Call {
                         monitor_id: call.monitor_id.get(),
-                        tx_hash: call.transaction.transaction.hash,
-                        from: call.transaction.transaction.from,
-                        to: call.transaction.transaction.to,
+                        tx_hash: call.transaction_hash,
+                        from: call.from,
+                        to: call.to,
                         params: canonical_params(&target.inputs, &call.params)?,
                     })
                 }
@@ -251,6 +252,10 @@ pub fn canonical_params(
 }
 
 pub trait Sink: Send + Sync {
+    fn enabled(&self) -> bool {
+        true
+    }
+
     fn submit(&self, batch: SinkBatch);
     fn shutdown(&self) {}
 }
@@ -259,36 +264,130 @@ pub trait Sink: Send + Sync {
 pub struct NoopSink;
 
 impl Sink for NoopSink {
+    fn enabled(&self) -> bool {
+        false
+    }
+
     fn submit(&self, _: SinkBatch) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// An inclusive, non-empty range of finalized EVM block numbers.
+pub struct BlockRange {
+    start: BlockNumber,
+    end: BlockNumber,
+}
+
+impl BlockRange {
+    pub const fn new(start: BlockNumber, end: BlockNumber) -> Option<Self> {
+        if start <= end { Some(Self { start, end }) } else { None }
+    }
+
+    pub const fn single(block_number: BlockNumber) -> Self {
+        Self { start: block_number, end: block_number }
+    }
+
+    pub const fn start(self) -> BlockNumber {
+        self.start
+    }
+
+    pub const fn end(self) -> BlockNumber {
+        self.end
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// An exact emitter-address and event-signature pair for an EVM log query.
+pub struct LogTarget {
+    address: Address,
+    topic0: B256,
+}
+
+impl LogTarget {
+    pub const fn new(address: Address, topic0: B256) -> Self {
+        Self { address, topic0 }
+    }
+
+    pub const fn address(self) -> Address {
+        self.address
+    }
+
+    pub const fn topic0(self) -> B256 {
+        self.topic0
+    }
+}
+
+#[derive(Debug, Clone)]
+/// A finalized log request that preserves exact monitor target pairs.
+pub struct LogQuery {
+    range: BlockRange,
+    targets: Vec<LogTarget>,
+}
+
+impl LogQuery {
+    pub fn new(range: BlockRange, mut targets: Vec<LogTarget>) -> Self {
+        targets.sort_unstable();
+        targets.dedup();
+        Self { range, targets }
+    }
+
+    pub const fn range(&self) -> BlockRange {
+        self.range
+    }
+
+    pub fn targets(&self) -> &[LogTarget] {
+        &self.targets
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
+    pub fn into_parts(self) -> (BlockRange, Vec<LogTarget>) {
+        (self.range, self.targets)
+    }
 }
 
 pub trait BlockSourceFactory: Send + Sync {
     fn connect(&self, rpc_url: &Url) -> anyhow::Result<Arc<dyn BlockSource>>;
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("block source request failed")]
+pub struct BlockSourceRequestError {
+    #[source]
+    source: anyhow::Error,
+}
+
+impl BlockSourceRequestError {
+    pub fn new(source: anyhow::Error) -> Self {
+        Self { source }
+    }
+}
+
 #[async_trait]
+/// Finalized EVM data required by the indexing application.
+///
+/// Implementations must return the exact requested block, complete full transaction data, and one
+/// execution outcome per requested transaction hash in the same order. Log results must cover only
+/// the inclusive query range and exact [`LogTarget`] pairs; result order is not significant.
 pub trait BlockSource: Send + Sync {
     async fn chain_id(&self) -> anyhow::Result<u64>;
     async fn finalized_head(&self) -> anyhow::Result<BlockNumber>;
     async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock>;
-    async fn fetch_executed_transactions(
+    async fn fetch_execution_outcomes(
         &self,
-        block: &SourceBlock,
-        transactions: &[BlockTransaction],
-    ) -> anyhow::Result<Vec<ExecutedTransaction>>;
-    async fn fetch_logs(
-        &self,
-        _block_number: BlockNumber,
-        _addresses: &[Address],
-        _topic0s: &[B256],
-    ) -> anyhow::Result<Vec<SourceLog>> {
+        block_number: BlockNumber,
+        transaction_hashes: &[TxHash],
+    ) -> anyhow::Result<Vec<ExecutionOutcome>>;
+    async fn fetch_logs(&self, _query: LogQuery) -> anyhow::Result<Vec<SourceLog>> {
         anyhow::bail!("log fetching is not implemented")
     }
 }
 
 pub trait BlockCache: Send + Sync {
-    fn get(&self, chain: Chain, block_number: BlockNumber) -> Option<SourceBlock>;
-    fn put(&self, chain: Chain, block: SourceBlock);
+    fn get(&self, chain: Chain, block_number: BlockNumber) -> Option<Arc<SourceBlock>>;
+    fn put(&self, chain: Chain, block: Arc<SourceBlock>);
     fn evict_before(&self, chain: Chain, block_number: BlockNumber);
 }
 

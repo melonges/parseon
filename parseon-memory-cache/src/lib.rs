@@ -7,7 +7,7 @@ use parseon_core::ports::{BlockCache, BlockCacheFactory};
 use parseon_core::{BlockNumber, Chain, ChainId, SourceBlock};
 
 pub struct MemoryBlockCache {
-    inner: Cache<(ChainId, BlockNumber), SourceBlock>,
+    inner: Cache<(ChainId, BlockNumber), Arc<SourceBlock>>,
 }
 
 impl MemoryBlockCache {
@@ -23,11 +23,11 @@ impl MemoryBlockCache {
 }
 
 impl BlockCache for MemoryBlockCache {
-    fn get(&self, chain: Chain, block_number: BlockNumber) -> Option<SourceBlock> {
+    fn get(&self, chain: Chain, block_number: BlockNumber) -> Option<Arc<SourceBlock>> {
         self.inner.get(&(chain.id, block_number))
     }
 
-    fn put(&self, chain: Chain, block: SourceBlock) {
+    fn put(&self, chain: Chain, block: Arc<SourceBlock>) {
         self.inner.insert((chain.id, block.number), block);
     }
 
@@ -60,11 +60,11 @@ impl BlockCacheFactory for MemoryBlockCacheFactory {
 struct DisabledBlockCache;
 
 impl BlockCache for DisabledBlockCache {
-    fn get(&self, _chain: Chain, _block_number: BlockNumber) -> Option<SourceBlock> {
+    fn get(&self, _chain: Chain, _block_number: BlockNumber) -> Option<Arc<SourceBlock>> {
         None
     }
 
-    fn put(&self, _chain: Chain, _block: SourceBlock) {}
+    fn put(&self, _chain: Chain, _block: Arc<SourceBlock>) {}
 
     fn evict_before(&self, _chain: Chain, _block_number: BlockNumber) {}
 }
@@ -75,8 +75,20 @@ mod tests {
 
     use super::*;
 
-    fn block(number: BlockNumber) -> SourceBlock {
-        SourceBlock { number, transactions: Vec::new() }
+    fn block(number: BlockNumber) -> Arc<SourceBlock> {
+        Arc::new(SourceBlock { number, transactions: Vec::new() })
+    }
+
+    #[test]
+    fn returns_the_cached_block_allocation() {
+        let cache = MemoryBlockCache::new(NonZeroUsize::new(1).unwrap());
+        let chain = Chain::new(1);
+        let block = block(10);
+
+        cache.put(chain, block.clone());
+        let cached = cache.get(chain, block.number).unwrap();
+
+        assert!(Arc::ptr_eq(&block, &cached));
     }
 
     #[test]

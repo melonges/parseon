@@ -119,7 +119,7 @@ impl IndexStorage for PostgresStorage {
         monitor_repo::list(&self.pool, Some(chain.id)).await?.iter().map(Self::to_monitor).collect()
     }
 
-    async fn commit_block(&self, commit: BlockCommit) -> anyhow::Result<usize> {
+    async fn commit_block(&self, commit: &BlockCommit) -> anyhow::Result<()> {
         anyhow::ensure!(
             commit.monitors.iter().all(|monitor| monitor.chain == commit.chain),
             "cross-chain monitor set rejected for chain {}",
@@ -174,7 +174,7 @@ impl IndexStorage for PostgresStorage {
                     })?;
                     anyhow::ensure!(row.kind == "call", "call result references event monitor");
                     calls.entry(call.monitor_id).or_insert_with(Vec::new).push(CallResultInput {
-                        tx_hash: call.transaction.transaction.hash,
+                        tx_hash: call.transaction_hash,
                         block_number: call.block_number,
                         params: &call.params,
                     });
@@ -208,7 +208,7 @@ impl IndexStorage for PostgresStorage {
         }
 
         tx.commit().await?;
-        Ok(commit.results.len())
+        Ok(())
     }
 }
 
@@ -334,6 +334,8 @@ impl ResultRepository for PostgresStorage {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use alloy::primitives::Address;
     use sqlx::postgres::PgPoolOptions;
 
@@ -373,15 +375,13 @@ mod tests {
             .connect_lazy("postgres://postgres:postgres@localhost/parseon")
             .unwrap();
         let storage = PostgresStorage::new(pool);
-        let error = storage
-            .commit_block(BlockCommit {
-                chain: Chain::new(1),
-                block_number: 10,
-                monitors: vec![monitor(2)],
-                results: Vec::new(),
-            })
-            .await
-            .unwrap_err();
+        let commit = BlockCommit {
+            chain: Chain::new(1),
+            block_number: 10,
+            monitors: vec![Arc::new(monitor(2))],
+            results: Vec::new(),
+        };
+        let error = storage.commit_block(&commit).await.unwrap_err();
         assert!(error.to_string().contains("cross-chain monitor set rejected"));
     }
 }

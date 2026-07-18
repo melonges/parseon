@@ -1,23 +1,29 @@
+//! Domain models and application services for finalized EVM indexing.
+//!
+//! Parseon core owns monitor planning, ABI decoding, filtering, ordered block commits, and the
+//! ports implemented by storage, block-source, cache, telemetry, and sink adapters. It does not
+//! construct or depend on concrete infrastructure adapters.
+
 use std::fmt;
 use std::num::NonZeroU64;
 
-pub use alloy::primitives::{Address, B256, BlockNumber, ChainId, Selector, TxHash};
+pub use alloy::primitives::{Address, B256, BlockNumber, Bytes, ChainId, Selector, TxHash};
 use alloy::primitives::{I256, U256};
 pub use url::Url;
 
 pub mod abi;
 pub mod commands;
 pub mod filter;
-pub mod indexer;
+mod indexer;
 pub mod monitor;
 pub mod pipeline;
 pub mod ports;
-pub mod scheduler;
+mod scheduler;
 pub mod services;
 pub mod status;
 pub mod supervisor;
 pub mod views;
-pub mod worker;
+mod worker;
 
 use self::abi::AbiParam;
 
@@ -35,9 +41,13 @@ impl Chain {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MonitorId(NonZeroU64);
 
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("monitor id must be positive")]
+pub struct InvalidMonitorId;
+
 impl MonitorId {
-    pub fn new(id: u64) -> anyhow::Result<Self> {
-        NonZeroU64::new(id).map(Self).ok_or_else(|| anyhow::anyhow!("monitor id must be positive"))
+    pub fn new(id: u64) -> Result<Self, InvalidMonitorId> {
+        NonZeroU64::new(id).map(Self).ok_or(InvalidMonitorId)
     }
 
     pub const fn get(self) -> u64 {
@@ -95,7 +105,7 @@ pub struct BlockTransaction {
     pub hash: B256,
     pub from: Address,
     pub to: Address,
-    pub input: Vec<u8>,
+    pub input: Bytes,
 }
 
 #[derive(Debug, Clone)]
@@ -105,8 +115,8 @@ pub struct SourceBlock {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExecutedTransaction {
-    pub transaction: BlockTransaction,
+pub struct ExecutionOutcome {
+    pub transaction_hash: TxHash,
     pub succeeded: bool,
 }
 
@@ -114,7 +124,9 @@ pub struct ExecutedTransaction {
 pub struct DecodedCall {
     pub monitor_id: MonitorId,
     pub block_number: BlockNumber,
-    pub transaction: ExecutedTransaction,
+    pub transaction_hash: TxHash,
+    pub from: Address,
+    pub to: Address,
     pub params: Vec<DecodedValue>,
 }
 
@@ -125,7 +137,7 @@ pub struct SourceLog {
     pub log_index: Option<u64>,
     pub address: Address,
     pub topics: Vec<B256>,
-    pub data: Vec<u8>,
+    pub data: Bytes,
     pub removed: bool,
 }
 

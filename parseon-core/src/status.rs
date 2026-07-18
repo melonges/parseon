@@ -128,9 +128,9 @@ impl RuntimeStatus {
 fn safe_error_message(error: &anyhow::Error) -> String {
     if error
         .chain()
-        .any(|cause| cause.downcast_ref::<alloy::transports::TransportError>().is_some())
+        .any(|cause| cause.downcast_ref::<crate::ports::BlockSourceRequestError>().is_some())
     {
-        "RPC request failed".to_string()
+        "block source request failed".to_string()
     } else {
         format!("{error:#}")
     }
@@ -164,5 +164,16 @@ mod tests {
         assert_eq!(snapshot.finalized_head, Some(10));
         assert_eq!(snapshot.worker_state, WorkerState::Degraded);
         assert_eq!(snapshot.last_error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn hides_block_source_error_details() {
+        let status = ChainStatus::starting(1, None);
+        let error = anyhow::Error::new(crate::ports::BlockSourceRequestError::new(
+            anyhow::anyhow!("secret endpoint failed"),
+        ));
+
+        assert_eq!(status.record_error(&error), "block source request failed");
+        assert_eq!(status.snapshot().last_error.as_deref(), Some("block source request failed"));
     }
 }

@@ -14,7 +14,7 @@ pub(crate) enum AppError {
 
 impl From<anyhow::Error> for AppError {
     fn from(error: anyhow::Error) -> Self {
-        if parseon_core::services::is_invalid_command(&error) {
+        if error.downcast_ref::<parseon_core::services::InvalidCommand>().is_some() {
             Self::BadRequest(error.to_string())
         } else {
             Self::Internal(error)

@@ -1,24 +1,35 @@
+use std::collections::BTreeMap;
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 use super::BlockNumber;
 use super::monitor::Monitor;
 
-/// Plans deduplicated finalized blocks, capped to `batch_size` per monitor.
-pub fn plan_blocks(
-    monitors: &[&Monitor],
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BlockPlan {
+    pub(crate) block_number: BlockNumber,
+    pub(crate) monitor_indices: Vec<usize>,
+}
+
+/// Plans finalized blocks with their covering monitors, capped to `batch_size` per monitor.
+pub(crate) fn plan_blocks(
+    monitors: &[Arc<Monitor>],
     finalized_head: BlockNumber,
     batch_size: NonZeroU64,
-) -> Vec<BlockNumber> {
-    let mut wanted = Vec::new();
-    for monitor in monitors {
+) -> Vec<BlockPlan> {
+    let mut wanted = BTreeMap::<_, Vec<_>>::new();
+    for (monitor_index, monitor) in monitors.iter().enumerate() {
         let from = monitor.next_block();
         let to = monitor.end_block.unwrap_or(finalized_head).min(finalized_head);
         let to = to.min(from.saturating_add(batch_size.get() - 1));
-        wanted.extend(from..=to);
+        for block_number in from..=to {
+            wanted.entry(block_number).or_default().push(monitor_index);
+        }
     }
-    wanted.sort_unstable();
-    wanted.dedup();
     wanted
+        .into_iter()
+        .map(|(block_number, monitor_indices)| BlockPlan { block_number, monitor_indices })
+        .collect()
 }
 
 #[cfg(test)]
@@ -50,23 +61,34 @@ mod tests {
 
     #[test]
     fn deduplicates_and_bounds_ranges() {
-        let first = monitor(1, 10, None, None);
-        let second = monitor(2, 11, None, Some(12));
+        let first = Arc::new(monitor(1, 10, None, None));
+        let second = Arc::new(monitor(2, 11, None, Some(12)));
         assert_eq!(
-            plan_blocks(&[&first, &second], 20, NonZeroU64::new(3).unwrap()),
-            vec![10, 11, 12]
+            plan_blocks(&[first, second], 20, NonZeroU64::new(3).unwrap()),
+            vec![
+                BlockPlan { block_number: 10, monitor_indices: vec![0] },
+                BlockPlan { block_number: 11, monitor_indices: vec![0, 1] },
+                BlockPlan { block_number: 12, monitor_indices: vec![0, 1] },
+            ]
         );
     }
 
     #[test]
     fn skips_ranges_beyond_head() {
-        let monitor = monitor(1, 20, None, None);
-        assert!(plan_blocks(&[&monitor], 19, NonZeroU64::new(10).unwrap()).is_empty());
+        let monitor = Arc::new(monitor(1, 20, None, None));
+        assert!(plan_blocks(&[monitor], 19, NonZeroU64::new(10).unwrap()).is_empty());
     }
 
     #[test]
     fn stops_at_finalized_head() {
-        let monitor = monitor(1, 10, None, Some(30));
-        assert_eq!(plan_blocks(&[&monitor], 12, NonZeroU64::new(10).unwrap()), vec![10, 11, 12]);
+        let monitor = Arc::new(monitor(1, 10, None, Some(30)));
+        assert_eq!(
+            plan_blocks(&[monitor], 12, NonZeroU64::new(10).unwrap()),
+            vec![
+                BlockPlan { block_number: 10, monitor_indices: vec![0] },
+                BlockPlan { block_number: 11, monitor_indices: vec![0] },
+                BlockPlan { block_number: 12, monitor_indices: vec![0] },
+            ]
+        );
     }
 }

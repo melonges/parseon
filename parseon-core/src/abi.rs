@@ -60,6 +60,75 @@ pub enum AbiError {
     Decode(String),
 }
 
+#[derive(Debug, Clone)]
+/// A reusable ABI decoder for one function's input tuple.
+pub struct CallDecoder {
+    params: DynSolType,
+}
+
+impl CallDecoder {
+    pub fn new(params: &[AbiParam]) -> Self {
+        Self { params: DynSolType::Tuple(params.iter().map(|param| param.ty.clone()).collect()) }
+    }
+
+    pub fn decode(&self, data: &[u8]) -> Result<Vec<DecodedValue>, AbiError> {
+        let decoded = self
+            .params
+            .abi_decode_params(data)
+            .map_err(|error| AbiError::Decode(error.to_string()))?;
+        let values = match decoded {
+            DynSolValue::Tuple(values) => values,
+            single => vec![single],
+        };
+        values.into_iter().map(decode_value).collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+/// A reusable ABI decoder for one non-anonymous event definition.
+pub struct EventDecoder {
+    event: DynSolEvent,
+    indexed: Box<[bool]>,
+}
+
+impl EventDecoder {
+    pub fn new(params: &[AbiParam], topic0: B256) -> Result<Self, AbiError> {
+        let event = DynSolEvent::new(
+            Some(topic0),
+            params.iter().filter(|param| param.indexed).map(|param| param.ty.clone()).collect(),
+            DynSolType::Tuple(
+                params
+                    .iter()
+                    .filter(|param| !param.indexed)
+                    .map(|param| param.ty.clone())
+                    .collect(),
+            ),
+        )
+        .ok_or_else(|| AbiError::Decode("event has too many indexed parameters".into()))?;
+        let indexed = params.iter().map(|param| param.indexed).collect();
+        Ok(Self { event, indexed })
+    }
+
+    pub fn decode(&self, topics: &[B256], data: &[u8]) -> Result<Vec<DecodedValue>, AbiError> {
+        let decoded = self
+            .event
+            .decode_log_parts(topics.iter().copied(), data)
+            .map_err(|error| AbiError::Decode(error.to_string()))?;
+        let mut indexed_values = decoded.indexed.into_iter();
+        let mut body_values = decoded.body.into_iter();
+        self.indexed
+            .iter()
+            .map(|indexed| {
+                decode_value(
+                    if *indexed { indexed_values.next() } else { body_values.next() }.ok_or_else(
+                        || AbiError::Decode("decoded parameter count mismatch".into()),
+                    )?,
+                )
+            })
+            .collect()
+    }
+}
+
 pub fn parse_abi_type(value: &str) -> Result<DynSolType, AbiError> {
     let ty = DynSolType::from_str(value).map_err(|error| AbiError::Type(error.to_string()))?;
     ensure_supported_type(&ty)?;
@@ -118,6 +187,11 @@ fn event_spec(event: &Event) -> Result<EventSpec, AbiError> {
     if event.anonymous {
         return Err(AbiError::Parse("anonymous events are not supported".into()));
     }
+    if event.inputs.iter().filter(|param| param.indexed).count() > 3 {
+        return Err(AbiError::Parse(
+            "non-anonymous events support at most three indexed parameters".into(),
+        ));
+    }
     let mut names = HashSet::new();
     let params = event
         .inputs
@@ -144,36 +218,11 @@ pub fn decode_event(
     topics: &[B256],
     data: &[u8],
 ) -> Result<Vec<DecodedValue>, AbiError> {
-    let indexed = params.iter().filter(|p| p.indexed).map(|p| p.ty.clone()).collect();
-    let body =
-        DynSolType::Tuple(params.iter().filter(|p| !p.indexed).map(|p| p.ty.clone()).collect());
-    let event = DynSolEvent::new(Some(topic0), indexed, body)
-        .ok_or_else(|| AbiError::Decode("event has too many indexed parameters".into()))?;
-    let decoded = event
-        .decode_log_parts(topics.iter().copied(), data)
-        .map_err(|error| AbiError::Decode(error.to_string()))?;
-    let mut indexed = decoded.indexed.into_iter();
-    let mut body = decoded.body.into_iter();
-    params
-        .iter()
-        .map(|param| {
-            decode_value(
-                if param.indexed { indexed.next() } else { body.next() }
-                    .ok_or_else(|| AbiError::Decode("decoded parameter count mismatch".into()))?,
-            )
-        })
-        .collect()
+    EventDecoder::new(params, topic0)?.decode(topics, data)
 }
 
 pub fn decode_calldata(params: &[AbiParam], data: &[u8]) -> Result<Vec<DecodedValue>, AbiError> {
-    let ty = DynSolType::Tuple(params.iter().map(|param| param.ty.clone()).collect());
-    let decoded =
-        ty.abi_decode_params(data).map_err(|error| AbiError::Decode(error.to_string()))?;
-    let values = match decoded {
-        DynSolValue::Tuple(values) => values,
-        single => vec![single],
-    };
-    values.into_iter().map(decode_value).collect()
+    CallDecoder::new(params).decode(data)
 }
 
 fn decode_value(value: DynSolValue) -> Result<DecodedValue, AbiError> {
@@ -192,13 +241,17 @@ fn decode_value(value: DynSolValue) -> Result<DecodedValue, AbiError> {
 
 #[cfg(test)]
 mod tests {
-    use alloy::sol_types::SolCall;
+    use alloy::primitives::{U256, address, keccak256};
+    use alloy::sol_types::{SolCall, SolEvent};
 
     use super::*;
 
     alloy::sol! {
         function transfer(address to, uint256 value) external returns (bool);
         function f_bytes32(bytes32 word) external returns (bool);
+
+        event Transfer(address indexed from, address indexed to, uint256 value);
+        event Message(string indexed key, string value);
     }
 
     #[test]
@@ -210,5 +263,95 @@ mod tests {
         };
         assert_eq!(spec.selector, transferCall::SELECTOR);
         assert!(parse_target_signature("error Unauthorized(address caller)").is_err());
+    }
+
+    #[test]
+    fn reuses_compiled_call_decoder() {
+        let TargetSpec::Call(spec) =
+            parse_target_signature("function transfer(address to, uint256 value)").unwrap()
+        else {
+            panic!("expected call")
+        };
+        let call = transferCall {
+            to: address!("0000000000000000000000000000000000000001"),
+            value: U256::from(42),
+        };
+        let calldata = call.abi_encode();
+        let params = &calldata[transferCall::SELECTOR.len()..];
+        let expected = vec![DecodedValue::Address(call.to), DecodedValue::Uint(call.value)];
+        let decoder = CallDecoder::new(&spec.params);
+
+        assert_eq!(decoder.decode(params).unwrap(), expected);
+        assert_eq!(decoder.decode(params).unwrap(), expected);
+        assert_eq!(decode_calldata(&spec.params, params).unwrap(), expected);
+        assert!(decoder.decode(&[0; 31]).is_err());
+    }
+
+    #[test]
+    fn reuses_compiled_event_decoder_and_preserves_parameter_order() {
+        let TargetSpec::Event(spec) = parse_target_signature(
+            "event Transfer(address indexed from, address indexed to, uint256 value)",
+        )
+        .unwrap() else {
+            panic!("expected event")
+        };
+        let event = Transfer {
+            from: address!("0000000000000000000000000000000000000001"),
+            to: address!("0000000000000000000000000000000000000002"),
+            value: U256::from(42),
+        };
+        let topics = event.encode_topics().into_iter().map(Into::into).collect::<Vec<B256>>();
+        let data = event.encode_data();
+        let expected = vec![
+            DecodedValue::Address(event.from),
+            DecodedValue::Address(event.to),
+            DecodedValue::Uint(event.value),
+        ];
+        let decoder = EventDecoder::new(&spec.params, spec.topic0).unwrap();
+
+        assert_eq!(decoder.decode(&topics, &data).unwrap(), expected);
+        assert_eq!(decoder.decode(&topics, &data).unwrap(), expected);
+        assert_eq!(decode_event(&spec.params, spec.topic0, &topics, &data).unwrap(), expected);
+
+        let mut wrong_topics = topics;
+        wrong_topics[0] = B256::ZERO;
+        assert!(decoder.decode(&wrong_topics, &data).is_err());
+    }
+
+    #[test]
+    fn decodes_dynamic_indexed_values_as_topic_hashes() {
+        let TargetSpec::Event(spec) =
+            parse_target_signature("event Message(string indexed key, string value)").unwrap()
+        else {
+            panic!("expected event")
+        };
+        let key = keccak256("indexed key");
+        let event = Message { key, value: "body value".to_string() };
+        let topics = event.encode_topics().into_iter().map(Into::into).collect::<Vec<B256>>();
+        let decoder = EventDecoder::new(&spec.params, spec.topic0).unwrap();
+
+        assert_eq!(
+            decoder.decode(&topics, &event.encode_data()).unwrap(),
+            vec![DecodedValue::Bytes(key.as_slice().to_vec()), DecodedValue::String(event.value),]
+        );
+    }
+
+    #[test]
+    fn rejects_events_with_more_than_three_indexed_parameters() {
+        let params = (0..4)
+            .map(|index| {
+                AbiParam::new(format!("arg{index}"), DynSolType::Address)
+                    .unwrap()
+                    .with_indexed(true)
+            })
+            .collect::<Vec<_>>();
+
+        assert!(EventDecoder::new(&params, B256::ZERO).is_err());
+        assert!(
+            parse_target_signature(
+                "event Invalid(address indexed a, address indexed b, address indexed c, address indexed d)"
+            )
+            .is_err()
+        );
     }
 }

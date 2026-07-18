@@ -13,7 +13,7 @@ pub(crate) fn to_monitor_id(value: MonitorId) -> anyhow::Result<i64> {
 }
 
 pub(crate) fn from_monitor_id(value: i64) -> anyhow::Result<MonitorId> {
-    MonitorId::new(from_i64(value, "monitor id")?)
+    Ok(MonitorId::new(from_i64(value, "monitor id")?)?)
 }
 
 pub(crate) fn address(value: &[u8]) -> anyhow::Result<Address> {

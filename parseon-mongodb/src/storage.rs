@@ -247,7 +247,7 @@ impl IndexStorage for MongoStorage {
         Ok(monitors)
     }
 
-    async fn commit_block(&self, commit: BlockCommit) -> AppResult<usize> {
+    async fn commit_block(&self, commit: &BlockCommit) -> AppResult<()> {
         anyhow::ensure!(
             commit.monitors.iter().all(|monitor| monitor.chain == commit.chain),
             "cross-chain monitor set rejected for chain {}",
@@ -262,14 +262,16 @@ impl IndexStorage for MongoStorage {
             .collect::<AppResult<Vec<_>>>()?;
         ids.sort_unstable();
         ids.dedup();
-        let monitors =
-            commit.monitors.iter().map(|monitor| (monitor.id, monitor)).collect::<HashMap<_, _>>();
+        let monitors = commit
+            .monitors
+            .iter()
+            .map(|monitor| (monitor.id, monitor.as_ref()))
+            .collect::<HashMap<_, _>>();
         let documents = commit
             .results
             .iter()
             .map(|result| result_document(chain_id, &monitors, result))
             .collect::<AppResult<Vec<_>>>()?;
-        let count = documents.len();
         let collection = self.monitors();
         let results = self.results();
         self.transaction(move |session| {
@@ -303,7 +305,7 @@ impl IndexStorage for MongoStorage {
             })
         })
         .await?;
-        Ok(count)
+        Ok(())
     }
 }
 
@@ -386,18 +388,14 @@ impl ChainRepository for MongoStorage {
                 let deleted =
                     chains.delete_one(doc! { "chain_id": chain_id }).session(&mut *session).await?;
                 anyhow::ensure!(deleted.deleted_count == 1, "chain {chain_id} not found");
-                drop(
-                    monitors
-                        .delete_many(doc! { "chain_id": chain_id })
-                        .session(&mut *session)
-                        .await?,
-                );
-                drop(
-                    results
-                        .delete_many(doc! { "chain_id": chain_id })
-                        .session(&mut *session)
-                        .await?,
-                );
+                let _ = monitors
+                    .delete_many(doc! { "chain_id": chain_id })
+                    .session(&mut *session)
+                    .await?;
+                let _ = results
+                    .delete_many(doc! { "chain_id": chain_id })
+                    .session(&mut *session)
+                    .await?;
                 Ok(())
             })
         })
@@ -535,7 +533,8 @@ impl MonitorRepository for MongoStorage {
             Box::pin(async move {
                 let deleted = monitors.delete_one(doc! { "id": id }).session(&mut *session).await?;
                 anyhow::ensure!(deleted.deleted_count == 1, "monitor {id} not found");
-                drop(results.delete_many(doc! { "monitor_id": id }).session(&mut *session).await?);
+                let _ =
+                    results.delete_many(doc! { "monitor_id": id }).session(&mut *session).await?;
                 Ok(())
             })
         })
@@ -602,7 +601,7 @@ fn result_document(
                 chain_id,
                 monitor_id: to_i64(call.monitor_id.get(), "monitor id")?,
                 kind: "call".into(),
-                tx_hash: format!("{:#x}", call.transaction.transaction.hash),
+                tx_hash: format!("{:#x}", call.transaction_hash),
                 log_index: None,
                 block_number: to_i64(call.block_number, "block number")?,
                 params: bson_params(&target.inputs, &call.params)?,
@@ -769,9 +768,11 @@ fn chrono(value: bson::DateTime) -> AppResult<DateTime<Utc>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use alloy::primitives::{I256, U256};
     use parseon_core::commands::{PageLimit, ResultQuery};
-    use parseon_core::{BlockTransaction, DecodedCall, DecodedEvent, ExecutedTransaction};
+    use parseon_core::{DecodedCall, DecodedEvent};
 
     use super::*;
     use parseon_core::ports::Storage;
@@ -919,52 +920,42 @@ mod tests {
             .unwrap();
         assert_eq!(event.id.get(), 2, "failed monitor transactions must roll back counters");
 
-        let runtime_monitor = storage
-            .load_monitors(chain)
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|row| row.id == monitor.id)
-            .unwrap();
+        let runtime_monitor = Arc::new(
+            storage
+                .load_monitors(chain)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == monitor.id)
+                .unwrap(),
+        );
         let call = |hash: u8, block_number| {
             DecodedResult::Call(DecodedCall {
                 monitor_id: monitor.id,
                 block_number,
-                transaction: ExecutedTransaction {
-                    transaction: BlockTransaction {
-                        hash: B256::repeat_byte(hash),
-                        from: Address::repeat_byte(5),
-                        to: Address::repeat_byte(1),
-                        input: vec![2; 4],
-                    },
-                    succeeded: true,
-                },
+                transaction_hash: B256::repeat_byte(hash),
+                from: Address::repeat_byte(5),
+                to: Address::repeat_byte(1),
                 params: Vec::new(),
             })
         };
         for (hash, block_number) in [(1, 10), (2, 11), (3, 12)] {
-            storage
-                .commit_block(BlockCommit {
-                    chain,
-                    block_number,
-                    monitors: vec![runtime_monitor.clone()],
-                    results: vec![call(hash, block_number)],
-                })
-                .await
-                .unwrap();
+            let commit = BlockCommit {
+                chain,
+                block_number,
+                monitors: vec![Arc::clone(&runtime_monitor)],
+                results: vec![call(hash, block_number)],
+            };
+            storage.commit_block(&commit).await.unwrap();
         }
         assert_eq!(storage.get_monitor(monitor.id).await.unwrap().cursor, Some(12));
-        assert!(
-            storage
-                .commit_block(BlockCommit {
-                    chain,
-                    block_number: 13,
-                    monitors: vec![runtime_monitor.clone()],
-                    results: vec![call(3, 12)],
-                })
-                .await
-                .is_err()
-        );
+        let duplicate_commit = BlockCommit {
+            chain,
+            block_number: 13,
+            monitors: vec![Arc::clone(&runtime_monitor)],
+            results: vec![call(3, 12)],
+        };
+        assert!(storage.commit_block(&duplicate_commit).await.is_err());
         assert_eq!(
             storage.get_monitor(monitor.id).await.unwrap().cursor,
             Some(12),
@@ -975,29 +966,25 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(page.as_slice(), [ResultRecord::Call { block_number: 11, .. }]));
-        assert!(
-            storage
-                .commit_block(BlockCommit {
-                    chain: Chain::new(1),
-                    block_number: 13,
-                    monitors: vec![runtime_monitor.clone()],
-                    results: Vec::new(),
-                })
-                .await
-                .is_err()
-        );
+        let cross_chain_commit = BlockCommit {
+            chain: Chain::new(1),
+            block_number: 13,
+            monitors: vec![Arc::clone(&runtime_monitor)],
+            results: Vec::new(),
+        };
+        assert!(storage.commit_block(&cross_chain_commit).await.is_err());
 
         let deleting = storage.clone();
         let committing = storage.clone();
-        let runtime = runtime_monitor.clone();
+        let concurrent_commit = BlockCommit {
+            chain,
+            block_number: 13,
+            monitors: vec![Arc::clone(&runtime_monitor)],
+            results: vec![call(4, 13)],
+        };
         let (deleted, committed) = tokio::join!(
             deleting.delete_monitor(monitor.id),
-            committing.commit_block(BlockCommit {
-                chain,
-                block_number: 13,
-                monitors: vec![runtime],
-                results: vec![call(4, 13)],
-            })
+            committing.commit_block(&concurrent_commit)
         );
         deleted.unwrap();
         drop(committed);
@@ -1010,33 +997,33 @@ mod tests {
             0
         );
 
-        let runtime_event = storage
-            .load_monitors(chain)
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|row| row.id == event.id)
-            .unwrap();
-        storage
-            .commit_block(BlockCommit {
-                chain,
-                block_number: 14,
-                monitors: vec![runtime_event],
-                results: [1, 2]
-                    .into_iter()
-                    .map(|log_index| {
-                        DecodedResult::Event(DecodedEvent {
-                            monitor_id: event.id,
-                            block_number: 14,
-                            transaction_hash: B256::repeat_byte(9),
-                            log_index,
-                            params: Vec::new(),
-                        })
+        let runtime_event = Arc::new(
+            storage
+                .load_monitors(chain)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.id == event.id)
+                .unwrap(),
+        );
+        let event_commit = BlockCommit {
+            chain,
+            block_number: 14,
+            monitors: vec![runtime_event],
+            results: [1, 2]
+                .into_iter()
+                .map(|log_index| {
+                    DecodedResult::Event(DecodedEvent {
+                        monitor_id: event.id,
+                        block_number: 14,
+                        transaction_hash: B256::repeat_byte(9),
+                        log_index,
+                        params: Vec::new(),
                     })
-                    .collect(),
-            })
-            .await
-            .unwrap();
+                })
+                .collect(),
+        };
+        storage.commit_block(&event_commit).await.unwrap();
         assert!(matches!(
             storage
                 .query_results(&event, ResultQuery { limit: PageLimit::new(1), offset: 0 })

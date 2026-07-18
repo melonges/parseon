@@ -1,4 +1,3 @@
-use std::fmt;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -10,23 +9,12 @@ use crate::ports::{BlockSourceFactory, ChainUpdate, NewChain, NewMonitor, Storag
 use crate::views::{ChainView, MonitorResultView, MonitorView};
 use crate::{CallTarget, Chain, ChainId, EventTarget, MonitorId, Target, Url, worker};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
 pub struct InvalidCommand(String);
-
-impl fmt::Display for InvalidCommand {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for InvalidCommand {}
 
 fn invalid(message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(InvalidCommand(message.into()))
-}
-
-pub fn is_invalid_command(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<InvalidCommand>().is_some()
 }
 
 #[derive(Clone)]
