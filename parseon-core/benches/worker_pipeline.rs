@@ -1,13 +1,16 @@
 use std::time::Duration;
+use std::{hint::black_box, sync::Arc};
 
 use alloy::dyn_abi::DynSolType;
 use alloy::primitives::{Address, B256, U256};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::StreamExt;
-use parseon_core::abi::AbiParam;
+use parseon_core::abi::{AbiParam, CallDecoder, decode_calldata};
 use parseon_core::filter::{Filter, FilterContext, FilterDefinition, FilterExpression};
 use parseon_core::pipeline;
-use parseon_core::{CallTarget, DecodedValue, EventTarget, Target};
+use parseon_core::{
+    BlockTransaction, Bytes, CallTarget, DecodedValue, EventTarget, SourceBlock, Target,
+};
 
 async fn run_pipeline(concurrency: usize) {
     let preparations = (0..20).map(|_| async {
@@ -150,6 +153,44 @@ fn benchmark(c: &mut Criterion) {
         })
     });
     compile_group.finish();
+
+    let decode_params = vec![
+        AbiParam::new("owner", DynSolType::Address).expect("valid address parameter"),
+        AbiParam::new("value", DynSolType::Uint(256)).expect("valid uint parameter"),
+    ];
+    let mut calldata = vec![0_u8; 64];
+    calldata[31] = 1;
+    calldata[63] = 42;
+    let decoder = CallDecoder::new(&decode_params);
+    let mut decode_group = c.benchmark_group("abi_decode");
+    decode_group.throughput(Throughput::Elements(1));
+    decode_group.bench_function("compile_each_call", |b| {
+        b.iter(|| decode_calldata(black_box(&decode_params), black_box(&calldata)))
+    });
+    decode_group
+        .bench_function("reuse_compiled", |b| b.iter(|| decoder.decode(black_box(&calldata))));
+    decode_group.finish();
+
+    let block = Arc::new(SourceBlock {
+        number: 1,
+        transactions: (0_u16..1_000)
+            .map(|index| BlockTransaction {
+                hash: B256::with_last_byte(index as u8),
+                from: Address::ZERO,
+                to: Address::repeat_byte(1),
+                input: Bytes::from(vec![index as u8; 256]),
+            })
+            .collect(),
+    });
+    let mut sharing_group = c.benchmark_group("block_sharing");
+    sharing_group.throughput(Throughput::Elements(block.transactions.len() as u64));
+    sharing_group.bench_function("deep_clone", |b| {
+        b.iter(|| black_box(block.as_ref().clone()));
+    });
+    sharing_group.bench_function("arc_clone", |b| {
+        b.iter(|| black_box(Arc::clone(&block)));
+    });
+    sharing_group.finish();
 }
 
 criterion_group!(benches, benchmark);
