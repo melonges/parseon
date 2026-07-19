@@ -4,6 +4,11 @@ All notable changes to Parseon are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Document every public `parseon-core` item with crate-level, module-level, and item-level rustdoc, and publish package metadata (`description`, `keywords`, `categories`) for crates.io discoverability.
+- Adopt `rustc-hash`, `parking_lot`, and `arc-swap` in `parseon-core` for faster monitor-target lookups, non-poisoning status locks, and lock-free status snapshots.
+
 ### Changed
 
 - Allow operators to disable the per-worker in-memory block cache by setting `BLOCK_CACHE_SIZE=0`.
@@ -11,10 +16,16 @@ All notable changes to Parseon are documented in this file.
 - Fetch exact event targets over contiguous finalized block ranges, adaptively split provider-limited log requests, and run independent exact-target groups concurrently.
 - Fall back between block, batch, and individual receipt strategies only for incompatible endpoint capabilities instead of amplifying transient RPC failures.
 - Cancel startup and polling I/O promptly, finish any atomic commit already in progress, and await every worker before shutting down sinks and the HTTP server.
+- Make `FilterContext` `Copy` so the filter evaluator passes it by value without per-branch clones.
+- Replace the per-poll monitor index's `std::HashMap` with `FxHashMap` for cheaper per-transaction and per-log target lookups.
+- Replace `ChainStatus`'s `RwLock` with lock-free `ArcSwap` snapshots and `RuntimeStatus`'s `std::sync::RwLock` with `parking_lot::RwLock`, removing poison-panic ergonomics.
+- Build `SinkBatch` with a linear scan over the small per-block monitors slice instead of allocating a `HashMap` per commit.
+- Split `parseon-core`'s `ports.rs` into `ports/{storage,source,cache,telemetry,sink}.rs`, `worker.rs` into `worker/{mod,prepare,commit,tests}.rs`, and move root domain types into `model.rs` so `lib.rs` is a re-export facade.
 
 ### Breaking
 
 - Replace the core adapter contracts for executed transactions, per-block log requests, cache ownership, and atomic commits with ordered outcomes, exact ranged log targets, shared immutable blocks, and borrowed commits.
+- Change `DecodedValue::Bytes` from `Vec<u8>` to alloy `Bytes` (`Arc<[u8]>`) so decoded values are cheap to clone through the indexing pipeline. Storage adapters bind `value.as_ref()` at the SQL/BSON boundary.
 
 ## 0.8.0 - 2026-07-14
 
