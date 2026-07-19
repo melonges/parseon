@@ -3,6 +3,9 @@ name = "parseon-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Domain models, ABI decoding, and application services for Parseon's finalized EVM indexing"
+keywords = ["ethereum", "evm", "indexer", "decoder", "abi"]
+categories = ["cryptography::cryptocurrencies", "data-structures"]
 
 [lints]
 workspace = true
@@ -10,9 +13,12 @@ workspace = true
 [dependencies]
 alloy = { version = "2.1", default-features = false, features = ["std", "dyn-abi", "json-abi", "sol-types"] }
 anyhow = "1.0"
+arc-swap = "1.7"
 async-trait = "0.1"
 chrono = "0.4"
 futures-util = "0.3"
+parking_lot = "0.12"
+rustc-hash = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time"] }
