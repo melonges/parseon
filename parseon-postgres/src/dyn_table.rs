@@ -171,7 +171,7 @@ fn push_values(qb: &mut QueryBuilder<sqlx::Postgres>, values: &[DecodedValue]) -
             DecodedValue::Bool(v) => qb.push_bind(*v),
             DecodedValue::Address(v) => qb.push_bind(v.as_slice()),
             DecodedValue::String(v) => qb.push_bind(v),
-            DecodedValue::Bytes(v) => qb.push_bind(v),
+            DecodedValue::Bytes(v) => qb.push_bind(v.as_ref()),
         };
     }
     Ok(())

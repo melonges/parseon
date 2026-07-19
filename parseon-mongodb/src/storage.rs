@@ -641,7 +641,7 @@ fn bson_params(schema: &[AbiParam], values: &[DecodedValue]) -> AppResult<Docume
                 DecodedValue::String(value) => Bson::String(value.clone()),
                 DecodedValue::Bytes(value) => Bson::Binary(Binary {
                     subtype: bson::spec::BinarySubtype::Generic,
-                    bytes: value.clone(),
+                    bytes: value.to_vec(),
                 }),
             };
             (param.name.clone(), value)
@@ -804,7 +804,7 @@ mod tests {
             DecodedValue::Bool(true),
             DecodedValue::Address(Address::repeat_byte(1)),
             DecodedValue::String("hello".into()),
-            DecodedValue::Bytes(vec![0xde, 0xad]),
+            DecodedValue::Bytes(vec![0xde, 0xad].into()),
         ];
         let stored = bson_params(&schema, &values).unwrap();
         assert!(matches!(stored.get("data"), Some(Bson::Binary(_))));

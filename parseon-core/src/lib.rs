@@ -1,188 +1,50 @@
 //! Domain models and application services for finalized EVM indexing.
 //!
-//! Parseon core owns monitor planning, ABI decoding, filtering, ordered block commits, and the
-//! ports implemented by storage, block-source, cache, telemetry, and sink adapters. It does not
-//! construct or depend on concrete infrastructure adapters.
-
-use std::fmt;
-use std::num::NonZeroU64;
-
-pub use alloy::primitives::{Address, B256, BlockNumber, Bytes, ChainId, Selector, TxHash};
-use alloy::primitives::{I256, U256};
-pub use url::Url;
+//! Parseon core owns monitor planning, ABI decoding, filtering, ordered block
+//! commits, and the ports implemented by storage, block-source, cache,
+//! telemetry, and sink adapters. It does not construct or depend on concrete
+//! infrastructure adapters.
+//!
+//! ## Module map
+//!
+//! - [`model`]: root domain types (`Chain`, `MonitorId`, `Target`,
+//!   `DecodedValue`, `DecodedCall`, `DecodedEvent`, `SourceBlock`, …).
+//! - [`abi`]: ABI parameter and decoder types built on top of `alloy`.
+//! - [`commands`]: application-layer command and query DTOs.
+//! - [`filter`]: the versioned JSON filter DSL, compiler, and evaluator.
+//! - [`monitor`]: the immutable monitor definition and its range/cursor helpers.
+//! - [`pipeline`]: a tiny ordered concurrency primitive used by the worker.
+//! - [`ports`]: trait contracts implemented by adapters (`Storage`,
+//!   `BlockSource`, `BlockCache`, `Sink`, `Telemetry`) and the records they
+//!   exchange.
+//! - [`services`]: application services invoked by HTTP handlers.
+//! - [`status`]: in-process worker status snapshots.
+//! - [`supervisor`]: the per-chain worker supervisor.
+//! - [`views`]: read-optimized projections of [`ports`] records for API
+//!   responses.
+//!
+//! The `indexer`, `scheduler`, and `worker` modules are crate-private indexing
+//! internals and are not re-exported.
 
 pub mod abi;
 pub mod commands;
 pub mod filter;
-mod indexer;
 pub mod monitor;
 pub mod pipeline;
 pub mod ports;
-mod scheduler;
 pub mod services;
 pub mod status;
 pub mod supervisor;
 pub mod views;
+
+mod indexer;
+mod scheduler;
 mod worker;
 
-use self::abi::AbiParam;
+pub mod model;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Chain {
-    pub id: ChainId,
-}
-
-impl Chain {
-    pub const fn new(id: ChainId) -> Self {
-        Self { id }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MonitorId(NonZeroU64);
-
-#[derive(Debug, Clone, Copy, thiserror::Error)]
-#[error("monitor id must be positive")]
-pub struct InvalidMonitorId;
-
-impl MonitorId {
-    pub fn new(id: u64) -> Result<Self, InvalidMonitorId> {
-        NonZeroU64::new(id).map(Self).ok_or(InvalidMonitorId)
-    }
-
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
-impl fmt::Display for MonitorId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Cursor(pub Option<BlockNumber>);
-
-impl Cursor {
-    pub fn next(self, start_block: BlockNumber) -> BlockNumber {
-        self.0.map_or(start_block, |block| block.saturating_add(1))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Target {
-    Call(CallTarget),
-    Event(EventTarget),
-}
-
-#[derive(Debug, Clone)]
-pub struct CallTarget {
-    pub address: Address,
-    pub selector: Selector,
-    pub inputs: Vec<AbiParam>,
-}
-
-#[derive(Debug, Clone)]
-pub struct EventTarget {
-    pub address: Address,
-    pub topic0: B256,
-    pub params: Vec<AbiParam>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum DecodedValue {
-    Uint(U256),
-    Int(I256),
-    Bool(bool),
-    Address(Address),
-    String(String),
-    Bytes(Vec<u8>),
-}
-
-#[derive(Debug, Clone)]
-pub struct BlockTransaction {
-    pub hash: B256,
-    pub from: Address,
-    pub to: Address,
-    pub input: Bytes,
-}
-
-#[derive(Debug, Clone)]
-pub struct SourceBlock {
-    pub number: BlockNumber,
-    pub transactions: Vec<BlockTransaction>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExecutionOutcome {
-    pub transaction_hash: TxHash,
-    pub succeeded: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct DecodedCall {
-    pub monitor_id: MonitorId,
-    pub block_number: BlockNumber,
-    pub transaction_hash: TxHash,
-    pub from: Address,
-    pub to: Address,
-    pub params: Vec<DecodedValue>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SourceLog {
-    pub block_number: Option<BlockNumber>,
-    pub transaction_hash: Option<B256>,
-    pub log_index: Option<u64>,
-    pub address: Address,
-    pub topics: Vec<B256>,
-    pub data: Bytes,
-    pub removed: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct DecodedEvent {
-    pub monitor_id: MonitorId,
-    pub block_number: BlockNumber,
-    pub transaction_hash: B256,
-    pub log_index: u64,
-    pub params: Vec<DecodedValue>,
-}
-
-#[derive(Debug, Clone)]
-pub enum DecodedResult {
-    Call(DecodedCall),
-    Event(DecodedEvent),
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
-
-    use futures_util::StreamExt;
-
-    #[tokio::test]
-    async fn pipeline_bounds_work_and_yields_in_input_order() {
-        let current = Arc::new(AtomicUsize::new(0));
-        let maximum = Arc::new(AtomicUsize::new(0));
-        let futures = (0..8).map(|value| {
-            let current = current.clone();
-            let maximum = maximum.clone();
-            async move {
-                let in_flight = current.fetch_add(1, Ordering::SeqCst) + 1;
-                maximum.fetch_max(in_flight, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis((8 - value) as u64)).await;
-                current.fetch_sub(1, Ordering::SeqCst);
-                value
-            }
-        });
-
-        let values = super::pipeline::ordered(futures, 3).collect::<Vec<_>>().await;
-
-        assert_eq!(values, (0..8).collect::<Vec<_>>());
-        assert_eq!(maximum.load(Ordering::SeqCst), 3);
-    }
-}
+pub use model::{
+    Address, B256, BlockNumber, BlockTransaction, Bytes, CallTarget, Chain, ChainId, Cursor,
+    DecodedCall, DecodedEvent, DecodedResult, DecodedValue, EventTarget, ExecutionOutcome,
+    InvalidMonitorId, MonitorId, Selector, SourceBlock, SourceLog, Target, TxHash, Url,
+};

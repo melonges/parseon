@@ -1,3 +1,16 @@
+//! ABI parameter types and reusable decoders for function calls and events.
+//!
+//! Parseon accepts human-readable Solidity signatures at monitor creation time
+//! and resolves them to fixed selectors and topic0 hashes via
+//! [`parse_target_signature`]. The resulting [`AbiParam`] schema feeds
+//! [`CallDecoder`] and [`EventDecoder`], which are reused per monitor snapshot
+//! so the indexing hot path does not re-parse ABI types on every block.
+//!
+//! Only scalar ABI types are supported (uint, int, bool, address, string,
+//! bytes, fixed bytes, function). Composite types (arrays, tuples, structs)
+//! are rejected at parse time so storage adapters can map every parameter to
+//! a flat column or BSON field.
+
 use std::collections::HashSet;
 use std::str::FromStr;
 
@@ -7,70 +20,102 @@ use alloy::primitives::{B256, Selector};
 
 use super::DecodedValue;
 
+/// One ABI parameter: name, scalar type, and indexed flag (for events).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbiParam {
+    /// Parameter name. Unnamed parameters in the source signature are
+    /// renamed to `arg0`, `arg1`, … so filter fields and storage columns
+    /// always have a stable name.
     pub name: String,
+    /// Scalar ABI type. Composite types are rejected.
     pub ty: DynSolType,
+    /// Whether this parameter is indexed (events only). Indexed parameters
+    /// appear in log topics; non-indexed parameters appear in log data.
     pub indexed: bool,
 }
 
 impl AbiParam {
+    /// Creates a non-indexed parameter named `name` with type `ty`. Returns
+    /// an error if `ty` is a composite type.
     pub fn new(name: impl Into<String>, ty: DynSolType) -> Result<Self, AbiError> {
         ensure_supported_type(&ty)?;
         Ok(Self { name: name.into(), ty, indexed: false })
     }
 
+    /// Returns the canonical Solidity type string for this parameter (e.g.
+    /// `"uint256"`, `"address"`).
     pub fn sol_type(&self) -> String {
         self.ty.to_string()
     }
-}
 
-impl AbiParam {
+    /// Sets the `indexed` flag (for event parameters). Builder-style.
     pub fn with_indexed(mut self, indexed: bool) -> Self {
         self.indexed = indexed;
         self
     }
 }
 
+/// A resolved function-call specification: four-byte selector and input
+/// parameters.
 #[derive(Debug, Clone)]
 pub struct MethodSpec {
+    /// Function selector (first four bytes of `keccak256(signature)`).
     pub selector: Selector,
+    /// Input parameter schema, in ABI order.
     pub params: Vec<AbiParam>,
 }
 
+/// A resolved event specification: topic0 signature hash and parameters.
 #[derive(Debug, Clone)]
 pub struct EventSpec {
+    /// Event signature hash (`keccak256(canonical_signature)`), stored as
+    /// `topics[0]` in emitted logs.
     pub topic0: B256,
+    /// Parameter schema, in ABI order (indexed and non-indexed interleaved).
     pub params: Vec<AbiParam>,
 }
 
+/// The kind of target signature parsed by [`parse_target_signature`].
 #[derive(Debug, Clone)]
 pub enum TargetSpec {
+    /// A function call.
     Call(MethodSpec),
+    /// An event log.
     Event(EventSpec),
 }
 
+/// ABI parse, type-resolution, or decode error.
 #[derive(Debug, thiserror::Error)]
 pub enum AbiError {
+    /// Signature parsing failed.
     #[error("failed to parse signature: {0}")]
     Parse(String),
+    /// A type is unsupported or unresolvable.
     #[error("invalid solidity type: {0}")]
     Type(String),
+    /// Decoding calldata or event data failed.
     #[error("decode error: {0}")]
     Decode(String),
 }
 
-#[derive(Debug, Clone)]
 /// A reusable ABI decoder for one function's input tuple.
+///
+/// Construct once from a parameter schema and call [`CallDecoder::decode`] for
+/// every matching transaction. The underlying `DynSolType::Tuple` is compiled
+/// at construction so the hot path only walks the decoded value tree.
+#[derive(Debug, Clone)]
 pub struct CallDecoder {
     params: DynSolType,
 }
 
 impl CallDecoder {
+    /// Compiles a decoder for the given parameter schema.
     pub fn new(params: &[AbiParam]) -> Self {
         Self { params: DynSolType::Tuple(params.iter().map(|param| param.ty.clone()).collect()) }
     }
 
+    /// Decodes calldata (without the four-byte selector) into a vector of
+    /// scalar [`DecodedValue`]s, in ABI order.
     pub fn decode(&self, data: &[u8]) -> Result<Vec<DecodedValue>, AbiError> {
         let decoded = self
             .params
@@ -84,8 +129,13 @@ impl CallDecoder {
     }
 }
 
-#[derive(Debug, Clone)]
 /// A reusable ABI decoder for one non-anonymous event definition.
+///
+/// Construct once from a parameter schema and the event's topic0, then call
+/// [`EventDecoder::decode`] for every matching log. The decoder caches the
+/// indexed/non-indexed partition so the hot path only walks the decoded value
+/// tree.
+#[derive(Debug, Clone)]
 pub struct EventDecoder {
     event: DynSolEvent,
     indexed: Box<[bool]>,
@@ -129,6 +179,8 @@ impl EventDecoder {
     }
 }
 
+/// Parses a single ABI type string (e.g. `"uint256"`, `"address"`) and
+/// rejects composite types.
 pub fn parse_abi_type(value: &str) -> Result<DynSolType, AbiError> {
     let ty = DynSolType::from_str(value).map_err(|error| AbiError::Type(error.to_string()))?;
     ensure_supported_type(&ty)?;
@@ -173,6 +225,12 @@ fn method_spec(func: &Function) -> Result<MethodSpec, AbiError> {
     Ok(MethodSpec { selector: func.selector(), params })
 }
 
+/// Parses a human-readable Solidity function or event signature into a
+/// [`TargetSpec`] (selector/topic0 + parameter schema).
+///
+/// Rejects anonymous events, events with more than three indexed parameters,
+/// functions with no inputs, duplicate parameter names, and composite
+/// parameter types.
 pub fn parse_target_signature(signature: &str) -> Result<TargetSpec, AbiError> {
     match AbiItem::parse(signature)
         .map_err(|error| AbiError::Parse(format!("failed to parse target signature: {error}")))?
@@ -212,6 +270,8 @@ fn event_spec(event: &Event) -> Result<EventSpec, AbiError> {
     Ok(EventSpec { topic0: event.selector(), params })
 }
 
+/// One-shot event decoder: constructs an [`EventDecoder`] and decodes one
+/// log. Prefer reusing an [`EventDecoder`] in the indexing hot path.
 pub fn decode_event(
     params: &[AbiParam],
     topic0: B256,
@@ -221,6 +281,8 @@ pub fn decode_event(
     EventDecoder::new(params, topic0)?.decode(topics, data)
 }
 
+/// One-shot calldata decoder: constructs a [`CallDecoder`] and decodes one
+/// call. Prefer reusing a [`CallDecoder`] in the indexing hot path.
 pub fn decode_calldata(params: &[AbiParam], data: &[u8]) -> Result<Vec<DecodedValue>, AbiError> {
     CallDecoder::new(params).decode(data)
 }
@@ -230,9 +292,11 @@ fn decode_value(value: DynSolValue) -> Result<DecodedValue, AbiError> {
         DynSolValue::Bool(value) => Ok(DecodedValue::Bool(value)),
         DynSolValue::Address(value) => Ok(DecodedValue::Address(value)),
         DynSolValue::String(value) => Ok(DecodedValue::String(value)),
-        DynSolValue::Bytes(value) => Ok(DecodedValue::Bytes(value)),
-        DynSolValue::FixedBytes(word, size) => Ok(DecodedValue::Bytes(word[..size].to_vec())),
-        DynSolValue::Function(value) => Ok(DecodedValue::Bytes(value.as_slice().to_vec())),
+        DynSolValue::Bytes(value) => Ok(DecodedValue::Bytes(value.into())),
+        DynSolValue::FixedBytes(word, size) => {
+            Ok(DecodedValue::Bytes(word[..size].to_vec().into()))
+        }
+        DynSolValue::Function(value) => Ok(DecodedValue::Bytes(value.as_slice().to_vec().into())),
         DynSolValue::Uint(value, _) => Ok(DecodedValue::Uint(value)),
         DynSolValue::Int(value, _) => Ok(DecodedValue::Int(value)),
         _ => Err(AbiError::Decode("composite types not supported at decode time".into())),
@@ -332,7 +396,10 @@ mod tests {
 
         assert_eq!(
             decoder.decode(&topics, &event.encode_data()).unwrap(),
-            vec![DecodedValue::Bytes(key.as_slice().to_vec()), DecodedValue::String(event.value),]
+            vec![
+                DecodedValue::Bytes(key.as_slice().to_vec().into()),
+                DecodedValue::String(event.value),
+            ]
         );
     }
 

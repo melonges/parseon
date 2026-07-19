@@ -1,5 +1,17 @@
-use std::collections::HashMap;
+//! Per-poll monitor index and call/event decoding.
+//!
+//! [`MonitorIndex`] is rebuilt every poll from the monitor list loaded by
+//! storage. It hashes call targets by `(address, selector)` and event targets
+//! by `(address, topic0)` so the per-transaction and per-log hot paths are
+//! O(1) lookups instead of O(monitors) scans.
+//!
+//! [`decode_calls`] and [`decode_events`] consume one block's worth of
+//! transactions or logs, filter by the current block plan's monitor indices,
+//! decode the matching ABI payloads, and apply each monitor's compiled filter.
+
 use std::sync::Arc;
+
+use rustc_hash::FxHashMap;
 
 use super::abi::{CallDecoder, EventDecoder};
 use super::filter::FilterContext;
@@ -24,8 +36,8 @@ struct IndexedEvent {
 #[derive(Debug)]
 pub(crate) struct MonitorIndex {
     monitors: Vec<Arc<Monitor>>,
-    calls: HashMap<(Address, Selector), IndexedCall>,
-    events: HashMap<(Address, B256), IndexedEvent>,
+    calls: FxHashMap<(Address, Selector), IndexedCall>,
+    events: FxHashMap<(Address, B256), IndexedEvent>,
 }
 
 impl MonitorIndex {
@@ -35,8 +47,8 @@ impl MonitorIndex {
             .filter(|monitor| monitor.enabled && !monitor.completed)
             .map(Arc::new)
             .collect::<Vec<_>>();
-        let mut calls = HashMap::new();
-        let mut events = HashMap::new();
+        let mut calls = FxHashMap::default();
+        let mut events = FxHashMap::default();
         for (index, monitor) in monitors.iter().enumerate() {
             match &monitor.target {
                 Target::Call(target) => {

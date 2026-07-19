@@ -1,60 +1,119 @@
+//! Immutable, ABI-aware JSON filter DSL.
+//!
+//! A filter is a bounded, versioned JSON AST compiled against a monitor's ABI
+//! before indexing. It supports scalar equality, integer ordering, and
+//! short-circuit boolean composition over decoded parameters and the metadata
+//! already fetched for successful calls or events.
+//!
+//! ## Compilation
+//!
+//! [`FilterDefinition::prepare`] validates a [`FilterExpression`] against a
+//! [`Target`], canonicalizes literal values, and produces a
+//! [`Filter`] that the worker evaluates per decoded result. The compiled
+//! representation is reused for every matching call or event in a monitor's
+//! lifetime.
+//!
+//! ## Limits
+//!
+//! Filters are bounded to prevent untrusted input from exhausting the worker:
+//! - `MAX_BYTES` (16 KiB): canonical JSON encoding size.
+//! - `MAX_NODES` (128): total AST nodes.
+//! - `MAX_DEPTH` (16): nesting depth.
+//! - `MAX_CHILDREN` (32): `and`/`or` arity.
+//!
+//! ## Evaluation
+//!
+//! [`Filter::evaluate`] takes a borrowed [`FilterContext`] (which is [`Copy`])
+//! and returns `Ok(bool)` or a [`FilterError`] if the compiled expression
+//! references a field unavailable in the current context.
+
 use std::fmt;
 
 use alloy::dyn_abi::{DynSolType, DynSolValue};
+use alloy::primitives::{I256, U256};
 use serde::{Deserialize, Serialize};
 
 use crate::abi::AbiParam;
-use crate::{Address, B256, BlockNumber, DecodedValue, I256, Target, U256};
+use crate::{Address, B256, BlockNumber, Bytes, DecodedValue, Target};
 
+/// The current filter DSL schema version. Bumped when the JSON shape changes
+/// in a way that old compiled filters cannot handle.
 pub const FILTER_VERSION: i16 = 1;
 const MAX_BYTES: usize = 16 * 1024;
 const MAX_NODES: usize = 128;
 const MAX_DEPTH: usize = 16;
 const MAX_CHILDREN: usize = 32;
 
+/// The JSON filter AST root: a boolean combinator or a leaf comparison.
+///
+/// Serialized with `serde` as an untagged enum so callers can write
+/// `{"and": [...]}`, `{"or": [...]}`, `{"not": {...}}`, or
+/// `{"field": "...", "op": "...", "value": ...}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FilterExpression {
+    /// Logical AND over two or more sub-expressions.
     And(AndExpression),
+    /// Logical OR over two or more sub-expressions.
     Or(OrExpression),
+    /// Logical NOT over one sub-expression.
     Not(NotExpression),
+    /// A leaf comparison: field, operator, literal value.
     Compare(Comparison),
 }
 
+/// `{"and": [...]}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AndExpression {
+    /// Sub-expressions, all of which must match.
     pub and: Vec<FilterExpression>,
 }
 
+/// `{"or": [...]}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrExpression {
+    /// Sub-expressions, at least one of which must match.
     pub or: Vec<FilterExpression>,
 }
 
+/// `{"not": {...}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NotExpression {
+    /// The negated sub-expression.
     pub not: Box<FilterExpression>,
 }
 
+/// `{"field": "...", "op": "...", "value": ...}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Comparison {
+    /// Dotted field path (e.g. `"params.value"`, `"tx.from"`, `"block.number"`).
     pub field: String,
+    /// Comparison operator.
     pub op: ComparisonOperator,
+    /// Literal value to compare against. Typed and canonicalized during
+    /// compilation.
     pub value: serde_json::Value,
 }
 
+/// Comparison operator for a [`Comparison`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparisonOperator {
+    /// Equal.
     Eq,
+    /// Not equal.
     Ne,
+    /// Greater than (integers only).
     Gt,
+    /// Greater than or equal (integers only).
     Gte,
+    /// Less than (integers only).
     Lt,
+    /// Less than or equal (integers only).
     Lte,
 }
 
@@ -64,13 +123,23 @@ impl ComparisonOperator {
     }
 }
 
+/// A versioned, compiled filter definition persisted with a monitor.
+///
+/// `version` is checked on recompile so a future DSL change cannot silently
+/// apply an old expression to a new evaluator.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterDefinition {
+    /// DSL schema version. Must equal [`FILTER_VERSION`].
     pub version: i16,
+    /// The canonicalized (re-serialized) expression tree.
     pub expression: FilterExpression,
 }
 
 impl FilterDefinition {
+    /// Validates, compiles, and canonicalizes `expression` against `target`.
+    ///
+    /// Returns both the persisted [`FilterDefinition`] (with canonicalized
+    /// expression) and the runtime-evaluable [`Filter`].
     pub fn prepare(
         expression: FilterExpression,
         target: &Target,
@@ -80,6 +149,8 @@ impl FilterDefinition {
         Ok((Self { version: FILTER_VERSION, expression }, Filter::Expr(compiled)))
     }
 
+    /// Recompiles a persisted definition against `target`, verifying the
+    /// version and re-checking limits.
     pub fn compile(&self, target: &Target) -> Result<Filter, FilterError> {
         if self.version != FILTER_VERSION {
             return Err(FilterError::at(
@@ -92,14 +163,22 @@ impl FilterDefinition {
     }
 }
 
+/// A compiled filter ready for evaluation.
+///
+/// `All` matches every result; `Expr` is a compiled expression tree.
 #[derive(Debug, Clone, Default)]
 pub enum Filter {
+    /// Matches every result. The default.
     #[default]
     All,
+    /// Matches results satisfying the compiled expression.
     Expr(CompiledExpression),
 }
 
 impl Filter {
+    /// Evaluates this filter against `context`. Returns `Ok(true)` if the
+    /// result matches, `Ok(false)` if it does not, or an error if the
+    /// compiled expression references an unavailable field.
     pub fn evaluate(&self, context: FilterContext<'_>) -> Result<bool, FilterError> {
         match self {
             Self::All => Ok(true),
@@ -108,20 +187,36 @@ impl Filter {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Borrowed view of one decoded result for filter evaluation.
+///
+/// All fields are `Copy` (including the `&[DecodedValue]` slice), so
+/// [`Filter::evaluate`] can pass this by value without allocation.
+#[derive(Debug, Clone, Copy)]
 pub enum FilterContext<'a> {
+    /// A decoded call context.
     Call {
+        /// Block the call was included in.
         block_number: BlockNumber,
+        /// Transaction hash.
         tx_hash: B256,
+        /// Sender address.
         from: Address,
+        /// Recipient address.
         to: Address,
+        /// Decoded parameter values.
         params: &'a [DecodedValue],
     },
+    /// A decoded event context.
     Event {
+        /// Block the event was emitted in.
         block_number: BlockNumber,
+        /// Transaction hash that emitted the log.
         tx_hash: B256,
+        /// Emitter address.
         emitter: Address,
+        /// Log index within the block.
         log_index: u64,
+        /// Decoded parameter values.
         params: &'a [DecodedValue],
     },
 }
@@ -134,30 +229,55 @@ impl<'a> FilterContext<'a> {
     }
 }
 
+/// A sample decoded result for filter preview (does not create a monitor).
+///
+/// Parameters are a JSON map keyed by parameter name; the preview path
+/// decodes them into [`DecodedValue`]s using the target's ABI schema.
 #[derive(Debug, Clone)]
 pub enum FilterSample {
+    /// A sample call result.
     Call {
+        /// Block number.
         block_number: BlockNumber,
+        /// Transaction hash.
         tx_hash: B256,
+        /// Sender address.
         from: Address,
+        /// Recipient address.
         to: Address,
+        /// Sample parameter values keyed by parameter name.
         params: serde_json::Map<String, serde_json::Value>,
     },
+    /// A sample event result.
     Event {
+        /// Block number.
         block_number: BlockNumber,
+        /// Transaction hash.
         tx_hash: B256,
+        /// Emitter address.
         emitter: Address,
+        /// Log index.
         log_index: u64,
+        /// Sample parameter values keyed by parameter name.
         params: serde_json::Map<String, serde_json::Value>,
     },
 }
 
+/// Result of a filter preview: the canonicalized expression and whether the
+/// sample matched.
 #[derive(Debug, Clone)]
 pub struct FilterPreview {
+    /// Canonicalized filter expression.
     pub filter: FilterExpression,
+    /// Whether the sample matched the filter.
     pub matches: bool,
 }
 
+/// Evaluates a filter expression against a sample without creating a monitor.
+///
+/// Compiles `expression` against the target parsed from `command.signature`,
+/// decodes the sample parameters via the same ABI schema, and returns the
+/// canonicalized expression together with the match result.
 pub fn preview(
     target: &Target,
     expression: FilterExpression,
@@ -195,11 +315,16 @@ pub fn preview(
     Ok(FilterPreview { filter: definition.expression, matches })
 }
 
+/// A compiled filter expression tree. Internal to [`Filter`].
 #[derive(Debug, Clone)]
 pub enum CompiledExpression {
+    /// Short-circuit AND.
     And(Vec<Self>),
+    /// Short-circuit OR.
     Or(Vec<Self>),
+    /// Negation.
     Not(Box<Self>),
+    /// A leaf comparison: resolved field, operator, typed literal.
     Compare { field: ResolvedField, op: ComparisonOperator, value: FilterValue },
 }
 
@@ -208,7 +333,7 @@ impl CompiledExpression {
         match self {
             Self::And(expressions) => {
                 for expression in expressions {
-                    if !expression.evaluate(context.clone())? {
+                    if !expression.evaluate(context)? {
                         return Ok(false);
                     }
                 }
@@ -216,7 +341,7 @@ impl CompiledExpression {
             }
             Self::Or(expressions) => {
                 for expression in expressions {
-                    if expression.evaluate(context.clone())? {
+                    if expression.evaluate(context)? {
                         return Ok(true);
                     }
                 }
@@ -230,25 +355,41 @@ impl CompiledExpression {
     }
 }
 
+/// A resolved field path: either a metadata field or a decoded parameter
+/// index.
 #[derive(Debug, Clone)]
 pub enum ResolvedField {
+    /// `block.number`.
     BlockNumber,
+    /// `tx.hash`.
     TransactionHash,
+    /// `tx.from` (calls only).
     CallFrom,
+    /// `tx.to` (calls only).
     CallTo,
+    /// `event.emitter` (events only).
     EventEmitter,
+    /// `event.log_index` (events only).
     EventLogIndex,
+    /// `params.<name>`, resolved to the parameter's ABI index.
     Parameter(usize),
 }
 
+/// A typed literal value compiled from a [`Comparison`]'s JSON value.
 #[derive(Debug, Clone)]
 pub enum FilterValue {
+    /// An unsigned integer literal.
     Uint(U256),
+    /// A signed integer literal.
     Int(I256),
+    /// A boolean literal.
     Bool(bool),
+    /// An address literal.
     Address(Address),
+    /// A string literal.
     String(String),
-    Bytes(Vec<u8>),
+    /// A bytes literal (dynamic or fixed-size).
+    Bytes(Bytes),
 }
 
 #[derive(Debug, Clone)]
@@ -519,7 +660,7 @@ fn parse_value(
                 return Err(FilterError::at(path, format!("expected {size} bytes")));
             }
             let canonical = format!("0x{}", alloy::hex::encode(&bytes));
-            (FilterValue::Bytes(bytes), serde_json::Value::String(canonical))
+            (FilterValue::Bytes(bytes.into()), serde_json::Value::String(canonical))
         }
     })
 }
@@ -585,7 +726,7 @@ fn resolve_value<'a>(
             DecodedValue::Bool(value) => RuntimeValue::Bool(*value),
             DecodedValue::Address(value) => RuntimeValue::Address(*value),
             DecodedValue::String(value) => RuntimeValue::String(value),
-            DecodedValue::Bytes(value) => RuntimeValue::Bytes(value),
+            DecodedValue::Bytes(value) => RuntimeValue::Bytes(&value[..]),
         },
         _ => {
             return Err(FilterError::at(
@@ -618,9 +759,9 @@ fn compare(
         (RuntimeValue::Address(left), FilterValue::Address(right)) => apply(left, op, *right),
         (RuntimeValue::String(left), FilterValue::String(right)) => apply(left, op, right.as_str()),
         (RuntimeValue::Bytes32(left), FilterValue::Bytes(right)) => {
-            apply(left.as_slice(), op, right.as_slice())
+            apply(&left[..], op, &right[..])
         }
-        (RuntimeValue::Bytes(left), FilterValue::Bytes(right)) => apply(left, op, right.as_slice()),
+        (RuntimeValue::Bytes(left), FilterValue::Bytes(right)) => apply(left, op, &right[..]),
         _ => {
             return Err(FilterError::at(
                 "/filter",
@@ -630,6 +771,10 @@ fn compare(
     })
 }
 
+/// A filter validation or evaluation error with a JSON-pointer-style path.
+///
+/// The path points at the offending sub-expression in the original filter
+/// AST (e.g. `/filter/and/1/value`) so API callers can locate the error.
 #[derive(Debug, Clone)]
 pub struct FilterError {
     path: String,
