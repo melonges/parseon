@@ -14,11 +14,18 @@ use super::status::{ChainStatus, RuntimeStatus};
 use super::worker::{self, WorkerConfig, WorkerDependencies};
 use super::{BlockNumber, ChainId};
 
+/// Supervisor configuration: indexing batch and concurrency limits plus the
+/// poll interval.
 #[derive(Debug, Clone, Copy)]
 pub struct SupervisorConfig {
+    /// Maximum number of blocks processed per monitor per poll.
     pub batch_size: NonZeroU64,
+    /// Delay between polls.
     pub poll_interval: Duration,
+    /// Maximum number of blocks prepared concurrently within one poll, per
+    /// worker.
     pub block_concurrency: NonZeroUsize,
+    /// Process-wide limit on concurrent storage commits across all workers.
     pub storage_write_concurrency: NonZeroUsize,
 }
 
@@ -43,6 +50,8 @@ async fn shutdown_workers(workers: HashMap<ChainId, WorkerRuntime>) {
     }
 }
 
+/// The supervisor: owns the chain registry, shared dependencies, and the
+/// per-worker cancellation handles.
 pub struct Supervisor {
     config: SupervisorConfig,
     chains: Vec<RegisteredChain>,
@@ -56,12 +65,20 @@ pub struct Supervisor {
     workers: HashMap<ChainId, WorkerRuntime>,
 }
 
+/// Wiring bundle for [`Supervisor::new`]: all shared dependencies the
+/// supervisor clones into each worker.
 pub struct SupervisorDependencies {
+    /// Composite storage adapter.
     pub storage: Arc<dyn Storage>,
+    /// Optional post-commit sink.
     pub sink: Arc<dyn Sink>,
+    /// Block source factory used to validate endpoints and connect workers.
     pub source_factory: Arc<dyn BlockSourceFactory>,
+    /// Per-worker block cache factory.
     pub cache_factory: Arc<dyn BlockCacheFactory>,
+    /// Runtime status registry, shared with the HTTP `/status` handler.
     pub statuses: RuntimeStatus,
+    /// Telemetry collector.
     pub telemetry: Arc<dyn Telemetry>,
 }
 
@@ -168,6 +185,14 @@ impl Supervisor {
 
 #[cfg(test)]
 mod tests {
+    //! The per-chain worker supervisor.
+    //!
+    //! At startup, the supervisor reads the chain registry, validates each
+    //! enabled chain's RPC endpoint, and spawns one worker per chain. Disabled
+    //! chains get a [`ChainStatus::disabled`] record but no worker. The supervisor
+    //! runs until its cancellation token fires, then cancels every worker and
+    //! awaits them all before returning.
+
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -1,3 +1,11 @@
+//! Application services invoked by HTTP handlers.
+//!
+//! [`ChainService`] and [`MonitorService`] wrap a [`Storage`] and
+//! [`BlockSourceFactory`] and expose the use cases the API needs: chain CRUD
+//! with endpoint validation, monitor CRUD with ABI parsing and optional
+//! finalized-head defaulting, and result queries. [`preview_filter`] handles
+//! the stateless filter-preview endpoint without creating a monitor.
+
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -9,6 +17,12 @@ use crate::ports::{BlockSourceFactory, ChainUpdate, NewChain, NewMonitor, Storag
 use crate::views::{ChainView, MonitorResultView, MonitorView};
 use crate::{CallTarget, Chain, ChainId, EventTarget, MonitorId, Target, Url, worker};
 
+/// Error returned when a command fails application-level validation (e.g.
+/// an invalid ABI signature, an out-of-range block range, or an RPC endpoint
+/// that returns the wrong chain ID).
+///
+/// The server maps this to `400 Bad Request` so handlers can downcast and
+/// present the message to the caller.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct InvalidCommand(String);
@@ -17,6 +31,11 @@ fn invalid(message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(InvalidCommand(message.into()))
 }
 
+/// Chain management service: create, list, get, update, and delete chains.
+///
+/// Each mutating method validates the RPC endpoint (if its URL is changing)
+/// before forwarding to [`crate::ports::ChainRepository`]. The service is
+/// cheap to clone: it holds two `Arc<dyn ...>` references.
 #[derive(Clone)]
 pub struct ChainService {
     storage: Arc<dyn Storage>,
@@ -24,6 +43,7 @@ pub struct ChainService {
 }
 
 impl ChainService {
+    /// Creates a chain service over `storage` and `sources`.
     pub fn new(storage: Arc<dyn Storage>, sources: Arc<dyn BlockSourceFactory>) -> Self {
         Self { storage, sources }
     }
@@ -98,6 +118,13 @@ impl ChainService {
     }
 }
 
+/// Monitor management service: create, list, get, pause/resume, delete, and
+/// query results.
+///
+/// Monitor creation parses the ABI signature, resolves an optional
+/// `start_block` default to the chain's current finalized head, validates the
+/// block range, compiles the optional filter, and forwards to
+/// [`crate::ports::MonitorRepository`].
 #[derive(Clone)]
 pub struct MonitorService {
     storage: Arc<dyn Storage>,
@@ -105,6 +132,7 @@ pub struct MonitorService {
 }
 
 impl MonitorService {
+    /// Creates a monitor service over `storage` and `sources`.
     pub fn new(storage: Arc<dyn Storage>, sources: Arc<dyn BlockSourceFactory>) -> Self {
         Self { storage, sources }
     }
@@ -204,6 +232,12 @@ impl MonitorService {
     }
 }
 
+/// Evaluates a filter expression against a sample decoded result without
+/// creating a monitor.
+///
+/// Parses `command.signature` into a target, compiles `command.filter`, decodes
+/// `command.sample`'s parameters via the same ABI schema, and returns the
+/// canonicalized expression together with the match result.
 pub fn preview_filter(command: PreviewFilter) -> anyhow::Result<FilterPreview> {
     let address = match &command.sample {
         filter::FilterSample::Call { to, .. } => *to,

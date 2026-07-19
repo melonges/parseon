@@ -1,3 +1,11 @@
+//! Block planning: maps monitor cursors to the set of blocks the worker
+//! should fetch next.
+//!
+//! [`plan_blocks`] walks every active monitor, computes its `[next_block,
+//! min(end_block, finalized_head, next_block + batch_size - 1)]` range, and
+//! groups monitors by block number so the worker can prepare each block with
+//! exactly the monitors that cover it.
+
 use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
