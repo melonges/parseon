@@ -6,11 +6,14 @@ All notable changes to Parseon are documented in this file.
 
 ### Added
 
+- Allow multiple monitors to target the same chain, contract, and function selector or event topic while retaining independent ranges, filters, cursors, and result storage.
 - Document every public `parseon-core` item with crate-level, module-level, and item-level rustdoc, and publish package metadata (`description`, `keywords`, `categories`) for crates.io discoverability.
 - Adopt `rustc-hash`, `parking_lot`, and `arc-swap` in `parseon-core` for faster monitor-target lookups, non-poisoning status locks, and lock-free status snapshots.
 
 ### Changed
 
+- Reuse matching RPC data and compatible ABI decoders across overlapping monitor targets before applying each monitor's filter and persisting its own results.
+- Isolate ABI decode failures to the affected monitor layout so an incompatible definition cannot stall other monitors on the chain.
 - Allow operators to disable the per-worker in-memory block cache by setting `BLOCK_CACHE_SIZE=0`.
 - Reuse compiled ABI decoders per monitor snapshot, share cached blocks and monitor definitions, and pass only ordered transaction outcomes through the call-indexing hot path.
 - Fetch exact event targets over contiguous finalized block ranges, adaptively split provider-limited log requests, and run independent exact-target groups concurrently.
