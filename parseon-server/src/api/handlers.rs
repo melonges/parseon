@@ -16,8 +16,6 @@ use parseon_core::commands::{
     PreviewFilter as PreviewFilterCommand, ResultQuery, UpdateChain as UpdateChainCommand,
 };
 
-// ----- Health -----
-
 #[utoipa::path(
     get,
     path = "/healthz",
@@ -61,8 +59,6 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> AppResult<axum::re
     Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], body)
         .into_response())
 }
-
-// ----- Chains -----
 
 #[utoipa::path(
     post,
@@ -160,8 +156,6 @@ pub(crate) async fn delete_chain(
     state.chains.delete(chain_id).await?;
     Ok(axum::http::StatusCode::ACCEPTED)
 }
-
-// ----- Monitors -----
 
 #[utoipa::path(
     post,
@@ -299,8 +293,6 @@ pub(crate) async fn delete_monitor(
     state.monitors.delete(monitor_id(id)?).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
-
-// ----- Results -----
 
 #[utoipa::path(
     get,

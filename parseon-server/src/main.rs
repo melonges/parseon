@@ -19,7 +19,6 @@ use tokio_util::sync::CancellationToken;
 async fn main() -> anyhow::Result<()> {
     let config = config::Config::load();
 
-    // Logging.
     drop(
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -32,7 +31,6 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("starting parseon");
 
-    // Storage.
     #[cfg(feature = "postgres-storage")]
     let storage: Arc<dyn Storage> = Arc::new(parseon_postgres::PostgresStorage::new(
         parseon_postgres::pool::connect(&config.storage.storage_url).await?,
@@ -100,7 +98,6 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // HTTP API.
     let state = api::AppState::new(chains, monitors, runtime_status, telemetry);
     let app = api::router(state);
     let server_cancel = cancel.clone();
@@ -112,7 +109,6 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Graceful shutdown on SIGINT, or if supervisor/server task ends.
     enum ShutdownReason {
         Signal,
         Supervisor(Result<(), tokio::task::JoinError>),

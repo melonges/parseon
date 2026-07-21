@@ -19,7 +19,7 @@ pub(crate) enum BlockReceiptsResponseError {
     MissingTransaction(TxHash),
 }
 
-/// Fetch and cache the transaction fields needed for monitor matching.
+/// Fetch the transaction fields needed for monitor matching.
 pub(crate) async fn fetch_block(
     provider: &HttpProvider,
     block_number: u64,

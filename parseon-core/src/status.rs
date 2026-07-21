@@ -115,9 +115,7 @@ impl ChainStatus {
     }
 
     /// Atomically records a successful poll at `finalized_head`, clearing any
-    /// prior error and transitioning to [`WorkerState::Running`]. The previous
-    /// `finalized_head` is preserved if `finalized_head` is `None` (used by
-    /// the worker when a poll yields no new blocks but still succeeds).
+    /// prior error and transitioning to [`WorkerState::Running`].
     pub fn record_success(&self, finalized_head: BlockNumber) {
         let prev = self.inner.load();
         let next = ChainStatusSnapshot {

@@ -8,8 +8,6 @@ use parseon_core::status::{ChainStatusSnapshot, WorkerState};
 use parseon_core::views::{ChainView, MonitorResultView, MonitorView};
 use parseon_core::{Address, B256, Selector, TxHash, Url};
 
-// ----- Chains -----
-
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CreateChain {
@@ -45,8 +43,6 @@ impl From<ChainView> for ChainRow {
         }
     }
 }
-
-// ----- Monitors -----
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -248,8 +244,6 @@ impl From<ChainStatusSnapshot> for ChainStatusRow {
 pub(crate) struct ErrorResponse {
     pub error: String,
 }
-
-// ----- Results search -----
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct ResultsQuery {

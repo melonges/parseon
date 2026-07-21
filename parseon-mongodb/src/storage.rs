@@ -805,13 +805,6 @@ mod tests {
     use super::*;
     use parseon_core::ports::Storage;
 
-    fn assert_storage<T: Storage>() {}
-
-    #[test]
-    fn implements_unified_storage_port() {
-        assert_storage::<MongoStorage>();
-    }
-
     fn param(name: &str) -> AbiParam {
         AbiParam::new(name, parse_abi_type("uint256").unwrap()).unwrap()
     }

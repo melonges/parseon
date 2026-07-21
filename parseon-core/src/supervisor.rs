@@ -1,3 +1,11 @@
+//! The per-chain worker supervisor.
+//!
+//! At startup, the supervisor reads the chain registry, validates each
+//! enabled chain's RPC endpoint, and spawns one worker per chain. Disabled
+//! chains get a [`ChainStatus::disabled`] record but no worker. The supervisor
+//! runs until its cancellation token fires, then cancels every worker and
+//! awaits them all before returning.
+
 use std::collections::HashMap;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
@@ -185,14 +193,6 @@ impl Supervisor {
 
 #[cfg(test)]
 mod tests {
-    //! The per-chain worker supervisor.
-    //!
-    //! At startup, the supervisor reads the chain registry, validates each
-    //! enabled chain's RPC endpoint, and spawns one worker per chain. Disabled
-    //! chains get a [`ChainStatus::disabled`] record but no worker. The supervisor
-    //! runs until its cancellation token fires, then cancels every worker and
-    //! awaits them all before returning.
-
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

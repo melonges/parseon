@@ -344,13 +344,6 @@ mod tests {
     use parseon_core::monitor::Monitor;
     use parseon_core::ports::Storage;
 
-    fn assert_storage<T: Storage>() {}
-
-    #[test]
-    fn implements_unified_storage_port() {
-        assert_storage::<PostgresStorage>();
-    }
-
     fn monitor(chain_id: u64) -> Monitor {
         Monitor {
             id: MonitorId::new(1).unwrap(),

@@ -34,7 +34,6 @@ impl AppState {
     }
 }
 
-/// Build the axum router.
 pub(crate) fn router(state: AppState) -> axum::Router {
     let (router, openapi) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(routes::health_routes())
