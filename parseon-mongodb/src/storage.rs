@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
 use mongodb::bson::{self, Binary, Bson, Document, doc};
+use mongodb::error::ErrorKind;
 use mongodb::options::{IndexOptions, ReturnDocument};
 use mongodb::{Client, ClientSession, Collection, Database, IndexModel};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,11 @@ use parseon_core::{
 };
 
 type AppResult<T> = anyhow::Result<T>;
+
+const LEGACY_MONITOR_TARGET_INDEX: &str = "monitors_target";
+const MONITOR_TARGET_LOOKUP_INDEX: &str = "monitors_target_lookup";
+const NAMESPACE_NOT_FOUND: i32 = 26;
+const INDEX_NOT_FOUND: i32 = 27;
 
 #[derive(Clone)]
 pub struct MongoStorage {
@@ -111,10 +117,24 @@ impl MongoStorage {
     }
 
     async fn create_indexes(&self) -> AppResult<()> {
+        self.drop_legacy_monitor_target_index().await?;
         for (collection, index) in indexes() {
             self.database.collection::<Document>(collection).create_index(index).await?;
         }
         Ok(())
+    }
+
+    async fn drop_legacy_monitor_target_index(&self) -> AppResult<()> {
+        match self
+            .database
+            .collection::<Document>("monitors")
+            .drop_index(LEGACY_MONITOR_TARGET_INDEX)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) if missing_index(&error) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn transaction<T>(
@@ -689,8 +709,8 @@ fn indexes() -> Vec<(&'static str, IndexModel)> {
             "monitors",
             index(
                 doc! { "chain_id": 1, "kind": 1, "address": 1, "signature_hash": 1 },
-                "monitors_target",
-                true,
+                MONITOR_TARGET_LOOKUP_INDEX,
+                false,
                 None,
             ),
         ),
@@ -732,6 +752,14 @@ fn indexes() -> Vec<(&'static str, IndexModel)> {
             ),
         ),
     ]
+}
+
+fn missing_index(error: &mongodb::error::Error) -> bool {
+    matches!(
+        error.kind.as_ref(),
+        ErrorKind::Command(error)
+            if matches!(error.code, NAMESPACE_NOT_FOUND | INDEX_NOT_FOUND)
+    )
 }
 
 fn result_query(monitor_id: i64, kind: &str) -> AppResult<(Document, Document)> {
@@ -822,18 +850,39 @@ mod tests {
     }
 
     #[test]
-    fn declares_unique_identity_and_query_order_indexes() {
+    fn declares_non_unique_target_lookup_and_unique_result_indexes() {
         let indexes = indexes();
         assert_eq!(indexes.len(), 8);
         let names = indexes
             .iter()
             .map(|(_, index)| index.options.as_ref().unwrap().name.as_deref().unwrap())
             .collect::<Vec<_>>();
-        assert!(names.contains(&"monitors_target"));
+        assert!(!names.contains(&LEGACY_MONITOR_TARGET_INDEX));
+        assert!(names.contains(&MONITOR_TARGET_LOOKUP_INDEX));
         assert!(names.contains(&"results_call_identity"));
         assert!(names.contains(&"results_event_identity"));
         assert!(names.contains(&"results_call_order"));
         assert!(names.contains(&"results_event_order"));
+        let target_lookup = indexes
+            .iter()
+            .map(|(_, index)| index)
+            .find(|index| {
+                index.options.as_ref().unwrap().name.as_deref() == Some(MONITOR_TARGET_LOOKUP_INDEX)
+            })
+            .unwrap();
+        assert_eq!(
+            target_lookup.keys,
+            doc! { "chain_id": 1, "kind": 1, "address": 1, "signature_hash": 1 }
+        );
+        assert_eq!(target_lookup.options.as_ref().unwrap().unique, None);
+        for name in ["results_call_identity", "results_event_identity"] {
+            let identity = indexes
+                .iter()
+                .map(|(_, index)| index)
+                .find(|index| index.options.as_ref().unwrap().name.as_deref() == Some(name))
+                .unwrap();
+            assert_eq!(identity.options.as_ref().unwrap().unique, Some(true));
+        }
         assert_eq!(
             result_query(7, "call").unwrap(),
             (
@@ -857,7 +906,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires `docker compose --profile mongodb up -d`"]
-    async fn compose_crud_uniqueness_transactions_ordering_pagination_and_cascades() {
+    async fn compose_crud_duplicate_targets_transactions_ordering_pagination_and_cascades() {
         let url: Url = std::env::var("MONGODB_TEST_URL")
             .unwrap_or_else(|_| "mongodb://localhost:27017/?replicaSet=rs0".into())
             .parse()
@@ -867,7 +916,33 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         );
+        let legacy_client = Client::with_uri_str(url.as_str()).await.unwrap();
+        legacy_client
+            .database(&database)
+            .collection::<Document>("monitors")
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! {
+                        "chain_id": 1,
+                        "kind": 1,
+                        "address": 1,
+                        "signature_hash": 1
+                    })
+                    .options(
+                        IndexOptions::builder()
+                            .name(Some(LEGACY_MONITOR_TARGET_INDEX.into()))
+                            .unique(Some(true))
+                            .build(),
+                    )
+                    .build(),
+            )
+            .await
+            .unwrap();
+        drop(legacy_client);
         let storage = MongoStorage::connect(&url, &database).await.unwrap();
+        let index_names = storage.monitors().list_index_names().await.unwrap();
+        assert!(!index_names.iter().any(|name| name == LEGACY_MONITOR_TARGET_INDEX));
+        assert!(index_names.iter().any(|name| name == MONITOR_TARGET_LOOKUP_INDEX));
         let chain = Chain::new(8453);
         let rpc_url: Url = "http://localhost:4000/main/evm/8453".parse().unwrap();
         storage
@@ -903,7 +978,8 @@ mod tests {
         };
         let monitor = storage.create_monitor(input.clone()).await.unwrap();
         assert_eq!(monitor.id.get(), 1);
-        assert!(storage.create_monitor(input).await.is_err());
+        let duplicate_monitor = storage.create_monitor(input).await.unwrap();
+        assert_eq!(duplicate_monitor.id.get(), 2);
         let event = storage
             .create_monitor(NewMonitor {
                 chain,
@@ -918,20 +994,20 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(event.id.get(), 2, "failed monitor transactions must roll back counters");
+        assert_eq!(event.id.get(), 3);
 
-        let runtime_monitor = Arc::new(
-            storage
-                .load_monitors(chain)
-                .await
-                .unwrap()
-                .into_iter()
-                .find(|row| row.id == monitor.id)
-                .unwrap(),
-        );
-        let call = |hash: u8, block_number| {
+        let mut runtime_monitors = storage
+            .load_monitors(chain)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|monitor| (monitor.id, Arc::new(monitor)))
+            .collect::<HashMap<_, _>>();
+        let runtime_monitor = runtime_monitors.remove(&monitor.id).unwrap();
+        let runtime_duplicate = runtime_monitors.remove(&duplicate_monitor.id).unwrap();
+        let call = |monitor_id, hash: u8, block_number| {
             DecodedResult::Call(DecodedCall {
-                monitor_id: monitor.id,
+                monitor_id,
                 block_number,
                 transaction_hash: B256::repeat_byte(hash),
                 from: Address::repeat_byte(5),
@@ -940,20 +1016,22 @@ mod tests {
             })
         };
         for (hash, block_number) in [(1, 10), (2, 11), (3, 12)] {
-            let commit = BlockCommit {
-                chain,
-                block_number,
-                monitors: vec![Arc::clone(&runtime_monitor)],
-                results: vec![call(hash, block_number)],
-            };
+            let mut monitors = vec![Arc::clone(&runtime_monitor)];
+            let mut results = vec![call(monitor.id, hash, block_number)];
+            if block_number == 10 {
+                monitors.push(Arc::clone(&runtime_duplicate));
+                results.push(call(duplicate_monitor.id, hash, block_number));
+            }
+            let commit = BlockCommit { chain, block_number, monitors, results };
             storage.commit_block(&commit).await.unwrap();
         }
         assert_eq!(storage.get_monitor(monitor.id).await.unwrap().cursor, Some(12));
+        assert_eq!(storage.get_monitor(duplicate_monitor.id).await.unwrap().cursor, Some(10));
         let duplicate_commit = BlockCommit {
             chain,
             block_number: 13,
             monitors: vec![Arc::clone(&runtime_monitor)],
-            results: vec![call(3, 12)],
+            results: vec![call(monitor.id, 3, 12)],
         };
         assert!(storage.commit_block(&duplicate_commit).await.is_err());
         assert_eq!(
@@ -966,6 +1044,28 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(page.as_slice(), [ResultRecord::Call { block_number: 11, .. }]));
+        assert!(matches!(
+            storage
+                .query_results(
+                    &duplicate_monitor,
+                    ResultQuery { limit: PageLimit::new(1), offset: 0 }
+                )
+                .await
+                .unwrap()
+                .as_slice(),
+            [ResultRecord::Call { block_number: 10, .. }]
+        ));
+        assert!(!storage.set_monitor_enabled(duplicate_monitor.id, false).await.unwrap().enabled);
+        assert!(storage.get_monitor(monitor.id).await.unwrap().enabled);
+        assert!(
+            storage
+                .load_monitors(chain)
+                .await
+                .unwrap()
+                .iter()
+                .all(|monitor| monitor.id != duplicate_monitor.id)
+        );
+        assert!(storage.set_monitor_enabled(duplicate_monitor.id, true).await.unwrap().enabled);
         let cross_chain_commit = BlockCommit {
             chain: Chain::new(1),
             block_number: 13,
@@ -980,7 +1080,7 @@ mod tests {
             chain,
             block_number: 13,
             monitors: vec![Arc::clone(&runtime_monitor)],
-            results: vec![call(4, 13)],
+            results: vec![call(monitor.id, 4, 13)],
         };
         let (deleted, committed) = tokio::join!(
             deleting.delete_monitor(monitor.id),
@@ -996,6 +1096,17 @@ mod tests {
                 .unwrap(),
             0
         );
+        assert_eq!(
+            storage
+                .results()
+                .count_documents(
+                    doc! { "monitor_id": i64::try_from(duplicate_monitor.id.get()).unwrap() }
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(storage.get_monitor(duplicate_monitor.id).await.is_ok());
 
         let runtime_event = Arc::new(
             storage
@@ -1032,7 +1143,7 @@ mod tests {
                 .as_slice(),
             [ResultRecord::Event { log_index: 2, .. }]
         ));
-        assert_eq!(storage.results().count_documents(doc! {}).await.unwrap(), 2);
+        assert_eq!(storage.results().count_documents(doc! {}).await.unwrap(), 3);
         storage.delete_chain(chain).await.unwrap();
         assert_eq!(storage.count_monitors().await.unwrap(), 0);
         assert_eq!(storage.results().count_documents(doc! {}).await.unwrap(), 0);
