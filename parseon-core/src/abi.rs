@@ -3,8 +3,9 @@
 //! Parseon accepts human-readable Solidity signatures at monitor creation time
 //! and resolves them to fixed selectors and topic0 hashes via
 //! [`parse_target_signature`]. The resulting [`AbiParam`] schema feeds
-//! [`CallDecoder`] and [`EventDecoder`], which are reused per monitor snapshot
-//! so the indexing hot path does not re-parse ABI types on every block.
+//! [`CallDecoder`] and [`EventDecoder`], which are reused by every monitor with
+//! the same wire layout in a poll snapshot so the indexing hot path does not
+//! re-parse ABI types on every block.
 //!
 //! Only scalar ABI types are supported (uint, int, bool, address, string,
 //! bytes, fixed bytes, function). Composite types (arrays, tuples, structs)

@@ -12,7 +12,7 @@
 //! - [`finish_prepared`] attaches decoded events to a prepared-calls block and
 //!   resolves the monitor Arcs needed for the commit.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
@@ -82,14 +82,14 @@ pub(super) fn log_query(
     monitors: &MonitorIndex,
 ) -> anyhow::Result<Option<LogQuery>> {
     let Some((first, last)) = plans.first().zip(plans.last()) else { return Ok(None) };
-    let mut targets = Vec::new();
+    let mut targets = BTreeSet::new();
     for plan in plans {
         for monitor_index in &plan.monitor_indices {
             let monitor = monitors
                 .monitor(*monitor_index)
                 .ok_or_else(|| anyhow::anyhow!("block plan references unknown monitor"))?;
             if let Target::Event(target) = &monitor.target {
-                targets.push(LogTarget::new(target.address, target.topic0));
+                targets.insert(LogTarget::new(target.address, target.topic0));
             }
         }
     }
@@ -98,7 +98,7 @@ pub(super) fn log_query(
     }
     let range = BlockRange::new(first.block_number, last.block_number)
         .ok_or_else(|| anyhow::anyhow!("block plans are not ordered"))?;
-    Ok(Some(LogQuery::new(range, targets)))
+    Ok(Some(LogQuery::new(range, targets.into_iter().collect())))
 }
 
 /// Fetches one block, identifies call candidates, fetches their execution
@@ -142,11 +142,9 @@ pub(super) async fn prepare_calls(
         .filter_map(|(index, transaction)| {
             let selector =
                 transaction.input.get(..4).and_then(|bytes| Selector::try_from(bytes).ok())?;
-            monitor_index.call(plan.block_number, transaction.to, selector).and_then(
-                |(monitor_index, _, _)| {
-                    plan.monitor_indices.binary_search(&monitor_index).is_ok().then_some(index)
-                },
-            )
+            monitor_index
+                .has_call(plan.block_number, transaction.to, selector, &plan.monitor_indices)
+                .then_some(index)
         })
         .collect::<Vec<_>>();
     let hashes = candidates.iter().map(|index| block.transactions[*index].hash).collect::<Vec<_>>();

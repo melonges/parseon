@@ -39,6 +39,11 @@ struct FakeStorage {
     commits: Mutex<Vec<BlockCommit>>,
 }
 
+struct MultiMonitorStorage {
+    monitors: Vec<Monitor>,
+    commits: Mutex<Vec<BlockCommit>>,
+}
+
 struct RejectingStorage(Monitor);
 
 #[derive(Default)]
@@ -59,6 +64,18 @@ fn completed(outcome: PollOutcome) -> PollResult {
 impl IndexStorage for FakeStorage {
     async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>> {
         Ok((self.monitor.chain == chain).then(|| self.monitor.clone()).into_iter().collect())
+    }
+
+    async fn commit_block(&self, commit: &BlockCommit) -> anyhow::Result<()> {
+        self.commits.lock().unwrap().push(commit.clone());
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl IndexStorage for MultiMonitorStorage {
+    async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>> {
+        Ok(self.monitors.iter().filter(|monitor| monitor.chain == chain).cloned().collect())
     }
 
     async fn commit_block(&self, commit: &BlockCommit) -> anyhow::Result<()> {
@@ -92,6 +109,7 @@ struct PendingSource;
 #[derive(Default)]
 struct RecordingLogSource {
     ranges: Mutex<Vec<BlockRange>>,
+    targets: Mutex<Vec<Vec<crate::ports::LogTarget>>>,
 }
 
 struct ParallelSource {
@@ -277,6 +295,7 @@ impl BlockSource for RecordingLogSource {
 
     async fn fetch_logs(&self, query: LogQuery) -> anyhow::Result<Vec<crate::SourceLog>> {
         self.ranges.lock().unwrap().push(query.range());
+        self.targets.lock().unwrap().push(query.targets().to_vec());
         Ok(Vec::new())
     }
 }
@@ -479,23 +498,90 @@ async fn fetches_execution_only_for_indexed_call_targets() {
 }
 
 #[tokio::test]
+async fn fetches_once_and_fans_out_overlapping_call_monitors() {
+    let target = Target::Call(CallTarget {
+        address: Address::ZERO,
+        selector: [1, 2, 3, 4].into(),
+        inputs: Vec::new(),
+    });
+    let make_monitor = |id| Monitor {
+        id: MonitorId::new(id).unwrap(),
+        chain: Chain::new(1),
+        target: target.clone(),
+        start_block: 10,
+        end_block: None,
+        cursor: Cursor(None),
+        completed: false,
+        enabled: true,
+        filter: Filter::All,
+    };
+    let storage = MultiMonitorStorage {
+        monitors: vec![make_monitor(7), make_monitor(8)],
+        commits: Mutex::new(Vec::new()),
+    };
+    let source = CandidateSource::default();
+    let config = WorkerConfig {
+        chain: Chain::new(1),
+        batch_size: NonZeroU64::new(1).unwrap(),
+        block_concurrency: NonZeroUsize::new(1).unwrap(),
+        poll_interval: Duration::from_millis(100),
+    };
+
+    let poll = completed(
+        run_once(
+            &config,
+            PollContext {
+                storage: &storage,
+                source: &source,
+                cache: &FakeCache::default(),
+                storage_writes: &Semaphore::new(1),
+                sink: &NoopSink,
+                telemetry: &NoopTelemetry,
+                cancel: &CancellationToken::new(),
+            },
+        )
+        .await
+        .unwrap(),
+    );
+
+    assert_eq!(*source.candidates.lock().unwrap(), [B256::repeat_byte(1)]);
+    assert_eq!(poll.decoded, 2);
+    let commits = storage.commits.lock().unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(
+        commits[0].monitors.iter().map(|monitor| monitor.id.get()).collect::<Vec<_>>(),
+        [7, 8]
+    );
+    assert_eq!(
+        commits[0]
+            .results
+            .iter()
+            .map(|result| match result {
+                crate::DecodedResult::Call(call) => call.monitor_id.get(),
+                crate::DecodedResult::Event(_) => panic!("unexpected event result"),
+            })
+            .collect::<Vec<_>>(),
+        [7, 8]
+    );
+}
+
+#[tokio::test]
 async fn fetches_contiguous_event_blocks_with_one_ranged_log_query() {
-    let storage = FakeStorage {
-        monitor: Monitor {
-            id: MonitorId::new(7).unwrap(),
-            chain: Chain::new(1),
-            target: Target::Event(EventTarget {
-                address: Address::repeat_byte(1),
-                topic0: B256::repeat_byte(2),
-                params: Vec::new(),
-            }),
-            start_block: 10,
-            end_block: Some(12),
-            cursor: Cursor(None),
-            completed: false,
-            enabled: true,
-            filter: Filter::All,
-        },
+    let address = Address::repeat_byte(1);
+    let topic0 = B256::repeat_byte(2);
+    let make_monitor = |id| Monitor {
+        id: MonitorId::new(id).unwrap(),
+        chain: Chain::new(1),
+        target: Target::Event(EventTarget { address, topic0, params: Vec::new() }),
+        start_block: 10,
+        end_block: Some(12),
+        cursor: Cursor(None),
+        completed: false,
+        enabled: true,
+        filter: Filter::All,
+    };
+    let storage = MultiMonitorStorage {
+        monitors: vec![make_monitor(7), make_monitor(8)],
         commits: Mutex::new(Vec::new()),
     };
     let source = RecordingLogSource::default();
@@ -525,6 +611,10 @@ async fn fetches_contiguous_event_blocks_with_one_ranged_log_query() {
 
     assert_eq!(poll.decoded, 0);
     assert_eq!(*source.ranges.lock().unwrap(), [BlockRange::new(10, 12).unwrap()]);
+    assert_eq!(
+        *source.targets.lock().unwrap(),
+        [vec![crate::ports::LogTarget::new(address, topic0)]]
+    );
 }
 
 #[tokio::test]

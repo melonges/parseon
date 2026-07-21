@@ -2,8 +2,9 @@
 //!
 //! [`MonitorIndex`] is rebuilt every poll from the monitor list loaded by
 //! storage. It hashes call targets by `(address, selector)` and event targets
-//! by `(address, topic0)` so the per-transaction and per-log hot paths are
-//! O(1) lookups instead of O(monitors) scans.
+//! by `(address, topic0)`, then groups overlapping monitors by compatible ABI
+//! wire layout. Matching source data is decoded once per layout and fanned out
+//! to every covering monitor in that group.
 //!
 //! [`decode_calls`] and [`decode_events`] consume one block's worth of
 //! transactions or logs, filter by the current block plan's monitor indices,
@@ -21,23 +22,29 @@ use super::{
     SourceLog, Target,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CallLayout(Vec<String>);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct EventLayout(Vec<(String, bool)>);
+
 #[derive(Debug)]
-struct IndexedCall {
-    monitor_index: usize,
+struct IndexedCallLayout {
+    monitor_indices: Vec<usize>,
     decoder: CallDecoder,
 }
 
 #[derive(Debug)]
-struct IndexedEvent {
-    monitor_index: usize,
+struct IndexedEventLayout {
+    monitor_indices: Vec<usize>,
     decoder: EventDecoder,
 }
 
 #[derive(Debug)]
 pub(crate) struct MonitorIndex {
     monitors: Vec<Arc<Monitor>>,
-    calls: FxHashMap<(Address, Selector), IndexedCall>,
-    events: FxHashMap<(Address, B256), IndexedEvent>,
+    calls: FxHashMap<(Address, Selector), FxHashMap<CallLayout, IndexedCallLayout>>,
+    events: FxHashMap<(Address, B256), FxHashMap<EventLayout, IndexedEventLayout>>,
 }
 
 impl MonitorIndex {
@@ -47,37 +54,52 @@ impl MonitorIndex {
             .filter(|monitor| monitor.enabled && !monitor.completed)
             .map(Arc::new)
             .collect::<Vec<_>>();
-        let mut calls = FxHashMap::default();
-        let mut events = FxHashMap::default();
+        let mut calls =
+            FxHashMap::<(Address, Selector), FxHashMap<CallLayout, IndexedCallLayout>>::default();
+        let mut events =
+            FxHashMap::<(Address, B256), FxHashMap<EventLayout, IndexedEventLayout>>::default();
         for (index, monitor) in monitors.iter().enumerate() {
             match &monitor.target {
                 Target::Call(target) => {
-                    anyhow::ensure!(
-                        calls
-                            .insert(
-                                (target.address, target.selector),
-                                IndexedCall {
-                                    monitor_index: index,
-                                    decoder: CallDecoder::new(&target.inputs),
-                                },
-                            )
-                            .is_none(),
-                        "duplicate call monitor target"
-                    );
+                    let layout =
+                        CallLayout(target.inputs.iter().map(|param| param.sol_type()).collect());
+                    let layouts = calls
+                        .entry((target.address, target.selector))
+                        .or_insert_with(FxHashMap::default);
+                    if let Some(group) = layouts.get_mut(&layout) {
+                        group.monitor_indices.push(index);
+                    } else {
+                        layouts.insert(
+                            layout,
+                            IndexedCallLayout {
+                                monitor_indices: vec![index],
+                                decoder: CallDecoder::new(&target.inputs),
+                            },
+                        );
+                    }
                 }
                 Target::Event(target) => {
-                    anyhow::ensure!(
-                        events
-                            .insert(
-                                (target.address, target.topic0),
-                                IndexedEvent {
-                                    monitor_index: index,
-                                    decoder: EventDecoder::new(&target.params, target.topic0)?,
-                                },
-                            )
-                            .is_none(),
-                        "duplicate event monitor target"
+                    let layout = EventLayout(
+                        target
+                            .params
+                            .iter()
+                            .map(|param| (param.sol_type(), param.indexed))
+                            .collect(),
                     );
+                    let layouts = events
+                        .entry((target.address, target.topic0))
+                        .or_insert_with(FxHashMap::default);
+                    if let Some(group) = layouts.get_mut(&layout) {
+                        group.monitor_indices.push(index);
+                    } else {
+                        layouts.insert(
+                            layout,
+                            IndexedEventLayout {
+                                monitor_indices: vec![index],
+                                decoder: EventDecoder::new(&target.params, target.topic0)?,
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -92,32 +114,52 @@ impl MonitorIndex {
         self.monitors.get(index)
     }
 
-    pub(crate) fn call(
+    fn monitor_is_planned(
+        &self,
+        monitor_index: usize,
+        block_number: BlockNumber,
+        planned_indices: &[usize],
+    ) -> bool {
+        planned_indices.binary_search(&monitor_index).is_ok()
+            && self
+                .monitors
+                .get(monitor_index)
+                .is_some_and(|monitor| monitor.needs_block(block_number))
+    }
+
+    pub(crate) fn has_call(
         &self,
         block_number: BlockNumber,
         address: Address,
         selector: Selector,
-    ) -> Option<(usize, &Monitor, &CallDecoder)> {
-        self.calls
-            .get(&(address, selector))
-            .map(|entry| {
-                (entry.monitor_index, self.monitors[entry.monitor_index].as_ref(), &entry.decoder)
+        planned_indices: &[usize],
+    ) -> bool {
+        self.calls.get(&(address, selector)).is_some_and(|layouts| {
+            layouts.values().any(|group| {
+                group
+                    .monitor_indices
+                    .iter()
+                    .any(|index| self.monitor_is_planned(*index, block_number, planned_indices))
             })
-            .filter(|(_, monitor, _)| monitor.needs_block(block_number))
+        })
     }
 
-    pub(crate) fn event(
+    #[cfg(test)]
+    fn has_event(
         &self,
         block_number: BlockNumber,
         address: Address,
         topic0: B256,
-    ) -> Option<(usize, &Monitor, &EventDecoder)> {
-        self.events
-            .get(&(address, topic0))
-            .map(|entry| {
-                (entry.monitor_index, self.monitors[entry.monitor_index].as_ref(), &entry.decoder)
+        planned_indices: &[usize],
+    ) -> bool {
+        self.events.get(&(address, topic0)).is_some_and(|layouts| {
+            layouts.values().any(|group| {
+                group
+                    .monitor_indices
+                    .iter()
+                    .any(|index| self.monitor_is_planned(*index, block_number, planned_indices))
             })
-            .filter(|(_, monitor, _)| monitor.needs_block(block_number))
+        })
     }
 }
 
@@ -149,44 +191,62 @@ pub(crate) fn decode_calls(
         else {
             continue;
         };
-        let Some((monitor_index, monitor, decoder)) = monitors.call(block.number, tx.to, selector)
-        else {
+        let Some(layouts) = monitors.calls.get(&(tx.to, selector)) else {
             continue;
         };
-        if monitor_indices.binary_search(&monitor_index).is_err() {
-            continue;
-        }
         let calldata = tx.input.get(4..).unwrap_or_default();
-        let Target::Call(target) = &monitor.target else {
-            continue;
-        };
-        let params = match decoder.decode(calldata) {
-            Ok(params) => params,
-            Err(error) => {
-                tracing::warn!(
-                    monitor = %monitor.id,
-                    selector = %target.selector,
-                    tx = %tx.hash,
-                    "decode error: {error}"
-                );
+        for (layout, group) in layouts {
+            if !group
+                .monitor_indices
+                .iter()
+                .any(|index| monitors.monitor_is_planned(*index, block.number, monitor_indices))
+            {
                 continue;
             }
-        };
-        if monitor.filter.evaluate(FilterContext::Call {
-            block_number: block.number,
-            tx_hash: tx.hash,
-            from: tx.from,
-            to: tx.to,
-            params: &params,
-        })? {
-            calls.push(DecodedCall {
-                monitor_id: monitor.id,
-                block_number: block.number,
-                transaction_hash: tx.hash,
-                from: tx.from,
-                to: tx.to,
-                params,
-            });
+            let params = match group.decoder.decode(calldata) {
+                Ok(params) => params,
+                Err(error) => {
+                    let monitor_ids = group
+                        .monitor_indices
+                        .iter()
+                        .copied()
+                        .filter(|index| {
+                            monitors.monitor_is_planned(*index, block.number, monitor_indices)
+                        })
+                        .map(|index| monitors.monitors[index].id.get())
+                        .collect::<Vec<_>>();
+                    tracing::warn!(
+                        selector = %selector,
+                        tx = %tx.hash,
+                        ?layout,
+                        ?monitor_ids,
+                        "call decode error for monitor ABI layout: {error}"
+                    );
+                    continue;
+                }
+            };
+            for monitor_index in group.monitor_indices.iter().copied() {
+                if !monitors.monitor_is_planned(monitor_index, block.number, monitor_indices) {
+                    continue;
+                }
+                let monitor = monitors.monitors[monitor_index].as_ref();
+                if monitor.filter.evaluate(FilterContext::Call {
+                    block_number: block.number,
+                    tx_hash: tx.hash,
+                    from: tx.from,
+                    to: tx.to,
+                    params: &params,
+                })? {
+                    calls.push(DecodedCall {
+                        monitor_id: monitor.id,
+                        block_number: block.number,
+                        transaction_hash: tx.hash,
+                        from: tx.from,
+                        to: tx.to,
+                        params: params.clone(),
+                    });
+                }
+            }
         }
     }
     Ok(calls)
@@ -203,12 +263,15 @@ pub(crate) fn decode_events(
         let Some(topic0) = log.topics.first().copied() else {
             continue;
         };
-        let Some((monitor_index, monitor, decoder)) =
-            monitors.event(block_number, log.address, topic0)
-        else {
+        let Some(layouts) = monitors.events.get(&(log.address, topic0)) else {
             continue;
         };
-        if monitor_indices.binary_search(&monitor_index).is_err() {
+        if !layouts.values().any(|group| {
+            group
+                .monitor_indices
+                .iter()
+                .any(|index| monitors.monitor_is_planned(*index, block_number, monitor_indices))
+        }) {
             continue;
         }
         anyhow::ensure!(!log.removed, "removed log returned for finalized block {block_number}");
@@ -220,28 +283,58 @@ pub(crate) fn decode_events(
             .transaction_hash
             .ok_or_else(|| anyhow::anyhow!("log is missing transaction hash"))?;
         let log_index = log.log_index.ok_or_else(|| anyhow::anyhow!("log is missing log index"))?;
-        let Target::Event(target) = &monitor.target else { unreachable!() };
-        let params = decoder.decode(&log.topics, &log.data).map_err(|error| {
-            anyhow::anyhow!(
-                "event decode failed for monitor {} (topic0 {}): {error}",
-                monitor.id,
-                target.topic0
-            )
-        })?;
-        if monitor.filter.evaluate(FilterContext::Event {
-            block_number,
-            tx_hash: transaction_hash,
-            emitter: log.address,
-            log_index,
-            params: &params,
-        })? {
-            events.push(DecodedEvent {
-                monitor_id: monitor.id,
-                block_number,
-                transaction_hash,
-                log_index,
-                params,
-            });
+        for (layout, group) in layouts {
+            if !group
+                .monitor_indices
+                .iter()
+                .any(|index| monitors.monitor_is_planned(*index, block_number, monitor_indices))
+            {
+                continue;
+            }
+            let params = match group.decoder.decode(&log.topics, &log.data) {
+                Ok(params) => params,
+                Err(error) => {
+                    let monitor_ids = group
+                        .monitor_indices
+                        .iter()
+                        .copied()
+                        .filter(|index| {
+                            monitors.monitor_is_planned(*index, block_number, monitor_indices)
+                        })
+                        .map(|index| monitors.monitors[index].id.get())
+                        .collect::<Vec<_>>();
+                    tracing::warn!(
+                        %topic0,
+                        tx = %transaction_hash,
+                        log_index,
+                        ?layout,
+                        ?monitor_ids,
+                        "event decode error for monitor ABI layout: {error}"
+                    );
+                    continue;
+                }
+            };
+            for monitor_index in group.monitor_indices.iter().copied() {
+                if !monitors.monitor_is_planned(monitor_index, block_number, monitor_indices) {
+                    continue;
+                }
+                let monitor = monitors.monitors[monitor_index].as_ref();
+                if monitor.filter.evaluate(FilterContext::Event {
+                    block_number,
+                    tx_hash: transaction_hash,
+                    emitter: log.address,
+                    log_index,
+                    params: &params,
+                })? {
+                    events.push(DecodedEvent {
+                        monitor_id: monitor.id,
+                        block_number,
+                        transaction_hash,
+                        log_index,
+                        params: params.clone(),
+                    });
+                }
+            }
         }
     }
     Ok(events)
@@ -255,7 +348,7 @@ mod tests {
 
     use super::*;
     use crate::abi::AbiParam;
-    use crate::filter::Filter;
+    use crate::filter::{Filter, FilterDefinition, FilterExpression};
     use crate::monitor::Monitor;
     use crate::{BlockTransaction, CallTarget, Cursor, DecodedValue, EventTarget, Target};
 
@@ -275,6 +368,14 @@ mod tests {
             enabled: true,
             filter: Filter::All,
         }
+    }
+
+    fn filtered_monitor(id: u64, target: Target, expression: serde_json::Value) -> Monitor {
+        let expression: FilterExpression = serde_json::from_value(expression).unwrap();
+        let filter = FilterDefinition::prepare(expression, &target).unwrap().1;
+        let mut monitor = monitor(id, target, None);
+        monitor.filter = filter;
+        monitor
     }
 
     #[test]
@@ -297,26 +398,31 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(index.call(10, call_address, selector).unwrap().1.id.get(), 1);
-        assert_eq!(index.event(12, event_address, topic0).unwrap().1.id.get(), 2);
-        assert!(index.call(9, call_address, selector).is_none());
-        assert!(index.call(13, call_address, selector).is_none());
-        assert!(index.call(10, event_address, selector).is_none());
-        assert!(index.event(10, call_address, topic0).is_none());
+        assert!(index.has_call(10, call_address, selector, &[0]));
+        assert!(index.has_event(12, event_address, topic0, &[1]));
+        assert!(!index.has_call(9, call_address, selector, &[0]));
+        assert!(!index.has_call(13, call_address, selector, &[0]));
+        assert!(!index.has_call(10, event_address, selector, &[0]));
+        assert!(!index.has_event(10, call_address, topic0, &[1]));
     }
 
     #[test]
-    fn excludes_cursor_progress_and_duplicate_targets() {
+    fn excludes_cursor_progress_and_accepts_duplicate_targets() {
         let address = address!("0000000000000000000000000000000000000001");
         let selector = Selector::from([1, 2, 3, 4]);
         let target = || Target::Call(CallTarget { address, selector, inputs: Vec::new() });
-        let index = MonitorIndex::new(vec![monitor(1, target(), Some(10))]).unwrap();
-        assert!(index.call(10, address, selector).is_none());
-        assert_eq!(index.call(11, address, selector).unwrap().1.id.get(), 1);
+        let index =
+            MonitorIndex::new(vec![monitor(1, target(), Some(10)), monitor(2, target(), None)])
+                .unwrap();
 
-        let error = MonitorIndex::new(vec![monitor(1, target(), None), monitor(2, target(), None)])
-            .unwrap_err();
-        assert!(error.to_string().contains("duplicate call monitor target"));
+        assert!(!index.has_call(10, address, selector, &[0]));
+        assert!(index.has_call(11, address, selector, &[0]));
+        assert!(index.has_call(10, address, selector, &[0, 1]));
+        assert_eq!(index.calls[&(address, selector)].len(), 1);
+        assert_eq!(
+            index.calls[&(address, selector)].values().next().unwrap().monitor_indices,
+            [0, 1]
+        );
     }
 
     #[test]
@@ -392,6 +498,114 @@ mod tests {
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].monitor_id.get(), 9);
         assert_eq!(decoded[0].params[1], DecodedValue::Uint(U256::from(42)));
+    }
+
+    #[test]
+    fn fans_out_compatible_calls_and_isolates_incompatible_layouts() {
+        let contract = address!("0000000000000000000000000000000000000001");
+        let recipient = Address::repeat_byte(7);
+        let call = transferCall { to: recipient, value: U256::from(42) };
+        let selector = Selector::from(transferCall::SELECTOR);
+        let first_target = Target::Call(CallTarget {
+            address: contract,
+            selector,
+            inputs: vec![
+                AbiParam::new("to", DynSolType::Address).unwrap(),
+                AbiParam::new("value", DynSolType::Uint(256)).unwrap(),
+            ],
+        });
+        let renamed_target = Target::Call(CallTarget {
+            address: contract,
+            selector,
+            inputs: vec![
+                AbiParam::new("recipient", DynSolType::Address).unwrap(),
+                AbiParam::new("amount", DynSolType::Uint(256)).unwrap(),
+            ],
+        });
+        let incompatible_target = Target::Call(CallTarget {
+            address: contract,
+            selector,
+            inputs: vec![AbiParam::new("text", DynSolType::String).unwrap()],
+        });
+        let index = MonitorIndex::new(vec![
+            monitor(1, first_target.clone(), None),
+            filtered_monitor(
+                2,
+                renamed_target,
+                serde_json::json!({"field":"params.amount","op":"eq","value":"42"}),
+            ),
+            filtered_monitor(
+                3,
+                first_target,
+                serde_json::json!({"field":"params.value","op":"gt","value":"42"}),
+            ),
+            monitor(4, incompatible_target, None),
+        ])
+        .unwrap();
+        assert_eq!(index.calls[&(contract, selector)].len(), 2);
+
+        let transaction = BlockTransaction {
+            hash: B256::repeat_byte(9),
+            from: Address::ZERO,
+            to: contract,
+            input: call.abi_encode().into(),
+        };
+        let block = SourceBlock { number: 10, transactions: vec![transaction.clone()] };
+        let decoded = decode_calls(
+            &block,
+            &index,
+            &[0, 1, 2, 3],
+            &[0],
+            vec![ExecutionOutcome { transaction_hash: transaction.hash, succeeded: true }],
+        )
+        .unwrap();
+
+        assert_eq!(decoded.iter().map(|call| call.monitor_id.get()).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(decoded[0].params[0], DecodedValue::Address(recipient));
+        assert_eq!(decoded[1].params[1], DecodedValue::Uint(U256::from(42)));
+    }
+
+    #[test]
+    fn fans_out_compatible_events_and_isolates_indexed_layout_errors() {
+        let address = address!("0000000000000000000000000000000000000001");
+        let topic0 = B256::repeat_byte(5);
+        let non_indexed = |name| EventTarget {
+            address,
+            topic0,
+            params: vec![AbiParam::new(name, DynSolType::Uint(256)).unwrap()],
+        };
+        let indexed = EventTarget {
+            address,
+            topic0,
+            params: vec![AbiParam::new("value", DynSolType::Uint(256)).unwrap().with_indexed(true)],
+        };
+        let index = MonitorIndex::new(vec![
+            monitor(1, Target::Event(non_indexed("value")), None),
+            monitor(2, Target::Event(non_indexed("amount")), None),
+            monitor(3, Target::Event(indexed), None),
+        ])
+        .unwrap();
+        assert_eq!(index.events[&(address, topic0)].len(), 2);
+
+        let decoded = decode_events(
+            10,
+            &index,
+            &[0, 1, 2],
+            vec![SourceLog {
+                block_number: Some(10),
+                transaction_hash: Some(B256::repeat_byte(9)),
+                log_index: Some(3),
+                address,
+                topics: vec![topic0],
+                data: U256::from(42).to_be_bytes::<32>().to_vec().into(),
+                removed: false,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(decoded.iter().map(|event| event.monitor_id.get()).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(decoded[0].params, [DecodedValue::Uint(U256::from(42))]);
+        assert_eq!(decoded[1].params, [DecodedValue::Uint(U256::from(42))]);
     }
 
     #[test]
