@@ -9,9 +9,11 @@ All notable changes to Parseon are documented in this file.
 - Allow multiple monitors to target the same chain, contract, and function selector or event topic while retaining independent ranges, filters, cursors, and result storage.
 - Document every public `parseon-core` item with crate-level, module-level, and item-level rustdoc, and publish package metadata (`description`, `keywords`, `categories`) for crates.io discoverability.
 - Adopt `rustc-hash`, `parking_lot`, and `arc-swap` in `parseon-core` for faster monitor-target lookups, non-poisoning status locks, and lock-free status snapshots.
+- Add `scripts/gen_erpc.py` to regenerate `erpc.yaml` from chainlist.org with the top N mainnet EVM chains by TVL, probe each candidate URL with `eth_getBlockByNumber(["latest", false])`, rank endpoints by chainlist.org's height-then-latency algorithm, and ship the top 5 (Ethereum, Base, BNB, Arbitrum, Ink) as explicit `networks`/`upstreams` ordered best-first with shared failsafe and state-poller defaults.
 
 ### Changed
 
+- Pin the Compose eRPC image to the `0.1.1` release tag, set a 3 GiB container memory limit with `GOMEMLIMIT=2700MiB`, add `restart: unless-stopped`, and invoke `/erpc-server` explicitly so the distroless image starts correctly.
 - Reuse matching RPC data and compatible ABI decoders across overlapping monitor targets before applying each monitor's filter and persisting its own results.
 - Isolate ABI decode failures to the affected monitor layout so an incompatible definition cannot stall other monitors on the chain.
 - Allow operators to disable the per-worker in-memory block cache by setting `BLOCK_CACHE_SIZE=0`.

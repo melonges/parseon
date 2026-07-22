@@ -48,8 +48,13 @@ services:
 
   erpc:
     profiles: ["erpc"]
-    image: ghcr.io/erpc/erpc:latest
-    command: ["--config", "/root/erpc.yaml"]
+    image: ghcr.io/erpc/erpc:0.1.1
+    command: ["/erpc-server", "--config", "/root/erpc.yaml"]
+    restart: unless-stopped
+    environment:
+      # Go soft memory limit: ~90% of mem_limit to avoid hard OOM kills.
+      GOMEMLIMIT: 2700MiB
+    mem_limit: 3g
     ports:
       - "4000:4000"
       - "4001:4001"

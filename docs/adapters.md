@@ -55,7 +55,7 @@ eRPC is an external JSON-RPC gateway, not a Rust `BlockSource` adapter. Start th
 docker compose --profile erpc up -d
 ```
 
-The development config uses public endpoint discovery and an in-memory cache for finalized responses. Register each complete [eRPC route](https://docs.erpc.cloud/operation/url), unchanged, through Parseon's chain API:
+The development config pins the eRPC image to the `0.1.1` release, sets a 3 GiB container memory limit with `GOMEMLIMIT=2700MiB`, and registers the top 5 mainnet EVM chains by TVL from [chainlist.org](https://chainlist.org/rpcs.json) as explicit `networks`/`upstreams`, with an in-memory cache for finalized responses. The generator probes each candidate URL with `eth_getBlockByNumber(["latest", false])` and ranks endpoints by chainlist.org's algorithm — higher block height first, ties broken by lower latency — so dead, stale, and slow endpoints sink to the bottom and failures are dropped. Regenerate with `python3 scripts/gen_erpc.py --top 5` (pass `--filter-stale` to also drop endpoints >3 blocks behind or >5s slower than the chain leader, or `--top 0` to include every mainnet EVM chain). Register each complete [eRPC route](https://docs.erpc.cloud/operation/url), unchanged, through Parseon's chain API:
 
 ```bash
 curl -X POST http://localhost:8080/chains \
@@ -63,7 +63,7 @@ curl -X POST http://localhost:8080/chains \
   -d '{"rpc_url":"http://localhost:4000/main/evm/8453","enabled":true}'
 ```
 
-Public discovery is suitable only for development. Production deployments should configure multiple private providers/upstreams, credentials, limits, and failure policies in eRPC instead of relying on the [free public discovery catalog](https://docs.erpc.cloud/free).
+The bundled chainlist upstreams are public, rate-limited, and best-effort; the generator's probe filter weeds out dead, unauthorized, and chain ID-mismatched endpoints at config time, but transient 429s still appear in the bootstrap logs. eRPC retries in the background and routes around failed upstreams. Production deployments should replace them with multiple private providers/upstreams, credentials, limits, and failure policies in eRPC instead of relying on the [free public discovery catalog](https://docs.erpc.cloud/free).
 
 Smoke-check chain ID, finalized head, block fetching, and JSON-RPC batching before registration:
 

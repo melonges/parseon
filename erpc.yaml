@@ -1,4 +1,10 @@
-logLevel: info
+# Generated from https://chainlist.org/rpcs.json.
+# Top N mainnet EVM chains by TVL with at least one HTTP/HTTPS RPC.
+# Endpoints probed with eth_getBlockByNumber and ranked by chainlist.org's
+# height-then-latency algorithm; failures dropped.
+# Regenerate with: python3 scripts/gen_erpc.py --top 5 [--no-probe] [--filter-stale] [--src rpcs.json] [--dst erpc.yaml]
+
+logLevel: warn
 
 metrics:
   enabled: true
@@ -15,3 +21,461 @@ database:
 
 projects:
   - id: main
+    upstreamDefaults:
+      autoIgnoreUnsupportedMethods: true
+      evm:
+        # State-poller cadence for public RPCs; raise if you add many chains.
+        statePollerInterval: 10m
+      failsafe:
+        - matchMethod: "*"
+          timeout:
+            duration: 30s
+            quantile: 0.9
+            minDuration: 1s
+            maxDuration: 30s
+          retry:
+            maxAttempts: 3
+            delay: 200ms
+    networkDefaults:
+      multiplexing: true
+      evm:
+        getLogsSplitOnError: true
+        getLogsMaxAllowedRange: 10000
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        alias: eth
+      - architecture: evm
+        evm:
+          chainId: 56
+        alias: bnb
+      - architecture: evm
+        evm:
+          chainId: 8453
+        alias: base
+      - architecture: evm
+        evm:
+          chainId: 42161
+        alias: arb1
+      - architecture: evm
+        evm:
+          chainId: 57073
+        alias: ink
+    upstreams:
+      - id: chain1-0
+        endpoint: 'https://mainnet.gateway.tenderly.co'
+        evm:
+          chainId: 1
+      - id: chain1-1
+        endpoint: 'https://gateway.tenderly.co/public/mainnet'
+        evm:
+          chainId: 1
+      - id: chain1-2
+        endpoint: 'https://ethereum-mainnet.gateway.tatum.io'
+        evm:
+          chainId: 1
+      - id: chain1-3
+        endpoint: 'https://eth-rpc.keccak.io'
+        evm:
+          chainId: 1
+      - id: chain1-4
+        endpoint: 'https://eth.drpc.org'
+        evm:
+          chainId: 1
+      - id: chain1-5
+        endpoint: 'https://0xrpc.io/eth'
+        evm:
+          chainId: 1
+      - id: chain1-6
+        endpoint: 'https://rpc.eth.gateway.fm'
+        evm:
+          chainId: 1
+      - id: chain1-7
+        endpoint: 'https://ethereum-rpc.publicnode.com'
+        evm:
+          chainId: 1
+      - id: chain1-8
+        endpoint: 'https://ethereum.public.blockpi.network/v1/rpc/public'
+        evm:
+          chainId: 1
+      - id: chain1-9
+        endpoint: 'https://eth-mainnet.rpcfast.com?api_key=xbhWBI1Wkguk8SNMu1bvvLurPGLXmgwYeC4S6g2H7WdwFigZSmPWVZRxrskEQwIf'
+        evm:
+          chainId: 1
+      - id: chain1-10
+        endpoint: 'https://ethereum-public.nodies.app'
+        evm:
+          chainId: 1
+      - id: chain1-11
+        endpoint: 'https://rpc.mevblocker.io/noreverts'
+        evm:
+          chainId: 1
+      - id: chain1-12
+        endpoint: 'https://rpc-eth.blockmachine.io'
+        evm:
+          chainId: 1
+      - id: chain1-13
+        endpoint: 'https://rpc.mevblocker.io/fullprivacy'
+        evm:
+          chainId: 1
+      - id: chain1-14
+        endpoint: 'https://eth.api.pocket.network'
+        evm:
+          chainId: 1
+      - id: chain1-15
+        endpoint: 'https://rpc.mevblocker.io'
+        evm:
+          chainId: 1
+      - id: chain1-16
+        endpoint: 'https://eth.blockrazor.xyz'
+        evm:
+          chainId: 1
+      - id: chain1-17
+        endpoint: 'https://eth-mainnet.public.blastapi.io'
+        evm:
+          chainId: 1
+      - id: chain1-18
+        endpoint: 'https://eth1.lava.build'
+        evm:
+          chainId: 1
+      - id: chain1-19
+        endpoint: 'https://api.zan.top/eth-mainnet'
+        evm:
+          chainId: 1
+      - id: chain1-20
+        endpoint: 'https://rpc.mevblocker.io/fast'
+        evm:
+          chainId: 1
+      - id: chain1-21
+        endpoint: 'https://uk.rpc.blxrbdn.com'
+        evm:
+          chainId: 1
+      - id: chain1-22
+        endpoint: 'https://singapore.rpc.blxrbdn.com'
+        evm:
+          chainId: 1
+      - id: chain1-23
+        endpoint: 'https://eth.meowrpc.com'
+        evm:
+          chainId: 1
+      - id: chain1-24
+        endpoint: 'https://1rpc.io/eth'
+        evm:
+          chainId: 1
+      - id: chain1-25
+        endpoint: 'https://mainnet.rpc.sentio.xyz'
+        evm:
+          chainId: 1
+      - id: chain1-26
+        endpoint: 'https://eth.rpc.blxrbdn.com'
+        evm:
+          chainId: 1
+      - id: chain1-27
+        endpoint: 'https://virginia.rpc.blxrbdn.com'
+        evm:
+          chainId: 1
+      - id: chain1-28
+        endpoint: 'https://ethereum-json-rpc.stakely.io'
+        evm:
+          chainId: 1
+      - id: chain1-29
+        endpoint: 'https://rpc.fullsend.to'
+        evm:
+          chainId: 1
+      - id: chain1-30
+        endpoint: 'https://rpc.flashbots.net/fast'
+        evm:
+          chainId: 1
+      - id: chain1-31
+        endpoint: 'https://rpc.flashbots.net'
+        evm:
+          chainId: 1
+      - id: chain1-32
+        endpoint: 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7'
+        evm:
+          chainId: 1
+      - id: chain1-33
+        endpoint: 'https://eth.api.onfinality.io/public'
+        evm:
+          chainId: 1
+      - id: chain56-0
+        endpoint: 'https://bsc-rpc.keccak.io'
+        evm:
+          chainId: 56
+      - id: chain56-1
+        endpoint: 'https://public-bsc.nownodes.io'
+        evm:
+          chainId: 56
+      - id: chain56-2
+        endpoint: 'https://bsc.blockrazor.xyz'
+        evm:
+          chainId: 56
+      - id: chain56-3
+        endpoint: 'https://bsc.rpc.blxrbdn.com'
+        evm:
+          chainId: 56
+      - id: chain56-4
+        endpoint: 'https://bsc.drpc.org'
+        evm:
+          chainId: 56
+      - id: chain56-5
+        endpoint: 'https://bsc.meowrpc.com'
+        evm:
+          chainId: 56
+      - id: chain56-6
+        endpoint: 'https://public-bsc-mainnet.fastnode.io'
+        evm:
+          chainId: 56
+      - id: chain56-7
+        endpoint: 'https://binance-smart-chain-public.nodies.app'
+        evm:
+          chainId: 56
+      - id: chain56-8
+        endpoint: 'https://bsc-mainnet.public.blastapi.io'
+        evm:
+          chainId: 56
+      - id: chain56-9
+        endpoint: 'https://bsc.rpc.sentio.xyz'
+        evm:
+          chainId: 56
+      - id: chain56-10
+        endpoint: 'https://api.zan.top/bsc-mainnet'
+        evm:
+          chainId: 56
+      - id: chain56-11
+        endpoint: 'https://binance.nodereal.io'
+        evm:
+          chainId: 56
+      - id: chain56-12
+        endpoint: 'https://bnb.api.onfinality.io/public'
+        evm:
+          chainId: 56
+      - id: chain56-13
+        endpoint: 'https://0.48.club'
+        evm:
+          chainId: 56
+      - id: chain56-14
+        endpoint: 'https://bsc-mainnet.rpcfast.com?api_key=xbhWBI1Wkguk8SNMu1bvvLurPGLXmgwYeC4S6g2H7WdwFigZSmPWVZRxrskEQwIf'
+        evm:
+          chainId: 56
+      - id: chain56-15
+        endpoint: 'https://bsc-mainnet.gateway.tatum.io'
+        evm:
+          chainId: 56
+      - id: chain56-16
+        endpoint: 'https://rpc-bsc.48.club'
+        evm:
+          chainId: 56
+      - id: chain56-17
+        endpoint: 'https://bsc-dataseed3.ninicoin.io'
+        evm:
+          chainId: 56
+      - id: chain56-18
+        endpoint: 'https://bsc-dataseed4.ninicoin.io'
+        evm:
+          chainId: 56
+      - id: chain56-19
+        endpoint: 'https://bsc-dataseed2.ninicoin.io'
+        evm:
+          chainId: 56
+      - id: chain56-20
+        endpoint: 'https://bsc-dataseed3.bnbchain.org'
+        evm:
+          chainId: 56
+      - id: chain56-21
+        endpoint: 'https://bsc-dataseed2.bnbchain.org'
+        evm:
+          chainId: 56
+      - id: chain56-22
+        endpoint: 'https://bsc-dataseed4.bnbchain.org'
+        evm:
+          chainId: 56
+      - id: chain56-23
+        endpoint: 'https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3'
+        evm:
+          chainId: 56
+      - id: chain56-24
+        endpoint: 'https://bsc-dataseed1.bnbchain.org'
+        evm:
+          chainId: 56
+      - id: chain56-25
+        endpoint: 'https://bsc-rpc.publicnode.com'
+        evm:
+          chainId: 56
+      - id: chain56-26
+        endpoint: 'https://bsc-dataseed1.defibit.io'
+        evm:
+          chainId: 56
+      - id: chain56-27
+        endpoint: 'https://bsc-dataseed4.defibit.io'
+        evm:
+          chainId: 56
+      - id: chain56-28
+        endpoint: 'https://bsc-dataseed1.ninicoin.io'
+        evm:
+          chainId: 56
+      - id: chain56-29
+        endpoint: 'https://bsc-dataseed3.defibit.io'
+        evm:
+          chainId: 56
+      - id: chain56-30
+        endpoint: 'https://bsc-dataseed.bnbchain.org'
+        evm:
+          chainId: 56
+      - id: chain56-31
+        endpoint: 'https://bsc-dataseed2.defibit.io'
+        evm:
+          chainId: 56
+      - id: chain8453-0
+        endpoint: 'https://rpc.baseazul.dev'
+        evm:
+          chainId: 8453
+      - id: chain8453-1
+        endpoint: 'https://base.rpc.blxrbdn.com'
+        evm:
+          chainId: 8453
+      - id: chain8453-2
+        endpoint: 'https://base.public.blockpi.network/v1/rpc/public'
+        evm:
+          chainId: 8453
+      - id: chain8453-3
+        endpoint: 'https://gateway.tenderly.co/public/base'
+        evm:
+          chainId: 8453
+      - id: chain8453-4
+        endpoint: 'https://base-rpc.publicnode.com'
+        evm:
+          chainId: 8453
+      - id: chain8453-5
+        endpoint: 'https://base-public.nodies.app'
+        evm:
+          chainId: 8453
+      - id: chain8453-6
+        endpoint: 'https://base-rpc.keccak.io'
+        evm:
+          chainId: 8453
+      - id: chain8453-7
+        endpoint: 'https://base.gateway.tenderly.co'
+        evm:
+          chainId: 8453
+      - id: chain8453-8
+        endpoint: 'https://base.drpc.org'
+        evm:
+          chainId: 8453
+      - id: chain8453-9
+        endpoint: 'https://base-mainnet.gateway.tatum.io'
+        evm:
+          chainId: 8453
+      - id: chain8453-10
+        endpoint: 'https://base.meowrpc.com'
+        evm:
+          chainId: 8453
+      - id: chain8453-11
+        endpoint: 'https://mainnet.base.org'
+        evm:
+          chainId: 8453
+      - id: chain8453-12
+        endpoint: 'https://api.zan.top/base-mainnet'
+        evm:
+          chainId: 8453
+      - id: chain8453-13
+        endpoint: 'https://base-mainnet.public.blastapi.io'
+        evm:
+          chainId: 8453
+      - id: chain8453-14
+        endpoint: 'https://developer-access-mainnet.base.org'
+        evm:
+          chainId: 8453
+      - id: chain8453-15
+        endpoint: 'https://base.lava.build'
+        evm:
+          chainId: 8453
+      - id: chain8453-16
+        endpoint: 'https://base.rpc.sentio.xyz'
+        evm:
+          chainId: 8453
+      - id: chain8453-17
+        endpoint: 'https://1rpc.io/base'
+        evm:
+          chainId: 8453
+      - id: chain8453-18
+        endpoint: 'https://base.api.pocket.network'
+        evm:
+          chainId: 8453
+      - id: chain42161-0
+        endpoint: 'https://arbitrum.drpc.org'
+        evm:
+          chainId: 42161
+      - id: chain42161-1
+        endpoint: 'https://arbitrum.gateway.tenderly.co'
+        evm:
+          chainId: 42161
+      - id: chain42161-2
+        endpoint: 'https://arb-one-mainnet.gateway.tatum.io'
+        evm:
+          chainId: 42161
+      - id: chain42161-3
+        endpoint: 'https://arb-rpc.keccak.io'
+        evm:
+          chainId: 42161
+      - id: chain42161-4
+        endpoint: 'https://public-arb-mainnet.fastnode.io'
+        evm:
+          chainId: 42161
+      - id: chain42161-5
+        endpoint: 'https://arbitrum-one-mainnet.gateway.tatum.io'
+        evm:
+          chainId: 42161
+      - id: chain42161-6
+        endpoint: 'https://arb1.lava.build'
+        evm:
+          chainId: 42161
+      - id: chain42161-7
+        endpoint: 'https://arb-one.api.pocket.network'
+        evm:
+          chainId: 42161
+      - id: chain42161-8
+        endpoint: 'https://api.zan.top/arb-one'
+        evm:
+          chainId: 42161
+      - id: chain42161-9
+        endpoint: 'https://arbitrum.meowrpc.com'
+        evm:
+          chainId: 42161
+      - id: chain42161-10
+        endpoint: 'https://arbitrum-one-public.nodies.app'
+        evm:
+          chainId: 42161
+      - id: chain42161-11
+        endpoint: 'https://arbitrum-one.public.blastapi.io'
+        evm:
+          chainId: 42161
+      - id: chain42161-12
+        endpoint: 'https://1rpc.io/arb'
+        evm:
+          chainId: 42161
+      - id: chain42161-13
+        endpoint: 'https://arbitrum-one-rpc.publicnode.com'
+        evm:
+          chainId: 42161
+      - id: chain42161-14
+        endpoint: 'https://arbitrum.api.onfinality.io/public'
+        evm:
+          chainId: 42161
+      - id: chain57073-0
+        endpoint: 'https://rpc-qnd.inkonchain.com'
+        evm:
+          chainId: 57073
+      - id: chain57073-1
+        endpoint: 'https://ink.drpc.org'
+        evm:
+          chainId: 57073
+      - id: chain57073-2
+        endpoint: 'https://rpc-gel.inkonchain.com'
+        evm:
+          chainId: 57073
+      - id: chain57073-3
+        endpoint: 'https://ink.api.pocket.network'
+        evm:
+          chainId: 57073
