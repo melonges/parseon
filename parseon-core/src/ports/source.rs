@@ -72,6 +72,13 @@ pub trait BlockSource: Send + Sync {
     async fn fetch_logs(&self, _query: LogQuery) -> anyhow::Result<Vec<SourceLog>> {
         anyhow::bail!("log fetching is not implemented")
     }
+    /// Rotates the endpoint URL of an already-connected source in place,
+    /// keeping cached state such as the chain ID. The default implementation
+    /// bails; sources that support in-place rotation should override it.
+    /// Callers must guarantee the new URL serves the same chain.
+    fn set_rpc_url(&self, _rpc_url: &Url) -> anyhow::Result<()> {
+        anyhow::bail!("RPC URL rotation is not supported by this block source")
+    }
 }
 
 /// An inclusive, non-empty range of finalized EVM block numbers.

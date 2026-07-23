@@ -6,6 +6,8 @@ All notable changes to Parseon are documented in this file.
 
 ### Added
 
+- Apply chain creation, enable/disable, and deletion to running workers without restarting Parseon; deletions stop the worker before removing its data.
+- Rotate a chain's RPC endpoint URL in place on the running worker via Alloy's `Http::set_url`, resetting endpoint capability probes while keeping the cached chain ID; sources that cannot rotate restart their worker instead.
 - Allow multiple monitors to target the same chain, contract, and function selector or event topic while retaining independent ranges, filters, cursors, and result storage.
 - Document every public `parseon-core` item with crate-level, module-level, and item-level rustdoc, and publish package metadata (`description`, `keywords`, `categories`) for crates.io discoverability.
 - Adopt `rustc-hash`, `parking_lot`, and `arc-swap` in `parseon-core` for faster monitor-target lookups, non-poisoning status locks, and lock-free status snapshots.
@@ -27,8 +29,13 @@ All notable changes to Parseon are documented in this file.
 - Build `SinkBatch` with a linear scan over the small per-block monitors slice instead of allocating a `HashMap` per commit.
 - Split `parseon-core`'s `ports.rs` into `ports/{storage,source,cache,telemetry,sink}.rs`, `worker.rs` into `worker/{mod,prepare,commit,tests}.rs`, and move root domain types into `model.rs` so `lib.rs` is a re-export facade.
 
+### Fixed
+
+- Keep persisted chain state and live workers ordered during concurrent mutations and startup reconciliation, and reject new worker starts once supervisor shutdown begins.
+
 ### Breaking
 
+- Return `200 OK` from chain create/update and `204 No Content` from chain delete now that worker changes apply immediately, replacing the `202 Accepted` responses that signaled restart-delayed application.
 - Replace the core adapter contracts for executed transactions, per-block log requests, cache ownership, and atomic commits with ordered outcomes, exact ranged log targets, shared immutable blocks, and borrowed commits.
 - Change `DecodedValue::Bytes` from `Vec<u8>` to alloy `Bytes` (`Arc<[u8]>`) so decoded values are cheap to clone through the indexing pipeline. Storage adapters bind `value.as_ref()` at the SQL/BSON boundary.
 

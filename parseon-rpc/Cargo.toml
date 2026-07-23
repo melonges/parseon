@@ -10,14 +10,16 @@ workspace = true
 [dependencies]
 parseon-core = { path = "../parseon-core" }
 alloy = { version = "2.1", features = ["rpc-types-eth", "provider-http", "providers", "essentials", "reqwest"] }
+alloy-json-rpc = "2.1"
 alloy-rpc-types-any = "2.1"
 anyhow = "1.0"
 async-trait = "0.1"
 futures-util = "0.3"
+parking_lot = "0.12"
 tokio = { version = "1.52", features = ["sync"] }
+tower = "0.5"
 tracing = "0.1"
 thiserror = "2.0"
 
 [dev-dependencies]
-alloy-json-rpc = "2.1"
 serde_json = "1.0"

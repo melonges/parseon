@@ -46,9 +46,9 @@ pub trait IndexStorage: Send + Sync {
     async fn commit_block(&self, commit: &BlockCommit) -> anyhow::Result<()>;
 }
 
-/// A chain known to Parseon at process startup, with its RPC URL and enabled
-/// state. The supervisor reads this list once and starts one worker per
-/// enabled chain.
+/// A registered chain with its RPC URL and enabled state. The supervisor
+/// applies the full list at startup and individual registrations whenever the
+/// registry changes, running one worker per enabled chain.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RegisteredChain {
     /// Chain identity.
@@ -85,7 +85,7 @@ pub struct NewChain {
     pub chain: Chain,
     /// Write-only RPC URL for the worker.
     pub rpc_url: Url,
-    /// Whether the chain should start a worker on next startup.
+    /// Whether the chain runs a worker.
     pub enabled: bool,
 }
 
@@ -107,7 +107,7 @@ pub struct ChainRecord {
     /// Write-only RPC URL. Persisted for workers; never returned by the HTTP
     /// API.
     pub rpc_url: Url,
-    /// Whether the chain runs a worker on startup.
+    /// Whether the chain runs a worker.
     pub enabled: bool,
     /// When the record was first created.
     pub created_at: DateTime<Utc>,

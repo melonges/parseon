@@ -9,6 +9,7 @@ use alloy::eips::BlockNumberOrTag;
 use alloy::network::AnyNetwork;
 use alloy::network::BlockResponse;
 use alloy::providers::{Provider, RootProvider};
+use alloy::rpc::client::RpcClient;
 use alloy::rpc::types::Filter;
 use alloy::transports::http::reqwest::Client;
 use anyhow::Context;
@@ -17,6 +18,7 @@ use futures_util::{StreamExt, stream};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::fetch;
+use crate::transport::RotatingHttp;
 use parseon_core::ports::{
     BlockRange, BlockSource, BlockSourceFactory, BlockSourceRequestError, InFlightGuard, LogQuery,
     LogTarget, NoopTelemetry, Telemetry,
@@ -46,6 +48,9 @@ impl Default for RpcConfig {
 
 pub struct JsonRpcBlockSource {
     provider: HttpProvider,
+    /// Shared transport behind `provider`, kept for in-place RPC URL
+    /// rotation. `None` only in tests with a mocked transport.
+    transport: Option<RotatingHttp>,
     request_concurrency: usize,
     batch_size: usize,
     permits: Semaphore,
@@ -85,17 +90,31 @@ impl JsonRpcBlockSource {
         config: RpcConfig,
         telemetry: Arc<dyn Telemetry>,
     ) -> anyhow::Result<Self> {
-        Ok(Self::with_provider(build(rpc_url)?, config, telemetry))
+        let (provider, transport) = build(rpc_url)?;
+        Ok(Self::with_transport(provider, Some(transport), config, telemetry))
     }
 
+    /// Builds a source over a provider with a mocked transport (no live
+    /// transport to rotate).
+    #[cfg(test)]
     fn with_provider(
         provider: HttpProvider,
+        config: RpcConfig,
+        telemetry: Arc<dyn Telemetry>,
+    ) -> Self {
+        Self::with_transport(provider, None, config, telemetry)
+    }
+
+    fn with_transport(
+        provider: HttpProvider,
+        transport: Option<RotatingHttp>,
         config: RpcConfig,
         telemetry: Arc<dyn Telemetry>,
     ) -> Self {
         let request_concurrency = config.request_concurrency.get();
         Self {
             provider,
+            transport,
             request_concurrency,
             batch_size: config.batch_size.get(),
             permits: Semaphore::new(request_concurrency),
@@ -362,6 +381,18 @@ impl BlockSource for JsonRpcBlockSource {
     async fn fetch_logs(&self, query: LogQuery) -> anyhow::Result<Vec<SourceLog>> {
         self.adaptive_logs(query).await.map_err(source_request_error)
     }
+
+    fn set_rpc_url(&self, rpc_url: &Url) -> anyhow::Result<()> {
+        let transport =
+            self.transport.as_ref().context("RPC URL rotation requires a live HTTP transport")?;
+        transport.set_url(rpc_url.clone());
+        // Endpoint capabilities (batching, block receipts) may differ on the
+        // new URL; re-probe them. The cached chain ID stays valid because
+        // callers guarantee the new URL serves the same chain.
+        self.batch_capability.store(CAPABILITY_UNKNOWN, Ordering::Relaxed);
+        self.block_receipts_capability.store(CAPABILITY_UNKNOWN, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 fn source_request_error(error: anyhow::Error) -> anyhow::Error {
@@ -419,14 +450,14 @@ fn unsupported_batch(error: &anyhow::Error) -> bool {
     })
 }
 
-pub(crate) fn build(rpc_url: &Url) -> anyhow::Result<HttpProvider> {
+pub(crate) fn build(rpc_url: &Url) -> anyhow::Result<(HttpProvider, RotatingHttp)> {
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .context("build HTTP client")?;
-    let rpc_client =
-        alloy::rpc::client::ClientBuilder::default().http_with_client(client, rpc_url.clone());
-    Ok(RootProvider::<AnyNetwork>::new(rpc_client))
+    let transport = RotatingHttp::new(client, rpc_url.clone());
+    let rpc_client = RpcClient::new(transport.clone(), transport.guess_local());
+    Ok((RootProvider::<AnyNetwork>::new(rpc_client), transport))
 }
 
 pub(crate) async fn chain_id(provider: &HttpProvider) -> anyhow::Result<u64> {
@@ -455,9 +486,12 @@ mod tests {
     use alloy::transports::mock::Asserter;
     use alloy_json_rpc::ErrorPayload;
     use alloy_rpc_types_any::AnyTransactionReceipt;
-    use parseon_core::ports::{BlockRange, LogQuery, LogTarget, NoopTelemetry};
+    use parseon_core::ports::{BlockRange, BlockSource, LogQuery, LogTarget, NoopTelemetry};
 
-    use super::{CAPABILITY_UNSUPPORTED, JsonRpcBlockSource, RpcConfig, exact_log_filters};
+    use super::{
+        CAPABILITY_SUPPORTED, CAPABILITY_UNKNOWN, CAPABILITY_UNSUPPORTED, JsonRpcBlockSource,
+        RpcConfig, exact_log_filters,
+    };
     use crate::fetch;
 
     fn source(asserter: Asserter) -> JsonRpcBlockSource {
@@ -702,6 +736,32 @@ mod tests {
 
         assert!(source.optimized_receipts(10, &hashes).await.is_err());
         assert_eq!(asserter.read_q().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn set_rpc_url_rotates_the_transport_and_resets_endpoint_capabilities() {
+        let source = JsonRpcBlockSource::connect(
+            &"http://localhost:8545".parse().unwrap(),
+            RpcConfig::default(),
+            Arc::new(NoopTelemetry),
+        )
+        .unwrap();
+        source.batch_capability.store(CAPABILITY_SUPPORTED, Ordering::Relaxed);
+        source.block_receipts_capability.store(CAPABILITY_SUPPORTED, Ordering::Relaxed);
+
+        BlockSource::set_rpc_url(&source, &"http://localhost:9545".parse().unwrap()).unwrap();
+
+        assert_eq!(source.batch_capability.load(Ordering::Relaxed), CAPABILITY_UNKNOWN);
+        assert_eq!(source.block_receipts_capability.load(Ordering::Relaxed), CAPABILITY_UNKNOWN);
+    }
+
+    #[tokio::test]
+    async fn set_rpc_url_bails_for_mocked_transports() {
+        let source = source(Asserter::new());
+
+        assert!(
+            BlockSource::set_rpc_url(&source, &"http://localhost:9545".parse().unwrap()).is_err()
+        );
     }
 
     #[test]

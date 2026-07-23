@@ -2,5 +2,6 @@
 
 mod fetch;
 mod provider;
+mod transport;
 
 pub use provider::{JsonRpcBlockSource, JsonRpcBlockSourceFactory, RpcConfig};

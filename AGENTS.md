@@ -45,8 +45,8 @@
 2. `cp .env.example .env` — `.env` is gitignored; loaded via `dotenvy` + clap env vars.
 3. Run the Parseon app on the host. Its default `STORAGE_URL` connects to the
    Compose PostgreSQL instance.
-4. Register RPC endpoints with `POST /chains`. Parseon discovers and stores each endpoint's chain ID.
-5. Restart Parseon after chain registry changes; workers load the registry once at process startup.
+4. Register RPC endpoints with `POST /chains`. Parseon discovers and stores each endpoint's chain ID and starts an enabled chain's worker immediately.
+5. Chain registry changes apply without a restart: `PATCH /chains/{chain_id}` starts/stops workers on enable toggles and rotates the RPC URL in place, and `DELETE /chains/{chain_id}` stops the worker before removing its data.
 
 PostgreSQL data is retained in the `pgdata` named volume. Check database logs
 with `docker compose logs -f postgres`. The Dockerfile remains available for
@@ -119,7 +119,7 @@ parseon-server
 ```
 
 - `parseon-core`: domain models, ABI decoding, commands, views, application services, workers, supervisor, and ports.
-- `parseon-rpc`: Alloy JSON-RPC `BlockSource` adapter, receipt batching, and log fetching.
+- `parseon-rpc`: Alloy JSON-RPC `BlockSource` adapter with in-place RPC URL rotation, receipt batching, and log fetching.
 - `parseon-postgres`: SQLx repositories, dynamic result tables, migrations, and atomic block commits.
 - `parseon-mongodb`: transactional MongoDB repositories, shared results collection, BSON conversion, and indexes.
 - `parseon-memory-cache`: chain-aware LRU `BlockCache` and per-worker factory.
@@ -130,7 +130,7 @@ Core must not depend on the server or any adapter crate. HTTP handlers call core
 
 ## Key design decisions
 
-- **Startup-loaded chain registry**: Each chain enabled at process startup gets one isolated worker, source, cache, cancellation token, and status record. Registry changes require a restart to affect workers.
+- **Hot-applied chain registry**: Each enabled chain gets one isolated worker, source, cache, cancellation token, and status record. The supervisor applies the persisted registry snapshot at startup; afterwards its `SupervisorHandle` applies creation, enable/disable, RPC URL rotation, and deletion without a restart. URL changes rotate the running source in place via Alloy's `Http::set_url` (falling back to a worker restart when a source cannot rotate), and deletions stop the worker before removing its data.
 - **Direct RPC endpoints**: Registered endpoints determine their EIP-155 chain IDs and must support the `finalized` block tag.
 - **Write-only RPC URLs**: Provider endpoints are persisted for workers but never returned or logged.
 - **Database-backed monitor state**: The worker reloads monitors each poll; no in-memory registry can retain stale cursors.

@@ -39,6 +39,8 @@ pub mod views;
 
 mod indexer;
 mod scheduler;
+#[cfg(test)]
+pub(crate) mod testkit;
 mod worker;
 
 pub mod model;

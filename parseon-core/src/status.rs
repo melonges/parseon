@@ -24,7 +24,7 @@ pub enum WorkerState {
     Running,
     /// Source validation or the worker's latest poll failed.
     Degraded,
-    /// The chain was disabled when the process started.
+    /// The chain is disabled and has no worker.
     Disabled,
 }
 
@@ -98,7 +98,7 @@ impl ChainStatus {
 
     /// Creates a status in the [`WorkerState::Degraded`] state with `message`
     /// as the last error. The supervisor uses this when source validation
-    /// fails at startup.
+    /// fails before a worker starts.
     pub fn degraded(chain_id: ChainId, message: impl Into<String>) -> Self {
         Self::new(ChainStatusSnapshot {
             chain_id,
@@ -169,6 +169,11 @@ impl RuntimeStatus {
     /// Inserts or replaces the status for `status.snapshot().chain_id`.
     pub fn replace(&self, status: ChainStatus) {
         self.inner.write().insert(status.snapshot().chain_id, status);
+    }
+
+    /// Removes the status for `chain_id`, if present.
+    pub fn remove(&self, chain_id: ChainId) {
+        self.inner.write().remove(&chain_id);
     }
 
     /// Returns one snapshot per registered chain, sorted by chain ID.

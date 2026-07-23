@@ -13,7 +13,10 @@ use anyhow::Context;
 use crate::abi::{TargetSpec, parse_target_signature};
 use crate::commands::{CreateChain, CreateMonitor, PreviewFilter, ResultQuery, UpdateChain};
 use crate::filter::{self, FilterDefinition, FilterPreview};
-use crate::ports::{BlockSourceFactory, ChainUpdate, NewChain, NewMonitor, Storage};
+use crate::ports::{
+    BlockSourceFactory, ChainRecord, ChainUpdate, NewChain, NewMonitor, RegisteredChain, Storage,
+};
+use crate::supervisor::SupervisorHandle;
 use crate::views::{ChainView, MonitorResultView, MonitorView};
 use crate::{CallTarget, Chain, ChainId, EventTarget, MonitorId, Target, Url, worker};
 
@@ -33,19 +36,28 @@ fn invalid(message: impl Into<String>) -> anyhow::Error {
 
 /// Chain management service: create, list, get, update, and delete chains.
 ///
-/// Each mutating method validates the RPC endpoint (if its URL is changing)
-/// before forwarding to [`crate::ports::ChainRepository`]. The service is
-/// cheap to clone: it holds two `Arc<dyn ...>` references.
+/// Each mutating method validates the RPC endpoint (if its URL is changing),
+/// persists the change via [`crate::ports::ChainRepository`], and applies it
+/// to the running supervisor: creations and enable/disable start and stop
+/// workers, RPC URL changes rotate the live endpoint, and deletions retire
+/// the worker before its data is removed — all without a restart. The
+/// service is cheap to clone.
 #[derive(Clone)]
 pub struct ChainService {
     storage: Arc<dyn Storage>,
     sources: Arc<dyn BlockSourceFactory>,
+    supervisor: SupervisorHandle,
 }
 
 impl ChainService {
-    /// Creates a chain service over `storage` and `sources`.
-    pub fn new(storage: Arc<dyn Storage>, sources: Arc<dyn BlockSourceFactory>) -> Self {
-        Self { storage, sources }
+    /// Creates a chain service over `storage` and `sources`, applying registry
+    /// changes through `supervisor`.
+    pub fn new(
+        storage: Arc<dyn Storage>,
+        sources: Arc<dyn BlockSourceFactory>,
+        supervisor: SupervisorHandle,
+    ) -> Self {
+        Self { storage, sources, supervisor }
     }
 
     async fn validate_source(
@@ -69,11 +81,14 @@ impl ChainService {
 
     pub async fn create(&self, command: CreateChain) -> anyhow::Result<ChainView> {
         let chain = self.validate_source(&command.rpc_url, None).await?;
-        self.storage
+        let _mutation = self.supervisor.lock_mutations().await;
+        let record = self
+            .storage
             .create_chain(NewChain { chain, rpc_url: command.rpc_url, enabled: command.enabled })
             .await
-            .context("create chain")
-            .map(Into::into)
+            .context("create chain")?;
+        self.supervisor.apply(registered(&record)).await;
+        Ok(record.into())
     }
 
     pub async fn list(&self) -> anyhow::Result<Vec<ChainView>> {
@@ -105,16 +120,33 @@ impl ChainService {
         if let Some(url) = command.rpc_url.as_ref() {
             self.validate_source(url, Some(chain)).await?;
         }
-        self.storage
+        let _mutation = self.supervisor.lock_mutations().await;
+        self.storage.get_chain(chain).await.context("get chain before update")?;
+        let record = self
+            .storage
             .update_chain(chain, ChainUpdate { rpc_url: command.rpc_url, enabled: command.enabled })
             .await
-            .context("update chain")
-            .map(Into::into)
+            .context("update chain")?;
+        self.supervisor.apply(registered(&record)).await;
+        Ok(record.into())
     }
 
     pub async fn delete(&self, chain_id: ChainId) -> anyhow::Result<()> {
         let chain = Chain::new(chain_id);
+        let _mutation = self.supervisor.lock_mutations().await;
+        // Stop the worker before deleting so no in-flight commit can race
+        // the removal of the chain's monitors and result tables.
+        self.supervisor.retire(chain.id).await;
         self.storage.delete_chain(chain).await.context("delete chain")
+    }
+}
+
+/// Builds the supervisor-facing registration for a persisted chain record.
+fn registered(record: &ChainRecord) -> RegisteredChain {
+    RegisteredChain {
+        chain: record.chain,
+        rpc_url: record.rpc_url.clone(),
+        enabled: record.enabled,
     }
 }
 
@@ -266,12 +298,134 @@ fn validate_range(start_block: u64, end_block: Option<u64>) -> anyhow::Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::validate_range;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::{ChainService, validate_range};
+    use crate::commands::{CreateChain, UpdateChain};
+    use crate::status::WorkerState;
+    use crate::testkit::{TestContext, url, wait_for};
 
     #[test]
     fn validates_monitor_ranges() {
         assert!(validate_range(0, None).is_ok());
         assert!(validate_range(10, Some(10)).is_ok());
         assert!(validate_range(10, Some(9)).is_err());
+    }
+
+    fn service(context: &TestContext) -> ChainService {
+        ChainService::new(
+            context.storage.clone(),
+            Arc::new(context.sources.clone()),
+            context.handle(),
+        )
+    }
+
+    fn create_chain(enabled: bool) -> CreateChain {
+        CreateChain { rpc_url: url("http://localhost:8545"), enabled }
+    }
+
+    #[tokio::test]
+    async fn create_starts_a_worker_for_an_enabled_chain() {
+        let context = TestContext::new();
+        let service = service(&context);
+
+        let view = service.create(create_chain(true)).await.unwrap();
+
+        assert_eq!(view.chain_id, 1);
+        wait_for(|| context.statuses.snapshot()[0].worker_state == WorkerState::Running).await;
+        let polls = context.storage.load_monitor_calls();
+        wait_for(|| context.storage.load_monitor_calls() > polls).await;
+    }
+
+    #[tokio::test]
+    async fn create_registers_a_disabled_chain_without_a_worker() {
+        let context = TestContext::new();
+        let service = service(&context);
+
+        let view = service.create(create_chain(false)).await.unwrap();
+
+        assert_eq!(view.chain_id, 1);
+        assert!(!view.enabled);
+        assert_eq!(context.statuses.snapshot()[0].worker_state, WorkerState::Disabled);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(context.storage.load_monitor_calls(), 0, "a disabled chain must not poll");
+    }
+
+    #[tokio::test]
+    async fn update_applies_enable_disable_and_url_rotation_without_restart() {
+        let context = TestContext::new();
+        let service = service(&context);
+        service.create(create_chain(true)).await.unwrap();
+        wait_for(|| context.statuses.snapshot()[0].worker_state == WorkerState::Running).await;
+
+        service
+            .update(1, UpdateChain { rpc_url: Some(url("http://localhost:9545")), enabled: None })
+            .await
+            .unwrap();
+        assert_eq!(context.sources.rotations(), vec![url("http://localhost:9545")]);
+        assert!(context.statuses.snapshot()[0].enabled);
+
+        service.update(1, UpdateChain { rpc_url: None, enabled: Some(false) }).await.unwrap();
+        assert_eq!(context.statuses.snapshot()[0].worker_state, WorkerState::Disabled);
+        let polls = context.storage.load_monitor_calls();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(context.storage.load_monitor_calls(), polls, "disabled chain must not poll");
+
+        service.update(1, UpdateChain { rpc_url: None, enabled: Some(true) }).await.unwrap();
+        wait_for(|| context.statuses.snapshot()[0].worker_state == WorkerState::Running).await;
+    }
+
+    #[tokio::test]
+    async fn delete_retires_the_worker_before_removing_the_chain() {
+        let context = TestContext::new();
+        let service = service(&context);
+        service.create(create_chain(true)).await.unwrap();
+        wait_for(|| context.statuses.snapshot()[0].worker_state == WorkerState::Running).await;
+
+        service.delete(1).await.unwrap();
+
+        assert_eq!(context.storage.deleted_chains(), vec![1]);
+        assert!(context.statuses.snapshot().is_empty(), "delete removes the status");
+        let polls = context.storage.load_monitor_calls();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            context.storage.load_monitor_calls(),
+            polls,
+            "the retired worker must not poll after deletion"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_update_and_delete_remain_one_ordered_mutation() {
+        let context = TestContext::new();
+        let service = service(&context);
+        service.create(create_chain(true)).await.unwrap();
+        wait_for(|| context.statuses.snapshot()[0].worker_state == WorkerState::Running).await;
+
+        let pause = context.storage.pause_next_update();
+        let updating = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service.update(1, UpdateChain { rpc_url: None, enabled: Some(false) }).await
+            })
+        };
+        pause.wait_until_reached().await;
+
+        let deleting = {
+            let service = service.clone();
+            tokio::spawn(async move { service.delete(1).await })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(context.storage.deleted_chains().is_empty(), "delete must wait for update apply");
+        assert_eq!(context.statuses.snapshot()[0].worker_state, WorkerState::Running);
+
+        pause.resume();
+        updating.await.unwrap().unwrap();
+        deleting.await.unwrap().unwrap();
+
+        assert_eq!(context.storage.deleted_chains(), vec![1]);
+        assert!(context.statuses.snapshot().is_empty());
     }
 }

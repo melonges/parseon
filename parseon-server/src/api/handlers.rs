@@ -66,7 +66,7 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> AppResult<axum::re
     tag = "chains",
     request_body = CreateChain,
     responses(
-        (status = ACCEPTED, description = "Chain configuration persisted; worker starts after restart", body = ChainRow),
+        (status = OK, description = "Chain registered; an enabled chain's worker starts immediately", body = ChainRow),
         (status = BAD_REQUEST, description = "Invalid RPC endpoint or finalized support", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
@@ -74,13 +74,13 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> AppResult<axum::re
 pub(crate) async fn create_chain(
     State(state): State<AppState>,
     body: Result<Json<CreateChain>, JsonRejection>,
-) -> AppResult<(axum::http::StatusCode, Json<ChainRow>)> {
+) -> AppResult<Json<ChainRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
     let row = state
         .chains
         .create(CreateChainCommand { rpc_url: body.rpc_url, enabled: body.enabled })
         .await?;
-    Ok((axum::http::StatusCode::ACCEPTED, Json(row.into())))
+    Ok(Json(row.into()))
 }
 
 #[utoipa::path(
@@ -121,7 +121,7 @@ pub(crate) async fn get_chain(
     params(("chain_id" = u64, Path, description = "EIP-155 chain ID")),
     request_body = UpdateChain,
     responses(
-        (status = ACCEPTED, description = "Chain configuration persisted; worker change takes effect after restart", body = ChainRow),
+        (status = OK, description = "Chain updated; enable/disable and RPC URL changes apply to the running worker immediately", body = ChainRow),
         (status = BAD_REQUEST, description = "Invalid update or RPC endpoint", body = ErrorResponse),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
@@ -130,13 +130,13 @@ pub(crate) async fn update_chain(
     State(state): State<AppState>,
     Path(chain_id): Path<u64>,
     body: Result<Json<UpdateChain>, JsonRejection>,
-) -> AppResult<(axum::http::StatusCode, Json<ChainRow>)> {
+) -> AppResult<Json<ChainRow>> {
     let Json(body) = body.map_err(|e| AppError::BadRequest(e.body_text()))?;
     let row = state
         .chains
         .update(chain_id, UpdateChainCommand { rpc_url: body.rpc_url, enabled: body.enabled })
         .await?;
-    Ok((axum::http::StatusCode::ACCEPTED, Json(row.into())))
+    Ok(Json(row.into()))
 }
 
 #[utoipa::path(
@@ -145,7 +145,7 @@ pub(crate) async fn update_chain(
     tag = "chains",
     params(("chain_id" = u64, Path, description = "EIP-155 chain ID")),
     responses(
-        (status = ACCEPTED, description = "Chain data deleted; runtime worker and status retire after restart"),
+        (status = NO_CONTENT, description = "Chain worker stopped and chain data deleted"),
         (status = INTERNAL_SERVER_ERROR, description = "Database error", body = ErrorResponse)
     )
 )]
@@ -154,7 +154,7 @@ pub(crate) async fn delete_chain(
     Path(chain_id): Path<u64>,
 ) -> AppResult<axum::http::StatusCode> {
     state.chains.delete(chain_id).await?;
-    Ok(axum::http::StatusCode::ACCEPTED)
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(

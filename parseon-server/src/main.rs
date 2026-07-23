@@ -70,29 +70,38 @@ async fn main() -> anyhow::Result<()> {
         telemetry.clone(),
     ));
     let runtime_status = parseon_core::status::RuntimeStatus::default();
-    let chains = parseon_core::services::ChainService::new(storage.clone(), source_factory.clone());
+
+    // Runs one isolated worker per chain enabled in the startup registry
+    // snapshot; its control handle applies later registry changes live.
+    let mut supervisor = parseon_core::supervisor::Supervisor::new(
+        supervisor_config,
+        registered_chains,
+        parseon_core::supervisor::SupervisorDependencies {
+            storage: storage.clone(),
+            sink: sink.clone(),
+            source_factory: source_factory.clone(),
+            cache_factory: Arc::new(parseon_memory_cache::MemoryBlockCacheFactory::new(
+                config.indexing.block_cache_size,
+            )),
+            statuses: runtime_status.clone(),
+            telemetry: telemetry.clone(),
+        },
+    );
+    // Finish applying the captured registry before the HTTP API can accept a
+    // chain mutation, so no stale startup registration can overwrite it.
+    supervisor.reconcile(&cancel).await;
+    let chains = parseon_core::services::ChainService::new(
+        storage.clone(),
+        source_factory.clone(),
+        supervisor.handle(),
+    );
     let monitors =
         parseon_core::services::MonitorService::new(storage.clone(), source_factory.clone());
     let listener = tokio::net::TcpListener::bind(&config.server.http_listen).await?;
     tracing::info!(listen = %config.server.http_listen, "http API listening");
 
-    // Runs one isolated worker per chain enabled in the startup registry snapshot.
     let mut supervisor_handle = tokio::spawn({
         let cancel = cancel.clone();
-        let supervisor = parseon_core::supervisor::Supervisor::new(
-            supervisor_config,
-            registered_chains,
-            parseon_core::supervisor::SupervisorDependencies {
-                storage: storage.clone(),
-                sink: sink.clone(),
-                source_factory: source_factory.clone(),
-                cache_factory: Arc::new(parseon_memory_cache::MemoryBlockCacheFactory::new(
-                    config.indexing.block_cache_size,
-                )),
-                statuses: runtime_status.clone(),
-                telemetry: telemetry.clone(),
-            },
-        );
         async move {
             supervisor.run(cancel).await;
         }

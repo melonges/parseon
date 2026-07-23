@@ -51,6 +51,10 @@ pub(crate) fn router(state: AppState) -> axum::Router {
 
 #[cfg(test)]
 mod tests {
+    use std::num::{NonZeroU64, NonZeroUsize};
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header};
     use serde_json::Value;
@@ -58,8 +62,10 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{AppState, router};
+    use parseon_core::ports::NoopSink;
     use parseon_core::services::{ChainService, MonitorService};
     use parseon_core::status::{ChainStatus, RuntimeStatus};
+    use parseon_core::supervisor::{Supervisor, SupervisorConfig, SupervisorDependencies};
     use parseon_rpc::JsonRpcBlockSourceFactory;
 
     fn test_router() -> axum::Router {
@@ -71,13 +77,31 @@ mod tests {
         running.record_success(20_000_000);
         statuses.replace(running);
         statuses.replace(ChainStatus::disabled(8453));
-        let storage = std::sync::Arc::new(parseon_postgres::PostgresStorage::new(pool));
-        let sources = std::sync::Arc::new(JsonRpcBlockSourceFactory::default());
+        let storage = Arc::new(parseon_postgres::PostgresStorage::new(pool));
+        let sources = Arc::new(JsonRpcBlockSourceFactory::default());
+        let telemetry = Arc::new(crate::metrics::Metrics::default());
+        let supervisor = Supervisor::new(
+            SupervisorConfig {
+                batch_size: NonZeroU64::new(10).expect("non-zero"),
+                poll_interval: Duration::from_secs(1),
+                block_concurrency: NonZeroUsize::new(2).expect("non-zero"),
+                storage_write_concurrency: NonZeroUsize::new(2).expect("non-zero"),
+            },
+            Vec::new(),
+            SupervisorDependencies {
+                storage: storage.clone(),
+                sink: Arc::new(NoopSink),
+                source_factory: sources.clone(),
+                cache_factory: Arc::new(parseon_memory_cache::MemoryBlockCacheFactory::new(0)),
+                statuses: statuses.clone(),
+                telemetry: telemetry.clone(),
+            },
+        );
         router(AppState::new(
-            ChainService::new(storage.clone(), sources.clone()),
+            ChainService::new(storage.clone(), sources.clone(), supervisor.handle()),
             MonitorService::new(storage, sources),
             statuses,
-            std::sync::Arc::new(crate::metrics::Metrics::default()),
+            telemetry,
         ))
     }
 
@@ -100,10 +124,10 @@ mod tests {
             ("/status", "get", &["200"][..]),
             ("/metrics", "get", &["200", "500"][..]),
             ("/chains", "get", &["200", "500"][..]),
-            ("/chains", "post", &["202", "400", "500"][..]),
+            ("/chains", "post", &["200", "400", "500"][..]),
             ("/chains/{chain_id}", "get", &["200", "500"][..]),
-            ("/chains/{chain_id}", "patch", &["202", "400", "500"][..]),
-            ("/chains/{chain_id}", "delete", &["202", "500"][..]),
+            ("/chains/{chain_id}", "patch", &["200", "400", "500"][..]),
+            ("/chains/{chain_id}", "delete", &["204", "500"][..]),
             ("/monitors", "get", &["200", "500"][..]),
             ("/monitors", "post", &["200", "400", "500"][..]),
             ("/filters/preview", "post", &["200", "400", "500"][..]),
