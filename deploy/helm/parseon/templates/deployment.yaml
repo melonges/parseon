@@ -1,0 +1,114 @@
+{{- if ne (int .Values.replicaCount) 1 }}
+{{ fail "Parseon requires replicaCount=1; use leader election before scaling" }}
+{{- end }}
+{{- if not (regexMatch "^sha256:[0-9a-fA-F]{64}$" .Values.image.digest) }}
+{{ fail "image.digest must be an immutable sha256:<64-hex> digest" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "parseon.fullname" . }}
+  labels:
+    {{- include "parseon.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "parseon.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "parseon.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: parseon
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}{{- if .Values.image.digest }}@{{ .Values.image.digest }}{{- end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: STORAGE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: {{ .Values.secretKeys.storageUrl }}
+            - name: API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: {{ .Values.secretKeys.apiToken }}
+            - name: HTTP_LISTEN
+              value: 0.0.0.0:8080
+            - name: RUST_LOG
+              value: {{ .Values.config.rustLog | quote }}
+            - name: POLL_INTERVAL_MS
+              value: {{ .Values.config.pollIntervalMs | quote }}
+            - name: DEFAULT_BATCH_SIZE
+              value: {{ .Values.config.defaultBatchSize | quote }}
+            - name: BLOCK_CACHE_SIZE
+              value: {{ .Values.config.blockCacheSize | quote }}
+            - name: BLOCK_CONCURRENCY
+              value: {{ .Values.config.blockConcurrency | quote }}
+            - name: RPC_REQUEST_CONCURRENCY
+              value: {{ .Values.config.rpcRequestConcurrency | quote }}
+            - name: STORAGE_WRITE_CONCURRENCY
+              value: {{ .Values.config.storageWriteConcurrency | quote }}
+            - name: CONFIRMATION_DEPTH
+              value: {{ .Values.config.confirmationDepth | quote }}
+            - name: ROLLBACK_RETENTION
+              value: {{ .Values.config.rollbackRetention | quote }}
+            - name: RPC_BATCH_SIZE
+              value: {{ .Values.config.rpcBatchSize | quote }}
+            - name: ALLOW_PRIVATE_RPC_NETWORKS
+              value: "false"
+            - name: CORS_ORIGINS
+              value: {{ .Values.config.corsOrigins | quote }}
+            - name: MAX_BODY_BYTES
+              value: {{ .Values.config.maxBodyBytes | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}

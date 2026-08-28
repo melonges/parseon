@@ -239,6 +239,7 @@ pub(crate) fn decode_calls(
                 })? {
                     calls.push(DecodedCall {
                         monitor_id: monitor.id,
+                        block_hash: block.metadata.hash,
                         block_number: block.number,
                         transaction_hash: tx.hash,
                         from: tx.from,
@@ -279,6 +280,8 @@ pub(crate) fn decode_events(
             log.block_number == Some(block_number),
             "log has missing or incorrect block number"
         );
+        let block_hash =
+            log.block_hash.ok_or_else(|| anyhow::anyhow!("log is missing block hash"))?;
         let transaction_hash = log
             .transaction_hash
             .ok_or_else(|| anyhow::anyhow!("log is missing transaction hash"))?;
@@ -328,6 +331,7 @@ pub(crate) fn decode_events(
                 })? {
                     events.push(DecodedEvent {
                         monitor_id: monitor.id,
+                        block_hash,
                         block_number,
                         transaction_hash,
                         log_index,
@@ -350,7 +354,9 @@ mod tests {
     use crate::abi::AbiParam;
     use crate::filter::{Filter, FilterDefinition, FilterExpression};
     use crate::monitor::Monitor;
-    use crate::{BlockTransaction, CallTarget, Cursor, DecodedValue, EventTarget, Target};
+    use crate::{
+        BlockMetadata, BlockTransaction, CallTarget, Cursor, DecodedValue, EventTarget, Target,
+    };
 
     alloy::sol! {
         function transfer(address to, uint256 value) external returns (bool);
@@ -442,6 +448,7 @@ mod tests {
             &[0],
             vec![SourceLog {
                 block_number: Some(10),
+                block_hash: Some(B256::from([10; 32])),
                 transaction_hash: Some(transaction_hash),
                 log_index: Some(3),
                 address,
@@ -487,7 +494,16 @@ mod tests {
             enabled: true,
             filter: Filter::All,
         };
-        let block = SourceBlock { number: 1, transactions: vec![transaction.clone()] };
+        let block = SourceBlock {
+            number: 1,
+            metadata: BlockMetadata {
+                number: 1,
+                hash: B256::from([1; 32]),
+                parent_hash: B256::ZERO,
+                timestamp: 0,
+            },
+            transactions: vec![transaction.clone()],
+        };
         let outcomes = vec![
             ExecutionOutcome { transaction_hash: transaction.hash, succeeded: false },
             ExecutionOutcome { transaction_hash: transaction.hash, succeeded: true },
@@ -550,7 +566,16 @@ mod tests {
             to: contract,
             input: call.abi_encode().into(),
         };
-        let block = SourceBlock { number: 10, transactions: vec![transaction.clone()] };
+        let block = SourceBlock {
+            number: 10,
+            metadata: BlockMetadata {
+                number: 10,
+                hash: B256::from([10; 32]),
+                parent_hash: B256::ZERO,
+                timestamp: 0,
+            },
+            transactions: vec![transaction.clone()],
+        };
         let decoded = decode_calls(
             &block,
             &index,
@@ -593,6 +618,7 @@ mod tests {
             &[0, 1, 2],
             vec![SourceLog {
                 block_number: Some(10),
+                block_hash: Some(B256::from([10; 32])),
                 transaction_hash: Some(B256::repeat_byte(9)),
                 log_index: Some(3),
                 address,
@@ -637,6 +663,12 @@ mod tests {
         .unwrap();
         let block = SourceBlock {
             number: 10,
+            metadata: BlockMetadata {
+                number: 10,
+                hash: B256::from([10; 32]),
+                parent_hash: B256::ZERO,
+                timestamp: 0,
+            },
             transactions: vec![
                 BlockTransaction {
                     hash: B256::repeat_byte(1),
@@ -696,6 +728,7 @@ mod tests {
         .unwrap();
         let log = |index, address, topic0| SourceLog {
             block_number: Some(10),
+            block_hash: Some(B256::from([10; 32])),
             transaction_hash: Some(B256::repeat_byte(index)),
             log_index: Some(u64::from(index)),
             address,

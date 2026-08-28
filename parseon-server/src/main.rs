@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = config::Config::load();
+    config.validate()?;
 
     drop(
         tracing_subscriber::fmt()
@@ -60,12 +61,15 @@ async fn main() -> anyhow::Result<()> {
         poll_interval: config.indexing.poll_interval,
         block_concurrency: config.indexing.block_concurrency,
         storage_write_concurrency: config.indexing.storage_write_concurrency,
+        confirmations: config.indexing.confirmations,
+        rollback_retention: config.indexing.rollback_retention,
     };
     let telemetry = Arc::new(metrics::Metrics::default());
     let source_factory = Arc::new(parseon_rpc::JsonRpcBlockSourceFactory::new(
         parseon_rpc::RpcConfig {
             request_concurrency: config.rpc.request_concurrency,
             batch_size: config.rpc.batch_size,
+            allow_private_networks: config.rpc.allow_private_networks,
         },
         telemetry.clone(),
     ));
@@ -107,7 +111,15 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let state = api::AppState::new(chains, monitors, runtime_status, telemetry);
+    let state = api::AppState::new(
+        chains,
+        monitors,
+        runtime_status,
+        telemetry,
+        config.api_token,
+        config.server.cors_origins,
+        config.server.max_body_bytes,
+    );
     let app = api::router(state);
     let server_cancel = cancel.clone();
     let mut server_handle = tokio::spawn(async move {

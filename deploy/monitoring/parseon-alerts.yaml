@@ -1,0 +1,63 @@
+groups:
+  - name: parseon
+    rules:
+      - alert: ParseonTargetDown
+        expr: up{job="parseon"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Parseon metrics target is down
+          description: "The Parseon scrape target is unavailable."
+      - alert: ParseonWorkerLag
+        expr: parseon_worker_lag_blocks > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Parseon indexing lag is high
+          description: "Chain {{ $labels.chain_id }} is more than 100 blocks behind."
+      - alert: ParseonRpcErrors
+        expr: |
+          sum by (chain_id) (rate(parseon_rpc_operations_total{outcome="error"}[5m]))
+            /
+          clamp_min(sum by (chain_id) (rate(parseon_rpc_operations_total[5m])), 1)
+          > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Parseon RPC error rate is high
+          description: "More than 20% of RPC operations fail on chain {{ $labels.chain_id }}."
+      - alert: ParseonWorkerBlocked
+        expr: parseon_worker_state{state="blocked"} == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Parseon worker is blocked
+          description: "Chain {{ $labels.chain_id }} crossed a finalized reorg boundary or lost its rollback ancestor."
+      - alert: ParseonWorkerDegraded
+        expr: parseon_worker_state{state="degraded"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Parseon worker is degraded
+          description: "Chain {{ $labels.chain_id }} is not completing indexing polls."
+      - alert: ParseonWorkerStale
+        expr: time() - parseon_worker_last_successful_poll_timestamp_seconds > 30
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Parseon worker poll is stale
+          description: "Chain {{ $labels.chain_id }} has not completed a successful poll recently."
+      - alert: ParseonStorageCommitErrors
+        expr: rate(parseon_storage_commit_duration_seconds_count{outcome="error"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Parseon storage commits are failing
+          description: "Storage commit failures are reported for chain {{ $labels.chain_id }}."

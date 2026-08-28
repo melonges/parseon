@@ -40,9 +40,13 @@ parseon-server
 └── parseon-webhook-sink ────> parseon-core
 ```
 
-Start PostgreSQL with `docker compose up -d`, or start the MongoDB development replica set and eRPC gateway with `docker compose --profile mongodb --profile erpc up -d`. Configure the selected backend through `STORAGE_URL`, then register direct RPC or complete eRPC URLs through `POST /chains`.
+Start PostgreSQL with `docker compose up -d`, or start the MongoDB development replica set and eRPC gateway with `docker compose --profile mongodb --profile erpc up -d`. Configure the selected backend through `STORAGE_URL` and set a non-empty `API_TOKEN`; protected API routes require `Authorization: Bearer <API_TOKEN>`. Register direct RPC or complete eRPC URLs through `POST /chains`. Private/loopback RPC destinations are rejected unless `ALLOW_PRIVATE_RPC_NETWORKS=true` is explicitly enabled for local development.
 
 See [adapter configuration and guarantees](./docs/adapters.md) for feature builds, MongoDB requirements, eRPC smoke checks, the webhook JSON contract, and Compose profiles.
+
+## Production deployment
+
+Use [`compose.production.yml`](./compose.production.yml) or the [`deploy/helm/parseon`](./deploy/helm/parseon) chart. Both require an externally managed `API_TOKEN` and storage URL, keep databases private, and expose liveness/readiness probes. Read the [production operations runbook](./docs/operations.md) before upgrading, restoring, or exposing the API through an ingress.
 
 ## License
 

@@ -25,7 +25,10 @@ use crate::ports::{
 };
 use crate::status::RuntimeStatus;
 use crate::supervisor::{Supervisor, SupervisorConfig, SupervisorDependencies, SupervisorHandle};
-use crate::{BlockNumber, Chain, ChainId, ExecutionOutcome, MonitorId, SourceBlock, TxHash, Url};
+use crate::{
+    BlockMetadata, BlockNumber, Chain, ChainId, ExecutionOutcome, MonitorId, SourceBlock, TxHash,
+    Url,
+};
 
 /// Parses a test RPC URL.
 pub(crate) fn url(value: &str) -> Url {
@@ -59,9 +62,21 @@ impl BlockSource for TestSource {
         Ok(self.chain_id)
     }
 
+    async fn latest_head(&self) -> anyhow::Result<BlockNumber> {
+        anyhow::ensure!(!self.fail_probe, "probe failure");
+        Ok(self.finalized_head)
+    }
+
     async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
         anyhow::ensure!(!self.fail_probe, "probe failure");
         Ok(self.finalized_head)
+    }
+
+    async fn fetch_block_header(
+        &self,
+        _block_number: BlockNumber,
+    ) -> anyhow::Result<BlockMetadata> {
+        anyhow::bail!("unused in tests")
     }
 
     async fn fetch_block(&self, _block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
@@ -70,7 +85,7 @@ impl BlockSource for TestSource {
 
     async fn fetch_execution_outcomes(
         &self,
-        _block_number: BlockNumber,
+        _block: &BlockMetadata,
         _transaction_hashes: &[TxHash],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         anyhow::bail!("unused in tests")
@@ -174,8 +189,35 @@ impl IndexStorage for TestStorage {
         Ok(Vec::new())
     }
 
+    async fn canonical_tip(
+        &self,
+        _chain: Chain,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok(None)
+    }
+
+    async fn canonical_block(
+        &self,
+        _chain: Chain,
+        _block_number: BlockNumber,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok(None)
+    }
+
     async fn commit_block(&self, _commit: &BlockCommit) -> anyhow::Result<()> {
         anyhow::bail!("unused in tests")
+    }
+
+    async fn rollback_to(&self, _chain: Chain, _ancestor: BlockNumber) -> anyhow::Result<()> {
+        anyhow::bail!("unused in tests")
+    }
+
+    async fn promote_finalized(
+        &self,
+        _chain: Chain,
+        _head: BlockNumber,
+    ) -> anyhow::Result<Vec<crate::ports::SinkBatch>> {
+        Ok(Vec::new())
     }
 }
 
@@ -293,6 +335,7 @@ impl BlockCache for TestCache {
     fn put(&self, _chain: Chain, _block: Arc<SourceBlock>) {}
 
     fn evict_before(&self, _chain: Chain, _block_number: BlockNumber) {}
+    fn evict_after(&self, _chain: Chain, _block_number: BlockNumber) {}
 }
 
 struct TestCacheFactory;
@@ -348,6 +391,8 @@ impl TestContext {
             poll_interval: Duration::from_millis(5),
             block_concurrency: NonZeroUsize::new(2).expect("non-zero"),
             storage_write_concurrency: NonZeroUsize::new(2).expect("non-zero"),
+            confirmations: NonZeroU64::new(64).expect("non-zero"),
+            rollback_retention: NonZeroU64::new(256).expect("non-zero"),
         }
     }
 

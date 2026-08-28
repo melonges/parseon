@@ -7,7 +7,9 @@ use alloy_rpc_types_any::AnyTransactionReceipt;
 use anyhow::Context;
 
 use alloy::rpc::types::Filter;
-use parseon_core::{BlockTransaction, ExecutionOutcome, SourceBlock, SourceLog, TxHash};
+use parseon_core::{
+    BlockMetadata, BlockTransaction, ExecutionOutcome, SourceBlock, SourceLog, TxHash,
+};
 
 use crate::provider::HttpProvider;
 
@@ -20,6 +22,29 @@ pub(crate) enum BlockReceiptsResponseError {
 }
 
 /// Fetch the transaction fields needed for monitor matching.
+pub(crate) async fn fetch_block_header(
+    provider: &HttpProvider,
+    block_number: u64,
+) -> anyhow::Result<BlockMetadata> {
+    let block = provider
+        .get_block_by_number(BlockNumberOrTag::Number(block_number))
+        .kind(BlockTransactionsKind::Hashes)
+        .await?
+        .with_context(|| format!("block {block_number} not found"))?;
+    let header = block.header();
+    anyhow::ensure!(
+        header.number == block_number,
+        "block source returned block {} for request {block_number}",
+        header.number
+    );
+    Ok(BlockMetadata {
+        number: header.number,
+        hash: header.hash,
+        parent_hash: header.parent_hash,
+        timestamp: header.timestamp,
+    })
+}
+
 pub(crate) async fn fetch_block(
     provider: &HttpProvider,
     block_number: u64,
@@ -34,6 +59,13 @@ pub(crate) async fn fetch_block(
         "block source returned block {} for request {block_number}",
         block.header().number
     );
+    let header = block.header();
+    let metadata = BlockMetadata {
+        number: header.number,
+        hash: header.hash,
+        parent_hash: header.parent_hash,
+        timestamp: header.timestamp,
+    };
     let transactions = block
         .try_into_transactions()
         .map_err(|_| anyhow::anyhow!("block {block_number} did not contain full transactions"))?;
@@ -49,7 +81,7 @@ pub(crate) async fn fetch_block(
         });
     }
 
-    Ok(SourceBlock { number: block_number, transactions: out })
+    Ok(SourceBlock { number: block_number, metadata, transactions: out })
 }
 
 pub(crate) async fn fetch_logs(
@@ -65,6 +97,7 @@ pub(crate) async fn fetch_logs(
             let (topics, data) = log.inner.data.split();
             Ok(SourceLog {
                 block_number: log.block_number,
+                block_hash: log.block_hash,
                 transaction_hash: log.transaction_hash,
                 log_index: log.log_index,
                 address,
@@ -76,8 +109,27 @@ pub(crate) async fn fetch_logs(
         .collect()
 }
 
+fn receipt_outcome(
+    receipt: &AnyTransactionReceipt,
+    transaction_hash: TxHash,
+    block: &BlockMetadata,
+) -> anyhow::Result<ExecutionOutcome> {
+    anyhow::ensure!(
+        receipt.block_number() == Some(block.number),
+        "receipt block number does not match requested block {} for {transaction_hash}",
+        block.number
+    );
+    anyhow::ensure!(
+        receipt.block_hash() == Some(block.hash),
+        "receipt block hash does not match requested block {} for {transaction_hash}",
+        block.number
+    );
+    Ok(ExecutionOutcome { transaction_hash, succeeded: receipt.status() })
+}
+
 pub(crate) async fn fetch_receipt(
     provider: &HttpProvider,
+    block: &BlockMetadata,
     transaction_hash: TxHash,
 ) -> anyhow::Result<ExecutionOutcome> {
     let receipt = provider
@@ -88,11 +140,12 @@ pub(crate) async fn fetch_receipt(
         receipt.transaction_hash() == transaction_hash,
         "receipt response hash does not match request {transaction_hash}"
     );
-    Ok(ExecutionOutcome { transaction_hash, succeeded: receipt.status() })
+    receipt_outcome(&receipt, transaction_hash, block)
 }
 
 pub(crate) async fn fetch_receipt_batch(
     provider: &HttpProvider,
+    block: &BlockMetadata,
     transaction_hashes: &[TxHash],
 ) -> anyhow::Result<Vec<ExecutionOutcome>> {
     let mut batch = alloy::rpc::client::BatchRequest::new(provider.client());
@@ -117,24 +170,25 @@ pub(crate) async fn fetch_receipt_batch(
             receipt.transaction_hash() == transaction_hash,
             "receipt response hash does not match request {transaction_hash}"
         );
-        out.push(ExecutionOutcome { transaction_hash, succeeded: receipt.status() });
+        out.push(receipt_outcome(&receipt, transaction_hash, block)?);
     }
     Ok(out)
 }
 
 pub(crate) async fn fetch_block_receipts(
     provider: &HttpProvider,
-    block_number: u64,
+    block: &BlockMetadata,
     transaction_hashes: &[TxHash],
 ) -> anyhow::Result<Vec<ExecutionOutcome>> {
     let receipts = provider
-        .get_block_receipts(BlockNumberOrTag::Number(block_number).into())
+        .get_block_receipts(BlockNumberOrTag::Number(block.number).into())
         .await?
-        .ok_or(BlockReceiptsResponseError::MissingBlock(block_number))?;
-    let mut statuses = receipts
-        .into_iter()
-        .map(|receipt| (receipt.transaction_hash(), receipt.status()))
-        .collect::<std::collections::HashMap<_, _>>();
+        .ok_or(BlockReceiptsResponseError::MissingBlock(block.number))?;
+    let mut statuses = std::collections::HashMap::with_capacity(receipts.len());
+    for receipt in &receipts {
+        receipt_outcome(receipt, receipt.transaction_hash(), block)?;
+        statuses.insert(receipt.transaction_hash(), receipt.status());
+    }
     transaction_hashes
         .iter()
         .copied()

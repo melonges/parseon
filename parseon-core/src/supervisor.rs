@@ -12,9 +12,11 @@
 
 use std::collections::HashMap;
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::FutureExt;
 use tokio::sync::{Mutex, MutexGuard, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -22,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use super::ports::{
     BlockCacheFactory, BlockSource, BlockSourceFactory, RegisteredChain, Sink, Storage, Telemetry,
 };
-use super::status::{ChainStatus, RuntimeStatus};
+use super::status::{ChainStatus, RuntimeStatus, WorkerState};
 use super::worker::{self, WorkerConfig, WorkerDependencies};
 use super::{BlockNumber, ChainId, Url};
 
@@ -39,6 +41,10 @@ pub struct SupervisorConfig {
     pub block_concurrency: NonZeroUsize,
     /// Process-wide limit on concurrent storage commits across all workers.
     pub storage_write_concurrency: NonZeroUsize,
+    /// Number of latest blocks required before promotion.
+    pub confirmations: NonZeroU64,
+    /// Maximum canonical history retained for reorg recovery.
+    pub rollback_retention: NonZeroU64,
 }
 
 struct WorkerRuntime {
@@ -167,9 +173,11 @@ impl SupervisorHandle {
             (false, true) => {
                 let runtime = workers.remove(&chain_id).expect("worker is running");
                 stop_worker(runtime).await;
+                self.shared.telemetry.set_worker_state(chain_id, "disabled");
                 self.shared.statuses.replace(ChainStatus::disabled(chain_id));
             }
             (false, false) => {
+                self.shared.telemetry.set_worker_state(chain_id, "disabled");
                 self.shared.statuses.replace(ChainStatus::disabled(chain_id));
             }
         }
@@ -225,6 +233,7 @@ impl SupervisorHandle {
             Ok(prepared) => prepared,
             Err(message) => {
                 tracing::warn!(chain_id = chain.id, error = message, "worker start failed");
+                self.shared.telemetry.set_worker_state(chain.id, "degraded");
                 self.shared.statuses.replace(ChainStatus::degraded(chain.id, message));
                 return;
             }
@@ -232,24 +241,48 @@ impl SupervisorHandle {
         let status = ChainStatus::starting(chain.id, Some(finalized_head));
         self.shared.statuses.replace(status.clone());
         let cancel = CancellationToken::new();
-        let handle = tokio::spawn(worker::run(
-            WorkerConfig {
-                chain,
-                batch_size: self.shared.config.batch_size,
-                block_concurrency: self.shared.config.block_concurrency,
-                poll_interval: self.shared.config.poll_interval,
-            },
-            WorkerDependencies {
-                storage: self.shared.storage.clone(),
-                source: source.clone(),
-                cache: self.shared.cache_factory.create(),
-                storage_writes: self.shared.storage_writes.clone(),
-                sink: self.shared.sink.clone(),
-                telemetry: self.shared.telemetry.clone(),
-            },
-            status,
-            cancel.clone(),
-        ));
+        let worker_config = WorkerConfig {
+            chain,
+            batch_size: self.shared.config.batch_size,
+            block_concurrency: self.shared.config.block_concurrency,
+            poll_interval: self.shared.config.poll_interval,
+            confirmations: self.shared.config.confirmations,
+            rollback_retention: self.shared.config.rollback_retention,
+        };
+        let worker_dependencies = WorkerDependencies {
+            storage: self.shared.storage.clone(),
+            source: source.clone(),
+            cache: self.shared.cache_factory.create(),
+            storage_writes: self.shared.storage_writes.clone(),
+            sink: self.shared.sink.clone(),
+            telemetry: self.shared.telemetry.clone(),
+        };
+        let worker_cancel = cancel.clone();
+        let task_status = status.clone();
+        let task_cancel = cancel.clone();
+        let task_telemetry = self.shared.telemetry.clone();
+        let chain_id = chain.id;
+        let handle = tokio::spawn(async move {
+            let result = AssertUnwindSafe(worker::run(
+                worker_config,
+                worker_dependencies,
+                status,
+                worker_cancel,
+            ))
+            .catch_unwind()
+            .await;
+            if task_cancel.is_cancelled() {
+                return;
+            }
+            if task_status.snapshot().worker_state == WorkerState::Blocked {
+                return;
+            }
+            if let Err(panic) = result {
+                tracing::error!(chain_id, ?panic, "worker task panicked");
+            }
+            task_status.record_task_exit();
+            task_telemetry.set_worker_state(chain_id, "exited");
+        });
         workers.insert(
             chain.id,
             WorkerRuntime { cancel, handle, rpc_url: registered.rpc_url, source },

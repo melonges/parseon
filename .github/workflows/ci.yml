@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal && rustup component add rustfmt --toolchain 1.96.0
+      - run: cargo +1.96.0 fmt --all -- --check
+
+  rust:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: postgres
+            features: parseon-server/postgres-storage
+          - name: postgres-webhook
+            features: parseon-server/postgres-storage,parseon-server/webhook-sink
+          - name: mongodb
+            features: parseon-server/mongodb-storage
+          - name: mongodb-webhook
+            features: parseon-server/mongodb-storage,parseon-server/webhook-sink
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal && rustup component add clippy --toolchain 1.96.0
+      - run: cargo +1.96.0 clippy -q --workspace --all-targets --locked --no-default-features --features "${{ matrix.features }}" --message-format=short -- -D warnings
+      - run: cargo +1.96.0 test -q --workspace --all-targets --locked --no-default-features --features "${{ matrix.features }}" --message-format=short
+      - run: cargo +1.96.0 build -q -p parseon-server --release --locked --no-default-features --features "${{ matrix.features }}"
+
+  docker:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - name: postgres
+            features: postgres-storage
+          - name: postgres-webhook
+            features: postgres-storage,webhook-sink
+          - name: mongodb
+            features: mongodb-storage
+          - name: mongodb-webhook
+            features: mongodb-storage,webhook-sink
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build image
+        run: docker build --build-arg PARSEON_FEATURES='${{ matrix.features }}' --tag parseon:ci .
+      - name: Generate SBOM when Docker SBOM support is installed
+        shell: bash
+        run: |
+          if docker sbom --help >/dev/null 2>&1; then
+            docker sbom parseon:ci > "sbom-${{ matrix.name }}.spdx.json"
+          else
+            echo 'docker sbom is unavailable on this runner; image SBOM is delegated to the registry scanner.'
+          fi
+      - name: Scan image when Docker Scout support is installed
+        shell: bash
+        run: |
+          if docker scout version >/dev/null 2>&1; then
+            docker scout cves --only-fixed parseon:ci
+          else
+            echo 'docker scout is unavailable on this runner; image scanning is delegated to the registry.'
+          fi
+
+  release-gates:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate production Compose
+        shell: bash
+        run: |
+          export PARSEON_IMAGE=registry.example/parseon@sha256:$(printf 'a%.0s' {1..64})
+          export STORAGE_URL='postgres://postgres:5432/parseon'
+          export POSTGRES_PASSWORD=test
+          export API_TOKEN=test-token
+          docker compose -f compose.production.yml config >/dev/null
+          if [[ ! "$PARSEON_IMAGE" =~ @sha256:[0-9a-fA-F]{64}$ ]]; then
+            echo 'PARSEON_IMAGE must be digest-pinned' >&2
+            exit 1
+          fi
+      - name: Validate Helm chart and immutable deployment policy
+        shell: bash
+        run: |
+          digest="sha256:$(printf 'a%.0s' {1..64})"
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine/helm:3.17@sha256:d899e6316789fec04ee95300a18e454b7942539cbb3d89bde3e0655d6ca2e895 lint deploy/helm/parseon --set image.digest="$digest"
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine/helm:3.17@sha256:d899e6316789fec04ee95300a18e454b7942539cbb3d89bde3e0655d6ca2e895 template parseon deploy/helm/parseon --set image.digest="$digest" >/dev/null
+          if docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine/helm:3.17@sha256:d899e6316789fec04ee95300a18e454b7942539cbb3d89bde3e0655d6ca2e895 template parseon deploy/helm/parseon --set image.digest="$digest" --set replicaCount=2 >/dev/null 2>&1; then
+            echo 'replicaCount=2 was accepted' >&2
+            exit 1
+          fi
+          if docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work alpine/helm:3.17@sha256:d899e6316789fec04ee95300a18e454b7942539cbb3d89bde3e0655d6ca2e895 template parseon deploy/helm/parseon >/dev/null 2>&1; then
+            echo 'missing image digest was accepted' >&2
+            exit 1
+          fi
+      - name: Validate scripts and monitoring artifacts
+        shell: bash
+        run: |
+          bash -n scripts/backup_postgres.sh scripts/restore_postgres.sh
+          python3 -m py_compile scripts/gen_erpc.py
+          python3 -m json.tool deploy/monitoring/parseon-dashboard.json >/dev/null
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Reject credential-bearing generated config
+        shell: bash
+        run: |
+          if git grep -n -I -i -E '://[^[:space:]/:@]+:[^[:space:]@]+@|(^|[?&])(api[_-]?key|access[_-]?token|token|secret|password)=[^[:space:]&]{8,}' -- ':!CHANGELOG.md' ':!docs/operations.md' ':!.env.example'; then
+            echo 'credential-bearing URL or query parameter found in tracked source' >&2
+            exit 1
+          fi
+          echo 'Historical credentials still require independent revoke/rotate evidence.'

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -11,19 +12,20 @@ use alloy::network::BlockResponse;
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::client::RpcClient;
 use alloy::rpc::types::Filter;
-use alloy::transports::http::reqwest::Client;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::fetch;
-use crate::transport::RotatingHttp;
+use crate::transport::{RotatingHttp, client_for_url};
 use parseon_core::ports::{
     BlockRange, BlockSource, BlockSourceFactory, BlockSourceRequestError, InFlightGuard, LogQuery,
     LogTarget, NoopTelemetry, Telemetry,
 };
-use parseon_core::{BlockNumber, ChainId, ExecutionOutcome, SourceBlock, SourceLog, TxHash, Url};
+use parseon_core::{
+    BlockMetadata, BlockNumber, ChainId, ExecutionOutcome, SourceBlock, SourceLog, TxHash, Url,
+};
 
 pub(crate) type HttpProvider = RootProvider<AnyNetwork>;
 
@@ -35,6 +37,8 @@ const CAPABILITY_UNSUPPORTED: u8 = 2;
 pub struct RpcConfig {
     pub request_concurrency: NonZeroUsize,
     pub batch_size: NonZeroUsize,
+    /// Allow loopback/private RPC destinations for local development only.
+    pub allow_private_networks: bool,
 }
 
 impl Default for RpcConfig {
@@ -42,6 +46,7 @@ impl Default for RpcConfig {
         Self {
             request_concurrency: NonZeroUsize::new(16).expect("16 is non-zero"),
             batch_size: NonZeroUsize::new(20).expect("20 is non-zero"),
+            allow_private_networks: false,
         }
     }
 }
@@ -57,6 +62,7 @@ pub struct JsonRpcBlockSource {
     chain_id: OnceLock<ChainId>,
     batch_capability: AtomicU8,
     block_receipts_capability: AtomicU8,
+    allow_private_networks: bool,
     telemetry: Arc<dyn Telemetry>,
 }
 
@@ -90,7 +96,8 @@ impl JsonRpcBlockSource {
         config: RpcConfig,
         telemetry: Arc<dyn Telemetry>,
     ) -> anyhow::Result<Self> {
-        let (provider, transport) = build(rpc_url)?;
+        validate_rpc_url(rpc_url, config.allow_private_networks)?;
+        let (provider, transport) = build(rpc_url, config.allow_private_networks)?;
         Ok(Self::with_transport(provider, Some(transport), config, telemetry))
     }
 
@@ -121,6 +128,7 @@ impl JsonRpcBlockSource {
             chain_id: OnceLock::new(),
             batch_capability: AtomicU8::new(CAPABILITY_UNKNOWN),
             block_receipts_capability: AtomicU8::new(CAPABILITY_UNKNOWN),
+            allow_private_networks: config.allow_private_networks,
             telemetry,
         }
     }
@@ -158,12 +166,13 @@ impl JsonRpcBlockSource {
 
     async fn single_receipts(
         &self,
+        block: &BlockMetadata,
         transaction_hashes: &[TxHash],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         let mut receipts =
             stream::iter(transaction_hashes.iter().copied().map(|transaction_hash| async move {
                 self.observed("receipts", "single", async {
-                    fetch::fetch_receipt(&self.provider, transaction_hash).await
+                    fetch::fetch_receipt(&self.provider, block, transaction_hash).await
                 })
                 .await
             }))
@@ -177,6 +186,7 @@ impl JsonRpcBlockSource {
 
     async fn batched_receipts(
         &self,
+        block: &BlockMetadata,
         transaction_hashes: &[TxHash],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         let ranges = (0..transaction_hashes.len())
@@ -186,7 +196,7 @@ impl JsonRpcBlockSource {
         let mut batches = stream::iter(ranges.into_iter().map(|range| async move {
             let chunk = &transaction_hashes[range];
             self.observed("receipts", "batch", async {
-                fetch::fetch_receipt_batch(&self.provider, chunk).await
+                fetch::fetch_receipt_batch(&self.provider, block, chunk).await
             })
             .await
         }))
@@ -200,14 +210,14 @@ impl JsonRpcBlockSource {
 
     async fn optimized_receipts(
         &self,
-        block_number: BlockNumber,
+        block: &BlockMetadata,
         transaction_hashes: &[TxHash],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         if transaction_hashes.is_empty() {
             return Ok(Vec::new());
         }
         if transaction_hashes.len() == 1 {
-            return self.single_receipts(transaction_hashes).await;
+            return self.single_receipts(block, transaction_hashes).await;
         }
 
         if transaction_hashes.len() > self.batch_size
@@ -215,8 +225,7 @@ impl JsonRpcBlockSource {
         {
             let block_receipts = self
                 .observed("receipts", "block_receipts", async {
-                    fetch::fetch_block_receipts(&self.provider, block_number, transaction_hashes)
-                        .await
+                    fetch::fetch_block_receipts(&self.provider, block, transaction_hashes).await
                 })
                 .await;
             match block_receipts {
@@ -236,7 +245,7 @@ impl JsonRpcBlockSource {
         }
 
         if self.batch_capability.load(Ordering::Relaxed) != CAPABILITY_UNSUPPORTED {
-            match self.batched_receipts(transaction_hashes).await {
+            match self.batched_receipts(block, transaction_hashes).await {
                 Ok(receipts) => {
                     self.batch_capability.store(CAPABILITY_SUPPORTED, Ordering::Relaxed);
                     return Ok(receipts);
@@ -251,7 +260,7 @@ impl JsonRpcBlockSource {
                 Err(error) => return Err(error),
             }
         }
-        self.single_receipts(transaction_hashes).await
+        self.single_receipts(block, transaction_hashes).await
     }
 
     async fn adaptive_logs(&self, query: LogQuery) -> anyhow::Result<Vec<SourceLog>> {
@@ -354,10 +363,24 @@ impl BlockSource for JsonRpcBlockSource {
         }
     }
 
+    async fn latest_head(&self) -> anyhow::Result<BlockNumber> {
+        self.observed("latest_head", "single", async { latest_number(&self.provider).await })
+            .await
+            .map_err(source_request_error)
+    }
+
     async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
         self.observed("finalized_head", "single", async { finalized_number(&self.provider).await })
             .await
             .map_err(source_request_error)
+    }
+
+    async fn fetch_block_header(&self, block_number: BlockNumber) -> anyhow::Result<BlockMetadata> {
+        self.observed("block_header", "single", async {
+            fetch::fetch_block_header(&self.provider, block_number).await
+        })
+        .await
+        .map_err(source_request_error)
     }
 
     async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
@@ -370,12 +393,10 @@ impl BlockSource for JsonRpcBlockSource {
 
     async fn fetch_execution_outcomes(
         &self,
-        block_number: BlockNumber,
+        block: &BlockMetadata,
         transaction_hashes: &[TxHash],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
-        self.optimized_receipts(block_number, transaction_hashes)
-            .await
-            .map_err(source_request_error)
+        self.optimized_receipts(block, transaction_hashes).await.map_err(source_request_error)
     }
 
     async fn fetch_logs(&self, query: LogQuery) -> anyhow::Result<Vec<SourceLog>> {
@@ -383,9 +404,10 @@ impl BlockSource for JsonRpcBlockSource {
     }
 
     fn set_rpc_url(&self, rpc_url: &Url) -> anyhow::Result<()> {
+        validate_rpc_url(rpc_url, self.allow_private_networks)?;
         let transport =
             self.transport.as_ref().context("RPC URL rotation requires a live HTTP transport")?;
-        transport.set_url(rpc_url.clone());
+        transport.set_url(rpc_url.clone(), self.allow_private_networks)?;
         // Endpoint capabilities (batching, block receipts) may differ on the
         // new URL; re-probe them. The cached chain ID stays valid because
         // callers guarantee the new URL serves the same chain.
@@ -450,11 +472,69 @@ fn unsupported_batch(error: &anyhow::Error) -> bool {
     })
 }
 
-pub(crate) fn build(rpc_url: &Url) -> anyhow::Result<(HttpProvider, RotatingHttp)> {
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("build HTTP client")?;
+/// Rejects unsafe RPC destinations before any network probe is attempted.
+fn validate_rpc_url(rpc_url: &Url, allow_private: bool) -> anyhow::Result<()> {
+    anyhow::ensure!(matches!(rpc_url.scheme(), "http" | "https"), "RPC URL must use http or https");
+    let host = rpc_url.host_str().ok_or_else(|| anyhow::anyhow!("RPC URL must contain a host"))?;
+    let port = rpc_url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("RPC URL must contain a port"))?;
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| anyhow::anyhow!("RPC host resolution failed: {error}"))?
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!addresses.is_empty(), "RPC host has no addresses");
+    if !allow_private {
+        for address in addresses {
+            anyhow::ensure!(!is_private_address(address.ip()), "private RPC network is disabled");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn is_private_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 240
+                || ip.octets() == [169, 254, 169, 254]
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || (segments[..5] == [0, 0, 0, 0, 0]
+                    && segments[5] == 0xffff
+                    && is_private_address(IpAddr::V4(Ipv4Addr::new(
+                        (segments[6] >> 8) as u8,
+                        segments[6] as u8,
+                        (segments[7] >> 8) as u8,
+                        segments[7] as u8,
+                    ))))
+        }
+    }
+}
+
+pub(crate) fn build(
+    rpc_url: &Url,
+    allow_private: bool,
+) -> anyhow::Result<(HttpProvider, RotatingHttp)> {
+    let client = client_for_url(rpc_url, allow_private).context("build HTTP client")?;
     let transport = RotatingHttp::new(client, rpc_url.clone());
     let rpc_client = RpcClient::new(transport.clone(), transport.guess_local());
     Ok((RootProvider::<AnyNetwork>::new(rpc_client), transport))
@@ -462,6 +542,14 @@ pub(crate) fn build(rpc_url: &Url) -> anyhow::Result<(HttpProvider, RotatingHttp
 
 pub(crate) async fn chain_id(provider: &HttpProvider) -> anyhow::Result<u64> {
     Ok(provider.get_chain_id().await?)
+}
+
+pub(crate) async fn latest_number(provider: &HttpProvider) -> anyhow::Result<u64> {
+    let block = provider
+        .get_block_by_number(BlockNumberOrTag::Latest)
+        .await?
+        .context("latest block not found")?;
+    Ok(block.header().number)
 }
 
 pub(crate) async fn finalized_number(provider: &HttpProvider) -> anyhow::Result<u64> {
@@ -487,10 +575,11 @@ mod tests {
     use alloy_json_rpc::ErrorPayload;
     use alloy_rpc_types_any::AnyTransactionReceipt;
     use parseon_core::ports::{BlockRange, BlockSource, LogQuery, LogTarget, NoopTelemetry};
+    use parseon_core::{BlockMetadata, BlockNumber};
 
     use super::{
         CAPABILITY_SUPPORTED, CAPABILITY_UNKNOWN, CAPABILITY_UNSUPPORTED, JsonRpcBlockSource,
-        RpcConfig, exact_log_filters,
+        RpcConfig, Url, exact_log_filters,
     };
     use crate::fetch;
 
@@ -504,6 +593,7 @@ mod tests {
             RpcConfig {
                 request_concurrency: NonZeroUsize::new(4).expect("non-zero"),
                 batch_size: NonZeroUsize::new(batch_size).expect("non-zero"),
+                allow_private_networks: false,
             },
             Arc::new(NoopTelemetry),
         )
@@ -520,7 +610,20 @@ mod tests {
         ErrorPayload { code, message: Cow::Borrowed(message), data: None }
     }
 
+    fn test_block(number: BlockNumber) -> BlockMetadata {
+        BlockMetadata { number, hash: B256::repeat_byte(9), parent_hash: B256::ZERO, timestamp: 0 }
+    }
+
     fn receipt(transaction_hash: B256, succeeded: bool) -> AnyTransactionReceipt {
+        receipt_at(transaction_hash, succeeded, B256::repeat_byte(9), 10)
+    }
+
+    fn receipt_at(
+        transaction_hash: B256,
+        succeeded: bool,
+        block_hash: B256,
+        block_number: u64,
+    ) -> AnyTransactionReceipt {
         serde_json::from_value(serde_json::json!({
             "status": if succeeded { "0x1" } else { "0x0" },
             "cumulativeGasUsed": "0x1",
@@ -529,8 +632,8 @@ mod tests {
             "type": "0x0",
             "transactionHash": format!("{transaction_hash:#x}"),
             "transactionIndex": "0x0",
-            "blockHash": format!("{:#x}", B256::repeat_byte(9)),
-            "blockNumber": "0xa",
+            "blockHash": format!("{block_hash:#x}"),
+            "blockNumber": format!("0x{block_number:x}"),
             "gasUsed": "0x1",
             "effectiveGasPrice": "0x1",
             "from": format!("{:#x}", Address::ZERO),
@@ -660,12 +763,25 @@ mod tests {
         let source = source(asserter);
 
         let outcomes =
-            fetch::fetch_block_receipts(&source.provider, 10, &[first, second]).await.unwrap();
+            fetch::fetch_block_receipts(&source.provider, &test_block(10), &[first, second])
+                .await
+                .unwrap();
 
         assert_eq!(outcomes[0].transaction_hash, first);
         assert!(outcomes[0].succeeded);
         assert_eq!(outcomes[1].transaction_hash, second);
         assert!(!outcomes[1].succeeded);
+    }
+
+    #[tokio::test]
+    async fn rejects_receipt_from_a_different_block() {
+        let asserter = Asserter::new();
+        let hash = B256::repeat_byte(1);
+        asserter.push_success(&receipt_at(hash, true, B256::repeat_byte(8), 10));
+        let source = source(asserter);
+
+        let error = source.batched_receipts(&test_block(10), &[hash]).await.unwrap_err();
+        assert!(error.to_string().contains("block hash does not match"));
     }
 
     #[tokio::test]
@@ -677,7 +793,7 @@ mod tests {
         }
         let source = source_with_batch_size(asserter, 2);
 
-        let outcomes = source.batched_receipts(&hashes).await.unwrap();
+        let outcomes = source.batched_receipts(&test_block(10), &hashes).await.unwrap();
 
         assert_eq!(
             outcomes.iter().map(|outcome| outcome.transaction_hash).collect::<Vec<_>>(),
@@ -695,7 +811,7 @@ mod tests {
         }
         let source = source_with_batch_size(asserter.clone(), 2);
 
-        let outcomes = source.optimized_receipts(10, &hashes).await.unwrap();
+        let outcomes = source.optimized_receipts(&test_block(10), &hashes).await.unwrap();
 
         assert_eq!(outcomes.len(), hashes.len());
         assert_eq!(
@@ -716,7 +832,7 @@ mod tests {
         }
         let source = source_with_batch_size(asserter.clone(), 2);
 
-        let outcomes = source.optimized_receipts(10, &hashes).await.unwrap();
+        let outcomes = source.optimized_receipts(&test_block(10), &hashes).await.unwrap();
 
         assert_eq!(
             outcomes.iter().map(|outcome| outcome.transaction_hash).collect::<Vec<_>>(),
@@ -734,7 +850,7 @@ mod tests {
         asserter.push_success(&receipt(hashes[0], true));
         let source = source_with_batch_size(asserter.clone(), 2);
 
-        assert!(source.optimized_receipts(10, &hashes).await.is_err());
+        assert!(source.optimized_receipts(&test_block(10), &hashes).await.is_err());
         assert_eq!(asserter.read_q().len(), 1);
     }
 
@@ -742,7 +858,7 @@ mod tests {
     async fn set_rpc_url_rotates_the_transport_and_resets_endpoint_capabilities() {
         let source = JsonRpcBlockSource::connect(
             &"http://localhost:8545".parse().unwrap(),
-            RpcConfig::default(),
+            RpcConfig { allow_private_networks: true, ..RpcConfig::default() },
             Arc::new(NoopTelemetry),
         )
         .unwrap();
@@ -762,6 +878,15 @@ mod tests {
         assert!(
             BlockSource::set_rpc_url(&source, &"http://localhost:9545".parse().unwrap()).is_err()
         );
+    }
+
+    #[test]
+    fn rejects_private_rpc_destinations_by_default() {
+        let url: Url = "http://127.0.0.1:8545".parse().unwrap();
+        assert!(super::validate_rpc_url(&url, false).is_err());
+        assert!(super::validate_rpc_url(&url, true).is_ok());
+        let unsupported: Url = "file:///tmp/rpc".parse().unwrap();
+        assert!(super::validate_rpc_url(&unsupported, true).is_err());
     }
 
     #[test]

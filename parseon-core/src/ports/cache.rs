@@ -21,6 +21,10 @@ pub trait BlockCache: Send + Sync {
     /// Evicts every entry for `chain` whose block number is less than
     /// `block_number`. Called after the worker commits past a block.
     fn evict_before(&self, chain: Chain, block_number: BlockNumber);
+    /// Evicts every entry for `chain` whose block number is greater than
+    /// `block_number`. Called after a reorg rollback to prevent stale branch
+    /// data from being reused.
+    fn evict_after(&self, chain: Chain, block_number: BlockNumber);
 }
 
 /// Factory for per-worker [`BlockCache`] instances.

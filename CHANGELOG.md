@@ -6,6 +6,8 @@ All notable changes to Parseon are documented in this file.
 
 ### Added
 
+- Add canonical block metadata, provisional/finalized lifecycle, bounded reorg rollback, and finalized promotion for both storage adapters.
+- Add production Compose and Helm deployment artifacts, backup/restore operations runbook, Prometheus alerts, Grafana dashboard, and CI release gates.
 - Apply chain creation, enable/disable, and deletion to running workers without restarting Parseon; deletions stop the worker before removing its data.
 - Rotate a chain's RPC endpoint URL in place on the running worker via Alloy's `Http::set_url`, resetting endpoint capability probes while keeping the cached chain ID; sources that cannot rotate restart their worker instead.
 - Allow multiple monitors to target the same chain, contract, and function selector or event topic while retaining independent ranges, filters, cursors, and result storage.
@@ -15,6 +17,8 @@ All notable changes to Parseon are documented in this file.
 
 ### Changed
 
+- Require a bearer API token for protected HTTP routes, disable CORS by default, bound request bodies, add liveness/readiness probes, and reject unsafe RPC destinations by default.
+- Treat credential-bearing eRPC URLs as operator-injected configuration instead of generated repository content.
 - Pin the Compose eRPC image to the `0.1.1` release tag, set a 3 GiB container memory limit with `GOMEMLIMIT=2700MiB`, add `restart: unless-stopped`, and invoke `/erpc-server` explicitly so the distroless image starts correctly.
 - Reuse matching RPC data and compatible ABI decoders across overlapping monitor targets before applying each monitor's filter and persisting its own results.
 - Isolate ABI decode failures to the affected monitor layout so an incompatible definition cannot stall other monitors on the chain.
@@ -32,6 +36,8 @@ All notable changes to Parseon are documented in this file.
 ### Fixed
 
 - Keep persisted chain state and live workers ordered during concurrent mutations and startup reconciliation, and reject new worker starts once supervisor shutdown begins.
+- Reject mixed-branch result identities, fail closed when a retained reorg ancestor is unavailable, preserve finalized state for monitors added over existing blocks, and reset rollback cursors below a monitor's start block.
+- Pin validated RPC DNS addresses in the HTTP transport, verify generated endpoint chain IDs, expose worker freshness/state metrics, and require encrypted checksum-verified PostgreSQL backup artifacts.
 
 ### Breaking
 

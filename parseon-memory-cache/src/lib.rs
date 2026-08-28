@@ -36,6 +36,12 @@ impl BlockCache for MemoryBlockCache {
             .invalidate_entries_if(move |key, _| key.0 == chain.id && key.1 < block_number)
             .expect("invalidation closures are enabled for the block cache");
     }
+
+    fn evict_after(&self, chain: Chain, block_number: BlockNumber) {
+        self.inner
+            .invalidate_entries_if(move |key, _| key.0 == chain.id && key.1 > block_number)
+            .expect("invalidation closures are enabled for the block cache");
+    }
 }
 
 pub struct MemoryBlockCacheFactory {
@@ -67,16 +73,29 @@ impl BlockCache for DisabledBlockCache {
     fn put(&self, _chain: Chain, _block: Arc<SourceBlock>) {}
 
     fn evict_before(&self, _chain: Chain, _block_number: BlockNumber) {}
+
+    fn evict_after(&self, _chain: Chain, _block_number: BlockNumber) {}
 }
 
 #[cfg(test)]
 mod tests {
     use std::thread;
 
+    use parseon_core::{B256, BlockMetadata};
+
     use super::*;
 
     fn block(number: BlockNumber) -> Arc<SourceBlock> {
-        Arc::new(SourceBlock { number, transactions: Vec::new() })
+        Arc::new(SourceBlock {
+            number,
+            metadata: BlockMetadata {
+                number,
+                hash: B256::from([number as u8; 32]),
+                parent_hash: B256::ZERO,
+                timestamp: 0,
+            },
+            transactions: Vec::new(),
+        })
     }
 
     #[test]
@@ -100,6 +119,7 @@ mod tests {
         cache.put(second_chain, block(11));
         cache.put(mainnet, block(10));
         cache.evict_before(second_chain, 11);
+        cache.evict_after(second_chain, 11);
         assert!(cache.get(second_chain, 10).is_none());
         assert!(cache.get(second_chain, 11).is_some());
         assert!(cache.get(mainnet, 10).is_some());
@@ -141,5 +161,6 @@ mod tests {
         cache.put(chain, block(10));
         assert!(cache.get(chain, 10).is_none());
         cache.evict_before(chain, 11);
+        cache.evict_after(chain, 11);
     }
 }

@@ -8,6 +8,7 @@ use mongodb::bson::{self, Binary, Bson, Document, doc};
 use mongodb::error::ErrorKind;
 use mongodb::options::{IndexOptions, ReturnDocument};
 use mongodb::{Client, ClientSession, Collection, Database, IndexModel};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use parseon_core::abi::{AbiParam, parse_abi_type};
@@ -15,12 +16,13 @@ use parseon_core::commands::ResultQuery;
 use parseon_core::filter::{Filter, FilterDefinition, FilterExpression};
 use parseon_core::monitor::Monitor;
 use parseon_core::ports::{
-    BlockCommit, ChainRecord, ChainRepository, ChainUpdate, IndexStorage, MonitorRecord,
-    MonitorRepository, NewChain, NewMonitor, RegisteredChain, ResultRecord, ResultRepository,
+    BlockCommit, CanonicalBlock, ChainRecord, ChainRepository, ChainUpdate, IndexStorage,
+    MonitorRecord, MonitorRepository, NewChain, NewMonitor, RegisteredChain, ResultRecord,
+    ResultRepository,
 };
 use parseon_core::{
-    Address, B256, CallTarget, Chain, Cursor, DecodedResult, DecodedValue, EventTarget, MonitorId,
-    Selector, Target, TxHash, Url,
+    Address, B256, BlockMetadata, CallTarget, Chain, Cursor, DecodedResult, DecodedValue,
+    EventTarget, Finality, MonitorId, Selector, Target, TxHash, Url,
 };
 
 type AppResult<T> = anyhow::Result<T>;
@@ -29,6 +31,8 @@ const LEGACY_MONITOR_TARGET_INDEX: &str = "monitors_target";
 const MONITOR_TARGET_LOOKUP_INDEX: &str = "monitors_target_lookup";
 const NAMESPACE_NOT_FOUND: i32 = 26;
 const INDEX_NOT_FOUND: i32 = 27;
+const SCHEMA_VERSION: i64 = 1;
+const MAX_TRANSACTION_ATTEMPTS: usize = 8;
 
 #[derive(Clone)]
 pub struct MongoStorage {
@@ -43,8 +47,6 @@ struct ChainDocument {
     enabled: bool,
     created_at: bson::DateTime,
     updated_at: bson::DateTime,
-    #[serde(default)]
-    monitor_revision: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,13 +77,27 @@ struct MonitorDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct CanonicalBlockDocument {
+    chain_id: i64,
+    block_number: i64,
+    block_hash: String,
+    parent_hash: String,
+    block_timestamp: i64,
+    finality: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ResultDocument {
     chain_id: i64,
     monitor_id: i64,
     kind: String,
     tx_hash: String,
+    block_hash: String,
     log_index: Option<i64>,
     block_number: i64,
+    from: Option<String>,
+    to: Option<String>,
+    finality: String,
     params: Document,
 }
 
@@ -95,6 +111,7 @@ impl MongoStorage {
             "MongoDB storage requires a replica set or sharded deployment"
         );
         let storage = Self { database: client.database(database), client };
+        storage.ensure_schema().await?;
         storage.create_indexes().await?;
         tracing::info!(database, "MongoDB storage initialized");
         Ok(storage)
@@ -112,14 +129,142 @@ impl MongoStorage {
         self.database.collection("results")
     }
 
+    fn blocks(&self) -> Collection<CanonicalBlockDocument> {
+        self.database.collection("canonical_blocks")
+    }
+
     fn counters(&self) -> Collection<Document> {
         self.database.collection("counters")
     }
 
+    async fn ensure_schema(&self) -> AppResult<()> {
+        self.ensure_required_fields(
+            "chains",
+            &["chain_id", "rpc_url", "enabled", "created_at", "updated_at"],
+        )
+        .await?;
+        self.ensure_required_fields(
+            "monitors",
+            &[
+                "id",
+                "chain_id",
+                "address",
+                "kind",
+                "signature_hash",
+                "param_schema",
+                "start_block",
+                "end_block",
+                "cursor",
+                "completed",
+                "enabled",
+                "created_at",
+                "updated_at",
+            ],
+        )
+        .await?;
+        self.ensure_required_fields(
+            "results",
+            &[
+                "chain_id",
+                "monitor_id",
+                "kind",
+                "tx_hash",
+                "block_hash",
+                "block_number",
+                "finality",
+                "params",
+            ],
+        )
+        .await?;
+        self.ensure_required_fields(
+            "canonical_blocks",
+            &[
+                "chain_id",
+                "block_number",
+                "block_hash",
+                "parent_hash",
+                "block_timestamp",
+                "finality",
+            ],
+        )
+        .await?;
+        self.ensure_decodable::<ChainDocument>("chains").await?;
+        self.ensure_decodable::<MonitorDocument>("monitors").await?;
+        self.ensure_decodable::<ResultDocument>("results").await?;
+        self.ensure_decodable::<CanonicalBlockDocument>("canonical_blocks").await?;
+        let metadata = self.database.collection::<Document>("schema_metadata");
+        let row = metadata.find_one(doc! { "_id": "parseon" }).await?;
+        if let Some(row) = row {
+            anyhow::ensure!(
+                row.get_i64("version")? == SCHEMA_VERSION,
+                "unsupported Parseon MongoDB schema version"
+            );
+        } else {
+            metadata.insert_one(doc! { "_id": "parseon", "version": SCHEMA_VERSION }).await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_required_fields(&self, collection: &str, fields: &[&str]) -> AppResult<()> {
+        let missing = fields
+            .iter()
+            .map(|field| {
+                let mut condition = Document::new();
+                condition.insert("$exists", false);
+                let mut clause = Document::new();
+                clause.insert(*field, condition);
+                Bson::Document(clause)
+            })
+            .collect::<Vec<_>>();
+        let legacy = self
+            .database
+            .collection::<Document>(collection)
+            .find_one(doc! { "$or": Bson::Array(missing) })
+            .await?;
+        anyhow::ensure!(
+            legacy.is_none(),
+            "MongoDB collection {collection} contains pre-v1 documents with missing required fields; reset and reindex before upgrade"
+        );
+        Ok(())
+    }
+
+    async fn ensure_decodable<T>(&self, collection: &str) -> AppResult<()>
+    where
+        T: DeserializeOwned,
+    {
+        if let Some(document) =
+            self.database.collection::<Document>(collection).find_one(doc! {}).await?
+        {
+            bson::from_document::<T>(document).map_err(|error| {
+                anyhow::anyhow!(
+                    "MongoDB collection {collection} contains an invalid v1 document: {error}"
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     async fn create_indexes(&self) -> AppResult<()> {
+        match self.blocks().drop_index("blocks_chain_hash").await {
+            Ok(_) => {}
+            Err(error) if missing_index(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
         self.drop_legacy_monitor_target_index().await?;
+        self.drop_legacy_result_indexes().await?;
         for (collection, index) in indexes() {
             self.database.collection::<Document>(collection).create_index(index).await?;
+        }
+        Ok(())
+    }
+
+    async fn drop_legacy_result_indexes(&self) -> AppResult<()> {
+        for name in ["results_call_identity", "results_event_identity"] {
+            match self.results().drop_index(name).await {
+                Ok(_) => {}
+                Err(error) if missing_index(&error) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         Ok(())
     }
@@ -144,30 +289,40 @@ impl MongoStorage {
         ) -> futures_util::future::BoxFuture<'a, AppResult<T>>,
     ) -> AppResult<T> {
         let mut session = self.client.start_session().await?;
-        'transaction: loop {
+        'transaction: for attempt in 0..MAX_TRANSACTION_ATTEMPTS {
             session.start_transaction().await?;
             let value = match operation(&mut session).await {
                 Ok(value) => value,
                 Err(error) => {
                     drop(session.abort_transaction().await);
-                    if transient(&error) {
-                        continue;
+                    if transient(&error) && attempt + 1 < MAX_TRANSACTION_ATTEMPTS {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            1_u64 << attempt.min(6),
+                        ))
+                        .await;
+                        continue 'transaction;
                     }
                     return Err(error);
                 }
             };
-            loop {
-                match session.commit_transaction().await {
-                    Ok(()) => return Ok(value),
-                    Err(error) if error.contains_label("UnknownTransactionCommitResult") => {}
-                    Err(error) if error.contains_label("TransientTransactionError") => {
-                        drop(session.abort_transaction().await);
-                        continue 'transaction;
-                    }
-                    Err(error) => return Err(error.into()),
+            match session.commit_transaction().await {
+                Ok(()) => return Ok(value),
+                Err(error) if error.contains_label("UnknownTransactionCommitResult") => {
+                    return Err(error.into());
                 }
+                Err(error)
+                    if error.contains_label("TransientTransactionError")
+                        && attempt + 1 < MAX_TRANSACTION_ATTEMPTS =>
+                {
+                    drop(session.abort_transaction().await);
+                    tokio::time::sleep(std::time::Duration::from_millis(1_u64 << attempt.min(6)))
+                        .await;
+                    continue 'transaction;
+                }
+                Err(error) => return Err(error.into()),
             }
         }
+        anyhow::bail!("MongoDB transaction exceeded retry limit")
     }
 
     fn target(row: &MonitorDocument) -> AppResult<Target> {
@@ -217,6 +372,24 @@ impl MongoStorage {
         })
     }
 
+    fn canonical(row: CanonicalBlockDocument) -> AppResult<CanonicalBlock> {
+        let finality = match row.finality.as_str() {
+            "provisional" => Finality::Provisional,
+            "finalized" => Finality::Finalized,
+            value => anyhow::bail!("invalid canonical block finality {value}"),
+        };
+        Ok(CanonicalBlock {
+            chain: Chain::new(from_i64(row.chain_id, "chain id")?),
+            metadata: BlockMetadata {
+                number: from_i64(row.block_number, "block number")?,
+                hash: B256::from_str(&row.block_hash)?,
+                parent_hash: B256::from_str(&row.parent_hash)?,
+                timestamp: from_i64(row.block_timestamp, "block timestamp")?,
+            },
+            finality,
+        })
+    }
+
     fn chain_record(row: ChainDocument) -> AppResult<ChainRecord> {
         Ok(ChainRecord {
             chain: Chain::new(from_i64(row.chain_id, "chain id")?),
@@ -259,22 +432,41 @@ impl IndexStorage for MongoStorage {
             .await?;
         let mut monitors = Vec::new();
         while let Some(row) = rows.try_next().await? {
-            let monitor = Self::monitor(&row)?;
-            if monitor.enabled && !monitor.completed {
-                monitors.push(monitor);
-            }
+            monitors.push(Self::monitor(&row)?);
         }
         Ok(monitors)
     }
 
+    async fn canonical_tip(&self, chain: Chain) -> AppResult<Option<CanonicalBlock>> {
+        Ok(self
+            .blocks()
+            .find_one(doc! { "chain_id": to_i64(chain.id, "chain id")? })
+            .sort(doc! { "block_number": -1 })
+            .await?
+            .map(Self::canonical)
+            .transpose()?)
+    }
+
+    async fn canonical_block(
+        &self,
+        chain: Chain,
+        block_number: u64,
+    ) -> AppResult<Option<CanonicalBlock>> {
+        Ok(self
+            .blocks()
+            .find_one(doc! {
+                "chain_id": to_i64(chain.id, "chain id")?,
+                "block_number": to_i64(block_number, "block number")?
+            })
+            .await?
+            .map(Self::canonical)
+            .transpose()?)
+    }
+
     async fn commit_block(&self, commit: &BlockCommit) -> AppResult<()> {
-        anyhow::ensure!(
-            commit.monitors.iter().all(|monitor| monitor.chain == commit.chain),
-            "cross-chain monitor set rejected for chain {}",
-            commit.chain.id
-        );
+        commit.validate()?;
         let chain_id = to_i64(commit.chain.id, "chain id")?;
-        let block_number = to_i64(commit.block_number, "block number")?;
+        let block_number = to_i64(commit.metadata.number, "block number")?;
         let mut ids = commit
             .monitors
             .iter()
@@ -290,16 +482,66 @@ impl IndexStorage for MongoStorage {
         let documents = commit
             .results
             .iter()
-            .map(|result| result_document(chain_id, &monitors, result))
+            .map(|result| result_document(chain_id, commit.finality, &monitors, result))
             .collect::<AppResult<Vec<_>>>()?;
         let collection = self.monitors();
         let results = self.results();
+        let blocks = self.blocks();
+        let block = CanonicalBlockDocument {
+            chain_id,
+            block_number,
+            block_hash: format!("{:#x}", commit.metadata.hash),
+            parent_hash: format!("{:#x}", commit.metadata.parent_hash),
+            block_timestamp: to_i64(commit.metadata.timestamp, "block timestamp")?,
+            finality: commit.finality.as_str().into(),
+        };
+        let commit_finality = commit.finality;
         self.transaction(move |session| {
             let collection = collection.clone();
             let results = results.clone();
+            let blocks = blocks.clone();
+            let block = block.clone();
             let ids = ids.clone();
-            let documents = documents.clone();
+            let mut documents = documents.clone();
             Box::pin(async move {
+                let existing = blocks
+                    .find_one(doc! { "chain_id": chain_id, "block_number": block_number })
+                    .session(&mut *session)
+                    .await?;
+                let effective_finality = if let Some(existing) = existing {
+                    anyhow::ensure!(
+                        existing.block_hash == block.block_hash
+                            && existing.parent_hash == block.parent_hash,
+                        "canonical block {} hash changed without rollback",
+                        block_number
+                    );
+                    anyhow::ensure!(
+                        existing.finality == Finality::Provisional.as_str()
+                            || existing.finality == Finality::Finalized.as_str(),
+                        "canonical block {} has invalid finality",
+                        block_number
+                    );
+                    let effective = existing.finality == Finality::Finalized.as_str()
+                        || block.finality == Finality::Finalized.as_str();
+                    if effective && existing.finality == Finality::Provisional.as_str() {
+                        blocks
+                            .update_one(
+                                doc! { "chain_id": chain_id, "block_number": block_number },
+                                doc! { "$set": { "finality": Finality::Finalized.as_str() } },
+                            )
+                            .session(&mut *session)
+                            .await?;
+                    }
+                    effective
+                } else {
+                    drop(blocks.insert_one(block).session(&mut *session).await?);
+                    matches!(commit_finality, Finality::Finalized)
+                };
+                if effective_finality {
+                    for document in &mut documents {
+                        document.finality = Finality::Finalized.as_str().into();
+                    }
+                }
                 let updated = collection
                     .update_many(
                         doc! { "id": { "$in": &ids }, "chain_id": chain_id },
@@ -327,6 +569,155 @@ impl IndexStorage for MongoStorage {
         .await?;
         Ok(())
     }
+
+    async fn rollback_to(&self, chain: Chain, ancestor: u64) -> AppResult<()> {
+        let chain_id = to_i64(chain.id, "chain id")?;
+        let ancestor = to_i64(ancestor, "ancestor block")?;
+        let blocks = self.blocks();
+        let monitors = self.monitors();
+        let results = self.results();
+        self.transaction(move |session| {
+            let blocks = blocks.clone();
+            let monitors = monitors.clone();
+            let results = results.clone();
+            Box::pin(async move {
+                let finalized = blocks
+                    .find_one(doc! {
+                        "chain_id": chain_id,
+                        "block_number": { "$gt": ancestor },
+                        "finality": "finalized"
+                    })
+                    .session(&mut *session)
+                    .await?;
+                anyhow::ensure!(finalized.is_none(), "rollback crosses promoted finalized boundary");
+                results
+                    .delete_many(doc! { "chain_id": chain_id, "block_number": { "$gt": ancestor } })
+                    .session(&mut *session)
+                    .await?;
+                monitors
+                    .update_many(
+                        doc! { "chain_id": chain_id },
+                        vec![doc! { "$set": {
+                            "cursor": { "$cond": [
+                                { "$gt": ["$start_block", ancestor] },
+                                null,
+                                { "$cond": [
+                                    { "$or": [ { "$eq": ["$cursor", null] }, { "$lte": ["$cursor", ancestor] } ] },
+                                    "$cursor", ancestor
+                                ] }
+                            ] },
+                            "completed": { "$cond": [
+                                { "$eq": ["$end_block", null] }, false, { "$lte": ["$end_block", ancestor] }
+                            ] },
+                            "updated_at": bson::DateTime::now()
+                        } }],
+                    )
+                    .session(&mut *session)
+                    .await?;
+                blocks
+                    .delete_many(doc! { "chain_id": chain_id, "block_number": { "$gt": ancestor } })
+                    .session(&mut *session)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    async fn promote_finalized(
+        &self,
+        chain: Chain,
+        finalized_head: u64,
+    ) -> AppResult<Vec<parseon_core::ports::SinkBatch>> {
+        let chain_id = to_i64(chain.id, "chain id")?;
+        let head = to_i64(finalized_head, "finalized head")?;
+        let blocks = self.blocks();
+        let monitors = self.monitors();
+        let results = self.results();
+        self.transaction(move |session| {
+            let blocks = blocks.clone();
+            let monitors = monitors.clone();
+            let results = results.clone();
+            Box::pin(async move {
+                let mut cursor = blocks
+                    .find(doc! { "chain_id": chain_id, "finality": "provisional", "block_number": { "$lte": head } })
+                    .sort(doc! { "block_number": 1 })
+                    .session(&mut *session)
+                    .await?;
+                let mut promoted = Vec::new();
+                while let Some(block) = cursor.next(&mut *session).await {
+                    promoted.push(block?);
+                }
+                if promoted.is_empty() {
+                    return Ok(Vec::new());
+                }
+                blocks
+                    .update_many(
+                        doc! { "chain_id": chain_id, "finality": "provisional", "block_number": { "$lte": head } },
+                        doc! { "$set": { "finality": "finalized" } },
+                    )
+                    .session(&mut *session)
+                    .await?;
+                results
+                    .update_many(
+                        doc! { "chain_id": chain_id, "finality": "provisional", "block_number": { "$lte": head } },
+                        doc! { "$set": { "finality": "finalized" } },
+                    )
+                    .session(&mut *session)
+                    .await?;
+                let mut monitor_cursor = monitors
+                    .find(doc! { "chain_id": chain_id })
+                    .session(&mut *session)
+                    .await?;
+                let mut monitor_map = HashMap::new();
+                while let Some(monitor) = monitor_cursor.next(&mut *session).await {
+                    let monitor = monitor?;
+                    monitor_map.insert(monitor.id, monitor);
+                }
+                let mut batches = Vec::new();
+                for block in promoted {
+                    let mut rows = results
+                        .find(doc! { "chain_id": chain_id, "block_hash": &block.block_hash, "block_number": block.block_number, "finality": "finalized" })
+                        .session(&mut *session)
+                        .await?;
+                    let mut sink_results = Vec::new();
+                    while let Some(row) = rows.next(&mut *session).await {
+                        let row = row?;
+                        let monitor = monitor_map.get(&row.monitor_id).ok_or_else(|| anyhow::anyhow!("result references missing monitor {}", row.monitor_id))?;
+                        let params = bson_params_to_json(row.params)?;
+                        let tx_hash = TxHash::from_str(&row.tx_hash)?;
+                        if row.kind == "call" {
+                            sink_results.push(parseon_core::ports::SinkResult::Call {
+                                monitor_id: u64::try_from(row.monitor_id)?,
+                                tx_hash,
+                                from: Address::from_str(row.from.as_deref().ok_or_else(|| anyhow::anyhow!("missing call sender"))?)?,
+                                to: Address::from_str(row.to.as_deref().ok_or_else(|| anyhow::anyhow!("missing call recipient"))?)?,
+                                params,
+                            });
+                        } else {
+                            sink_results.push(parseon_core::ports::SinkResult::Event {
+                                monitor_id: u64::try_from(row.monitor_id)?,
+                                tx_hash,
+                                emitter: Address::from_str(&monitor.address)?,
+                                log_index: from_i64(row.log_index.ok_or_else(|| anyhow::anyhow!("missing log index"))?, "log index")?,
+                                params,
+                            });
+                        }
+                    }
+                    if !sink_results.is_empty() {
+                        batches.push(parseon_core::ports::SinkBatch {
+                            version: 1,
+                            chain_id: chain.id,
+                            block_number: from_i64(block.block_number, "block number")?,
+                            results: sink_results,
+                        });
+                    }
+                }
+                Ok(batches)
+            })
+        })
+        .await
+    }
 }
 
 #[async_trait]
@@ -352,7 +743,6 @@ impl ChainRepository for MongoStorage {
             enabled: input.enabled,
             created_at: now,
             updated_at: now,
-            monitor_revision: 0,
         };
         drop(self.chains().insert_one(&row).await?);
         Self::chain_record(row)
@@ -400,10 +790,12 @@ impl ChainRepository for MongoStorage {
         let chains = self.chains();
         let monitors = self.monitors();
         let results = self.results();
+        let blocks = self.blocks();
         self.transaction(move |session| {
             let chains = chains.clone();
             let monitors = monitors.clone();
             let results = results.clone();
+            let blocks = blocks.clone();
             Box::pin(async move {
                 let deleted =
                     chains.delete_one(doc! { "chain_id": chain_id }).session(&mut *session).await?;
@@ -413,6 +805,10 @@ impl ChainRepository for MongoStorage {
                     .session(&mut *session)
                     .await?;
                 let _ = results
+                    .delete_many(doc! { "chain_id": chain_id })
+                    .session(&mut *session)
+                    .await?;
+                let _ = blocks
                     .delete_many(doc! { "chain_id": chain_id })
                     .session(&mut *session)
                     .await?;
@@ -480,13 +876,10 @@ impl MonitorRepository for MongoStorage {
                 let mut row = template.clone();
                 Box::pin(async move {
                     let owner = chains
-                        .update_one(
-                            doc! { "chain_id": row.chain_id },
-                            doc! { "$inc": { "monitor_revision": 1_i64 } },
-                        )
+                        .find_one(doc! { "chain_id": row.chain_id })
                         .session(&mut *session)
                         .await?;
-                    anyhow::ensure!(owner.matched_count == 1, "chain {} not found", row.chain_id);
+                    anyhow::ensure!(owner.is_some(), "chain {} not found", row.chain_id);
                     let counter = counters
                         .find_one_and_update(
                             doc! { "_id": "monitors" },
@@ -573,7 +966,10 @@ impl ResultRepository for MongoStorage {
             Target::Call(_) => "call",
             Target::Event(_) => "event",
         };
-        let (filter, sort) = result_query(to_i64(monitor.id.get(), "monitor id")?, kind)?;
+        let (mut filter, sort) = result_query(to_i64(monitor.id.get(), "monitor id")?, kind)?;
+        if let Some(finality) = query.finality {
+            filter.insert("finality", finality.as_str());
+        }
         let mut rows = self
             .results()
             .find(filter)
@@ -581,21 +977,46 @@ impl ResultRepository for MongoStorage {
             .skip(query.offset)
             .limit(i64::from(query.limit.get()))
             .await?;
+        let emitter = match &monitor.target {
+            Target::Event(target) => target.address,
+            Target::Call(_) => Address::ZERO,
+        };
         let mut result = Vec::new();
         while let Some(row) = rows.try_next().await? {
             let tx_hash = TxHash::from_str(&row.tx_hash)?;
             let block_number = from_i64(row.block_number, "block number")?;
+            let block_hash = B256::from_str(&row.block_hash)?;
+            let finality = finality_from_str(&row.finality)?;
             let params = bson_params_to_json(row.params)?;
             result.push(if kind == "call" {
-                ResultRecord::Call { tx_hash, block_number, params }
+                ResultRecord::Call {
+                    tx_hash,
+                    block_hash,
+                    block_number,
+                    from: Address::from_str(
+                        row.from
+                            .as_deref()
+                            .ok_or_else(|| anyhow::anyhow!("missing call sender"))?,
+                    )?,
+                    to: Address::from_str(
+                        row.to
+                            .as_deref()
+                            .ok_or_else(|| anyhow::anyhow!("missing call recipient"))?,
+                    )?,
+                    finality,
+                    params,
+                }
             } else {
                 ResultRecord::Event {
                     tx_hash,
+                    block_hash,
                     log_index: from_i64(
                         row.log_index.ok_or_else(|| anyhow::anyhow!("missing log index"))?,
                         "log index",
                     )?,
                     block_number,
+                    emitter,
+                    finality,
                     params,
                 }
             });
@@ -606,6 +1027,7 @@ impl ResultRepository for MongoStorage {
 
 fn result_document(
     chain_id: i64,
+    finality: Finality,
     monitors: &HashMap<MonitorId, &Monitor>,
     result: &DecodedResult,
 ) -> AppResult<ResultDocument> {
@@ -622,8 +1044,12 @@ fn result_document(
                 monitor_id: to_i64(call.monitor_id.get(), "monitor id")?,
                 kind: "call".into(),
                 tx_hash: format!("{:#x}", call.transaction_hash),
+                block_hash: format!("{:#x}", call.block_hash),
                 log_index: None,
                 block_number: to_i64(call.block_number, "block number")?,
+                from: Some(format!("{:#x}", call.from)),
+                to: Some(format!("{:#x}", call.to)),
+                finality: finality.as_str().into(),
                 params: bson_params(&target.inputs, &call.params)?,
             })
         }
@@ -639,8 +1065,12 @@ fn result_document(
                 monitor_id: to_i64(event.monitor_id.get(), "monitor id")?,
                 kind: "event".into(),
                 tx_hash: format!("{:#x}", event.transaction_hash),
+                block_hash: format!("{:#x}", event.block_hash),
                 log_index: Some(to_i64(event.log_index, "log index")?),
                 block_number: to_i64(event.block_number, "block number")?,
+                from: None,
+                to: None,
+                finality: finality.as_str().into(),
                 params: bson_params(&target.params, &event.params)?,
             })
         }
@@ -716,9 +1146,17 @@ fn indexes() -> Vec<(&'static str, IndexModel)> {
         ),
         ("monitors", index(doc! { "chain_id": 1, "id": 1 }, "monitors_chain_order", false, None)),
         (
+            "canonical_blocks",
+            index(doc! { "chain_id": 1, "block_number": 1 }, "blocks_chain_number", true, None),
+        ),
+        (
+            "canonical_blocks",
+            index(doc! { "chain_id": 1, "block_hash": 1 }, "blocks_chain_hash", true, None),
+        ),
+        (
             "results",
             index(
-                doc! { "monitor_id": 1, "tx_hash": 1 },
+                doc! { "monitor_id": 1, "tx_hash": 1, "block_hash": 1 },
                 "results_call_identity",
                 true,
                 Some(doc! { "kind": "call" }),
@@ -727,7 +1165,7 @@ fn indexes() -> Vec<(&'static str, IndexModel)> {
         (
             "results",
             index(
-                doc! { "monitor_id": 1, "tx_hash": 1, "log_index": 1 },
+                doc! { "monitor_id": 1, "tx_hash": 1, "block_hash": 1, "log_index": 1 },
                 "results_event_identity",
                 true,
                 Some(doc! { "kind": "event" }),
@@ -736,7 +1174,7 @@ fn indexes() -> Vec<(&'static str, IndexModel)> {
         (
             "results",
             index(
-                doc! { "monitor_id": 1, "block_number": -1, "tx_hash": -1 },
+                doc! { "monitor_id": 1, "block_number": -1, "block_hash": -1, "tx_hash": -1 },
                 "results_call_order",
                 false,
                 Some(doc! { "kind": "call" }),
@@ -745,7 +1183,7 @@ fn indexes() -> Vec<(&'static str, IndexModel)> {
         (
             "results",
             index(
-                doc! { "monitor_id": 1, "block_number": -1, "log_index": -1 },
+                doc! { "monitor_id": 1, "block_number": -1, "block_hash": -1, "log_index": -1 },
                 "results_event_order",
                 false,
                 Some(doc! { "kind": "event" }),
@@ -762,10 +1200,18 @@ fn missing_index(error: &mongodb::error::Error) -> bool {
     )
 }
 
+fn finality_from_str(value: &str) -> AppResult<Finality> {
+    match value {
+        "provisional" => Ok(Finality::Provisional),
+        "finalized" => Ok(Finality::Finalized),
+        value => anyhow::bail!("invalid result finality {value}"),
+    }
+}
+
 fn result_query(monitor_id: i64, kind: &str) -> AppResult<(Document, Document)> {
     let sort = match kind {
-        "call" => doc! { "block_number": -1, "tx_hash": -1 },
-        "event" => doc! { "block_number": -1, "log_index": -1 },
+        "call" => doc! { "block_number": -1, "block_hash": -1, "tx_hash": -1 },
+        "event" => doc! { "block_number": -1, "block_hash": -1, "log_index": -1 },
         _ => anyhow::bail!("invalid monitor kind {kind}"),
     };
     Ok((doc! { "monitor_id": monitor_id, "kind": kind }, sort))
@@ -803,10 +1249,17 @@ mod tests {
     use parseon_core::{DecodedCall, DecodedEvent};
 
     use super::*;
-    use parseon_core::ports::Storage;
-
     fn param(name: &str) -> AbiParam {
         AbiParam::new(name, parse_abi_type("uint256").unwrap()).unwrap()
+    }
+
+    fn metadata(number: u64) -> BlockMetadata {
+        BlockMetadata {
+            number,
+            hash: B256::repeat_byte(number as u8),
+            parent_hash: B256::ZERO,
+            timestamp: 0,
+        }
     }
 
     #[test]
@@ -845,7 +1298,7 @@ mod tests {
     #[test]
     fn declares_non_unique_target_lookup_and_unique_result_indexes() {
         let indexes = indexes();
-        assert_eq!(indexes.len(), 8);
+        assert_eq!(indexes.len(), 10);
         let names = indexes
             .iter()
             .map(|(_, index)| index.options.as_ref().unwrap().name.as_deref().unwrap())
@@ -880,12 +1333,12 @@ mod tests {
             result_query(7, "call").unwrap(),
             (
                 doc! { "monitor_id": 7_i64, "kind": "call" },
-                doc! { "block_number": -1, "tx_hash": -1 }
+                doc! { "block_number": -1, "block_hash": -1, "tx_hash": -1 }
             )
         );
         assert_eq!(
             result_query(8, "event").unwrap().1,
-            doc! { "block_number": -1, "log_index": -1 }
+            doc! { "block_number": -1, "block_hash": -1, "log_index": -1 }
         );
         assert!(result_query(7, "unknown").is_err());
     }
@@ -1001,6 +1454,7 @@ mod tests {
         let call = |monitor_id, hash: u8, block_number| {
             DecodedResult::Call(DecodedCall {
                 monitor_id,
+                block_hash: metadata(block_number).hash,
                 block_number,
                 transaction_hash: B256::repeat_byte(hash),
                 from: Address::repeat_byte(5),
@@ -1015,14 +1469,21 @@ mod tests {
                 monitors.push(Arc::clone(&runtime_duplicate));
                 results.push(call(duplicate_monitor.id, hash, block_number));
             }
-            let commit = BlockCommit { chain, block_number, monitors, results };
+            let commit = BlockCommit {
+                chain,
+                metadata: metadata(block_number),
+                finality: Finality::Provisional,
+                monitors,
+                results,
+            };
             storage.commit_block(&commit).await.unwrap();
         }
         assert_eq!(storage.get_monitor(monitor.id).await.unwrap().cursor, Some(12));
         assert_eq!(storage.get_monitor(duplicate_monitor.id).await.unwrap().cursor, Some(10));
         let duplicate_commit = BlockCommit {
             chain,
-            block_number: 13,
+            metadata: metadata(13),
+            finality: Finality::Provisional,
             monitors: vec![Arc::clone(&runtime_monitor)],
             results: vec![call(monitor.id, 3, 12)],
         };
@@ -1033,7 +1494,10 @@ mod tests {
             "duplicate result must roll back cursor advancement"
         );
         let page = storage
-            .query_results(&monitor, ResultQuery { limit: PageLimit::new(1), offset: 1 })
+            .query_results(
+                &monitor,
+                ResultQuery { limit: PageLimit::new(1), offset: 1, finality: None },
+            )
             .await
             .unwrap();
         assert!(matches!(page.as_slice(), [ResultRecord::Call { block_number: 11, .. }]));
@@ -1041,7 +1505,7 @@ mod tests {
             storage
                 .query_results(
                     &duplicate_monitor,
-                    ResultQuery { limit: PageLimit::new(1), offset: 0 }
+                    ResultQuery { limit: PageLimit::new(1), offset: 0, finality: None }
                 )
                 .await
                 .unwrap()
@@ -1056,12 +1520,13 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|monitor| monitor.id != duplicate_monitor.id)
+                .any(|monitor| monitor.id == duplicate_monitor.id && !monitor.enabled)
         );
         assert!(storage.set_monitor_enabled(duplicate_monitor.id, true).await.unwrap().enabled);
         let cross_chain_commit = BlockCommit {
             chain: Chain::new(1),
-            block_number: 13,
+            metadata: metadata(13),
+            finality: Finality::Provisional,
             monitors: vec![Arc::clone(&runtime_monitor)],
             results: Vec::new(),
         };
@@ -1071,7 +1536,8 @@ mod tests {
         let committing = storage.clone();
         let concurrent_commit = BlockCommit {
             chain,
-            block_number: 13,
+            metadata: metadata(13),
+            finality: Finality::Provisional,
             monitors: vec![Arc::clone(&runtime_monitor)],
             results: vec![call(monitor.id, 4, 13)],
         };
@@ -1112,13 +1578,15 @@ mod tests {
         );
         let event_commit = BlockCommit {
             chain,
-            block_number: 14,
+            metadata: metadata(14),
+            finality: Finality::Provisional,
             monitors: vec![runtime_event],
             results: [1, 2]
                 .into_iter()
                 .map(|log_index| {
                     DecodedResult::Event(DecodedEvent {
                         monitor_id: event.id,
+                        block_hash: metadata(14).hash,
                         block_number: 14,
                         transaction_hash: B256::repeat_byte(9),
                         log_index,
@@ -1130,13 +1598,55 @@ mod tests {
         storage.commit_block(&event_commit).await.unwrap();
         assert!(matches!(
             storage
-                .query_results(&event, ResultQuery { limit: PageLimit::new(1), offset: 0 })
+                .query_results(
+                    &event,
+                    ResultQuery { limit: PageLimit::new(1), offset: 0, finality: None }
+                )
                 .await
                 .unwrap()
                 .as_slice(),
             [ResultRecord::Event { log_index: 2, .. }]
         ));
         assert_eq!(storage.results().count_documents(doc! {}).await.unwrap(), 3);
+
+        let promoted = storage.promote_finalized(chain, 11).await.unwrap();
+        assert!(!promoted.is_empty(), "promotion must reconstruct finalized sink batches");
+        assert!(
+            storage
+                .query_results(
+                    &duplicate_monitor,
+                    ResultQuery {
+                        limit: PageLimit::new(10),
+                        offset: 0,
+                        finality: Some(Finality::Finalized),
+                    },
+                )
+                .await
+                .unwrap()
+                .iter()
+                .all(|result| matches!(
+                    result,
+                    ResultRecord::Call { finality: Finality::Finalized, .. }
+                ))
+        );
+
+        let before_rejected_rollback = storage.results().count_documents(doc! {}).await.unwrap();
+        assert!(storage.rollback_to(chain, 10).await.is_err());
+        assert_eq!(
+            storage.results().count_documents(doc! {}).await.unwrap(),
+            before_rejected_rollback,
+            "rollback across finalized data must be atomic"
+        );
+        storage.rollback_to(chain, 12).await.unwrap();
+        assert_eq!(
+            storage
+                .results()
+                .count_documents(doc! { "block_number": { "$gt": 12 } })
+                .await
+                .unwrap(),
+            0,
+            "rollback must remove provisional fork results"
+        );
         storage.delete_chain(chain).await.unwrap();
         assert_eq!(storage.count_monitors().await.unwrap(), 0);
         assert_eq!(storage.results().count_documents(doc! {}).await.unwrap(), 0);

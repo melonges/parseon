@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     BlockNumber, Chain, PollContext, PollOutcome, PollResult, SourceStatus, WorkerConfig,
-    probe_source, run_once,
+    probe_source, promotion_height, run_once,
 };
 use crate::filter::Filter;
 use crate::monitor::Monitor;
@@ -30,8 +30,8 @@ use crate::ports::{
 };
 use crate::status::ChainStatus;
 use crate::{
-    BlockTransaction, CallTarget, Cursor, EventTarget, ExecutionOutcome, MonitorId, SourceBlock,
-    Target,
+    BlockMetadata, BlockTransaction, CallTarget, Cursor, EventTarget, ExecutionOutcome, MonitorId,
+    SourceBlock, Target,
 };
 
 struct FakeStorage {
@@ -66,9 +66,36 @@ impl IndexStorage for FakeStorage {
         Ok((self.monitor.chain == chain).then(|| self.monitor.clone()).into_iter().collect())
     }
 
+    async fn canonical_tip(
+        &self,
+        _chain: Chain,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok(None)
+    }
+
+    async fn canonical_block(
+        &self,
+        _chain: Chain,
+        _block_number: BlockNumber,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok(None)
+    }
+
     async fn commit_block(&self, commit: &BlockCommit) -> anyhow::Result<()> {
         self.commits.lock().unwrap().push(commit.clone());
         Ok(())
+    }
+
+    async fn rollback_to(&self, _chain: Chain, _ancestor: BlockNumber) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn promote_finalized(
+        &self,
+        _chain: Chain,
+        _head: BlockNumber,
+    ) -> anyhow::Result<Vec<SinkBatch>> {
+        Ok(Vec::new())
     }
 }
 
@@ -78,9 +105,36 @@ impl IndexStorage for MultiMonitorStorage {
         Ok(self.monitors.iter().filter(|monitor| monitor.chain == chain).cloned().collect())
     }
 
+    async fn canonical_tip(
+        &self,
+        _chain: Chain,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok(None)
+    }
+
+    async fn canonical_block(
+        &self,
+        _chain: Chain,
+        _block_number: BlockNumber,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok(None)
+    }
+
     async fn commit_block(&self, commit: &BlockCommit) -> anyhow::Result<()> {
         self.commits.lock().unwrap().push(commit.clone());
         Ok(())
+    }
+
+    async fn rollback_to(&self, _chain: Chain, _ancestor: BlockNumber) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn promote_finalized(
+        &self,
+        _chain: Chain,
+        _head: BlockNumber,
+    ) -> anyhow::Result<Vec<SinkBatch>> {
+        Ok(Vec::new())
     }
 }
 
@@ -90,8 +144,35 @@ impl IndexStorage for RejectingStorage {
         Ok((self.0.chain == chain).then(|| self.0.clone()).into_iter().collect())
     }
 
+    async fn canonical_tip(
+        &self,
+        _chain: Chain,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok(None)
+    }
+
+    async fn canonical_block(
+        &self,
+        _chain: Chain,
+        _block_number: BlockNumber,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok(None)
+    }
+
     async fn commit_block(&self, _: &BlockCommit) -> anyhow::Result<()> {
         anyhow::bail!("storage commit failed")
+    }
+
+    async fn rollback_to(&self, _chain: Chain, _ancestor: BlockNumber) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn promote_finalized(
+        &self,
+        _chain: Chain,
+        _head: BlockNumber,
+    ) -> anyhow::Result<Vec<SinkBatch>> {
+        Ok(Vec::new())
     }
 }
 
@@ -116,6 +197,88 @@ struct ParallelSource {
     current: AtomicUsize,
     maximum: AtomicUsize,
     fail_at: Option<BlockNumber>,
+}
+
+struct ReorgStorage {
+    tip: crate::ports::CanonicalBlock,
+    ancestor: crate::ports::CanonicalBlock,
+    rollback: Mutex<Vec<BlockNumber>>,
+}
+
+struct ForkSource;
+
+#[async_trait]
+impl IndexStorage for ReorgStorage {
+    async fn load_monitors(&self, _chain: Chain) -> anyhow::Result<Vec<Monitor>> {
+        Ok(Vec::new())
+    }
+
+    async fn canonical_tip(
+        &self,
+        _chain: Chain,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok(Some(self.tip.clone()))
+    }
+
+    async fn canonical_block(
+        &self,
+        _chain: Chain,
+        number: BlockNumber,
+    ) -> anyhow::Result<Option<crate::ports::CanonicalBlock>> {
+        Ok((number == self.ancestor.metadata.number).then(|| self.ancestor.clone()))
+    }
+
+    async fn commit_block(&self, _commit: &BlockCommit) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn rollback_to(&self, _chain: Chain, ancestor: BlockNumber) -> anyhow::Result<()> {
+        self.rollback.lock().unwrap().push(ancestor);
+        Ok(())
+    }
+
+    async fn promote_finalized(
+        &self,
+        _chain: Chain,
+        _head: BlockNumber,
+    ) -> anyhow::Result<Vec<SinkBatch>> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait]
+impl BlockSource for ForkSource {
+    async fn chain_id(&self) -> anyhow::Result<u64> {
+        Ok(1)
+    }
+    async fn latest_head(&self) -> anyhow::Result<BlockNumber> {
+        Ok(10)
+    }
+    async fn finalized_head(&self) -> anyhow::Result<BlockNumber> {
+        Ok(10)
+    }
+    async fn fetch_block_header(&self, number: BlockNumber) -> anyhow::Result<BlockMetadata> {
+        Ok(BlockMetadata {
+            number,
+            hash: if number == 10 {
+                B256::repeat_byte(0xb)
+            } else {
+                B256::repeat_byte(number as u8)
+            },
+            parent_hash: if number == 10 { B256::repeat_byte(9) } else { B256::ZERO },
+            timestamp: number,
+        })
+    }
+    async fn fetch_block(&self, _number: BlockNumber) -> anyhow::Result<SourceBlock> {
+        unreachable!()
+    }
+    async fn fetch_execution_outcomes(
+        &self,
+        _block: &BlockMetadata,
+        _hashes: &[B256],
+    ) -> anyhow::Result<Vec<ExecutionOutcome>> {
+        unreachable!()
+    }
 }
 
 impl ParallelSource {
@@ -144,6 +307,13 @@ impl BlockCache for FakeCache {
             .unwrap()
             .retain(|(chain_id, number), _| *chain_id != chain.id || *number >= block_number);
     }
+
+    fn evict_after(&self, chain: Chain, block_number: BlockNumber) {
+        self.blocks
+            .lock()
+            .unwrap()
+            .retain(|(chain_id, number), _| *chain_id != chain.id || *number <= block_number);
+    }
 }
 
 #[async_trait]
@@ -157,12 +327,21 @@ impl BlockSource for FakeSource {
     }
 
     async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
-        Ok(SourceBlock { number: block_number, transactions: Vec::new() })
+        Ok(SourceBlock {
+            number: block_number,
+            metadata: BlockMetadata {
+                number: block_number,
+                hash: B256::from([block_number as u8; 32]),
+                parent_hash: B256::ZERO,
+                timestamp: 0,
+            },
+            transactions: Vec::new(),
+        })
     }
 
     async fn fetch_execution_outcomes(
         &self,
-        _block_number: BlockNumber,
+        _block: &BlockMetadata,
         _transaction_hashes: &[B256],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         Ok(Vec::new())
@@ -182,6 +361,12 @@ impl BlockSource for CandidateSource {
     async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
         Ok(SourceBlock {
             number: block_number,
+            metadata: BlockMetadata {
+                number: block_number,
+                hash: B256::from([block_number as u8; 32]),
+                parent_hash: B256::ZERO,
+                timestamp: 0,
+            },
             transactions: vec![
                 BlockTransaction {
                     hash: B256::repeat_byte(1),
@@ -213,7 +398,7 @@ impl BlockSource for CandidateSource {
 
     async fn fetch_execution_outcomes(
         &self,
-        _block_number: BlockNumber,
+        _block: &BlockMetadata,
         transaction_hashes: &[B256],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         self.candidates.lock().unwrap().extend_from_slice(transaction_hashes);
@@ -241,7 +426,7 @@ impl BlockSource for UnsupportedFinalizedSource {
 
     async fn fetch_execution_outcomes(
         &self,
-        _block_number: BlockNumber,
+        _block: &BlockMetadata,
         _transaction_hashes: &[B256],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         unreachable!()
@@ -264,7 +449,7 @@ impl BlockSource for PendingSource {
 
     async fn fetch_execution_outcomes(
         &self,
-        _block_number: BlockNumber,
+        _block: &BlockMetadata,
         _transaction_hashes: &[B256],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         unreachable!()
@@ -281,13 +466,22 @@ impl BlockSource for RecordingLogSource {
         Ok(12)
     }
 
+    async fn fetch_block_header(&self, block_number: BlockNumber) -> anyhow::Result<BlockMetadata> {
+        Ok(BlockMetadata {
+            number: block_number,
+            hash: B256::from([block_number as u8; 32]),
+            parent_hash: B256::ZERO,
+            timestamp: 0,
+        })
+    }
+
     async fn fetch_block(&self, _block_number: BlockNumber) -> anyhow::Result<SourceBlock> {
         unreachable!()
     }
 
     async fn fetch_execution_outcomes(
         &self,
-        _block_number: BlockNumber,
+        _block: &BlockMetadata,
         _transaction_hashes: &[B256],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         unreachable!()
@@ -318,23 +512,93 @@ impl BlockSource for ParallelSource {
         if self.fail_at == Some(block_number) {
             anyhow::bail!("block {block_number} failed")
         }
-        Ok(SourceBlock { number: block_number, transactions: Vec::new() })
+        Ok(SourceBlock {
+            number: block_number,
+            metadata: BlockMetadata {
+                number: block_number,
+                hash: B256::from([block_number as u8; 32]),
+                parent_hash: B256::ZERO,
+                timestamp: 0,
+            },
+            transactions: Vec::new(),
+        })
     }
 
     async fn fetch_execution_outcomes(
         &self,
-        _block_number: BlockNumber,
+        _block: &BlockMetadata,
         _transaction_hashes: &[B256],
     ) -> anyhow::Result<Vec<ExecutionOutcome>> {
         Ok(Vec::new())
     }
 }
 
+#[test]
+fn promotion_height_is_bounded_by_finality_and_confirmations() {
+    assert_eq!(promotion_height(100, 90, NonZeroU64::new(64).unwrap()), 36);
+    assert_eq!(promotion_height(10, 10, NonZeroU64::new(64).unwrap()), 0);
+    assert_eq!(promotion_height(u64::MAX, u64::MAX, NonZeroU64::new(64).unwrap()), u64::MAX - 64);
+}
+
+#[tokio::test]
+async fn rolls_back_to_the_bounded_common_ancestor() {
+    let chain = Chain::new(1);
+    let ancestor = crate::ports::CanonicalBlock {
+        chain,
+        metadata: BlockMetadata {
+            number: 9,
+            hash: B256::repeat_byte(9),
+            parent_hash: B256::ZERO,
+            timestamp: 9,
+        },
+        finality: crate::Finality::Provisional,
+    };
+    let storage = ReorgStorage {
+        tip: crate::ports::CanonicalBlock {
+            chain,
+            metadata: BlockMetadata {
+                number: 10,
+                hash: B256::repeat_byte(0xa),
+                parent_hash: B256::repeat_byte(8),
+                timestamp: 10,
+            },
+            finality: crate::Finality::Provisional,
+        },
+        ancestor,
+        rollback: Mutex::new(Vec::new()),
+    };
+    let config = WorkerConfig {
+        chain,
+        batch_size: NonZeroU64::new(1).unwrap(),
+        block_concurrency: NonZeroUsize::new(1).unwrap(),
+        poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(1).unwrap(),
+        rollback_retention: NonZeroU64::new(2).unwrap(),
+    };
+    let cancel = CancellationToken::new();
+    super::reconcile_canonical_tip(
+        &config,
+        PollContext {
+            storage: &storage,
+            source: &ForkSource,
+            cache: &FakeCache::default(),
+            storage_writes: &Semaphore::new(1),
+            sink: &NoopSink,
+            telemetry: &NoopTelemetry,
+            cancel: &cancel,
+        },
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(*storage.rollback.lock().unwrap(), [9]);
+}
+
 #[tokio::test]
 async fn startup_probe_requires_finalized_tag_support() {
     assert_eq!(
         probe_source(&FakeSource).await.unwrap(),
-        SourceStatus { chain_id: 1, finalized_head: 10 }
+        SourceStatus { chain_id: 1, latest_head: 10, finalized_head: 10 }
     );
 
     let error = probe_source(&UnsupportedFinalizedSource).await.unwrap_err();
@@ -366,6 +630,8 @@ async fn cancellation_interrupts_initial_source_io() {
         batch_size: NonZeroU64::new(1).unwrap(),
         block_concurrency: NonZeroUsize::new(1).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
     let cache = FakeCache::default();
     let storage_writes = Semaphore::new(1);
@@ -421,6 +687,8 @@ async fn commits_cursor_progress_when_block_has_no_matches() {
         batch_size: NonZeroU64::new(1).unwrap(),
         block_concurrency: NonZeroUsize::new(1).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
     let storage_writes = Semaphore::new(1);
     let telemetry = NoopTelemetry;
@@ -445,7 +713,7 @@ async fn commits_cursor_progress_when_block_has_no_matches() {
     assert_eq!(poll.decoded, 0);
     let commits = storage.commits.lock().unwrap();
     assert_eq!(commits.len(), 1);
-    assert_eq!(commits[0].block_number, 10);
+    assert_eq!(commits[0].metadata.number, 10);
     assert_eq!(commits[0].monitors[0].id.get(), 7);
 }
 
@@ -475,6 +743,8 @@ async fn fetches_execution_only_for_indexed_call_targets() {
         batch_size: NonZeroU64::new(1).unwrap(),
         block_concurrency: NonZeroUsize::new(1).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
 
     completed(
@@ -525,6 +795,8 @@ async fn fetches_once_and_fans_out_overlapping_call_monitors() {
         batch_size: NonZeroU64::new(1).unwrap(),
         block_concurrency: NonZeroUsize::new(1).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
 
     let poll = completed(
@@ -590,6 +862,8 @@ async fn fetches_contiguous_event_blocks_with_one_ranged_log_query() {
         batch_size: NonZeroU64::new(3).unwrap(),
         block_concurrency: NonZeroUsize::new(3).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
 
     let poll = completed(
@@ -618,7 +892,7 @@ async fn fetches_contiguous_event_blocks_with_one_ranged_log_query() {
 }
 
 #[tokio::test]
-async fn submits_non_empty_batches_only_after_successful_commit() {
+async fn does_not_submit_provisional_batches_before_promotion() {
     let monitor = Monitor {
         id: MonitorId::new(7).unwrap(),
         chain: Chain::new(1),
@@ -639,6 +913,8 @@ async fn submits_non_empty_batches_only_after_successful_commit() {
         batch_size: NonZeroU64::new(1).unwrap(),
         block_concurrency: NonZeroUsize::new(1).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
     let sink = RecordingSink::default();
     let storage = FakeStorage { monitor: monitor.clone(), commits: Mutex::new(Vec::new()) };
@@ -659,8 +935,7 @@ async fn submits_non_empty_batches_only_after_successful_commit() {
         .unwrap(),
     );
     assert_eq!(storage.commits.lock().unwrap().len(), 1);
-    assert_eq!(sink.0.lock().unwrap().len(), 1);
-    assert_eq!(sink.0.lock().unwrap()[0].results.len(), 1);
+    assert!(sink.0.lock().unwrap().is_empty());
 
     let sink = RecordingSink::default();
     assert!(
@@ -707,6 +982,8 @@ async fn ignores_monitors_owned_by_another_chain() {
         batch_size: NonZeroU64::new(1).unwrap(),
         block_concurrency: NonZeroUsize::new(1).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
     let storage_writes = Semaphore::new(1);
     let telemetry = NoopTelemetry;
@@ -758,6 +1035,8 @@ async fn status_keeps_last_head_and_degrades_after_rpc_failure() {
         batch_size: NonZeroU64::new(1).unwrap(),
         block_concurrency: NonZeroUsize::new(1).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
     let storage_writes = Semaphore::new(1);
     let telemetry = NoopTelemetry;
@@ -828,6 +1107,8 @@ async fn prepares_concurrently_but_commits_in_block_order() {
         batch_size: NonZeroU64::new(3).unwrap(),
         block_concurrency: NonZeroUsize::new(3).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
 
     completed(
@@ -853,7 +1134,7 @@ async fn prepares_concurrently_but_commits_in_block_order() {
         .lock()
         .unwrap()
         .iter()
-        .map(|commit| commit.block_number)
+        .map(|commit| commit.metadata.number)
         .collect::<Vec<_>>();
     assert_eq!(committed, [10, 11, 12]);
 }
@@ -884,6 +1165,8 @@ async fn never_commits_past_a_failed_block() {
         batch_size: NonZeroU64::new(3).unwrap(),
         block_concurrency: NonZeroUsize::new(3).unwrap(),
         poll_interval: Duration::from_millis(100),
+        confirmations: NonZeroU64::new(64).unwrap(),
+        rollback_retention: NonZeroU64::new(256).unwrap(),
     };
 
     let error = run_once(
@@ -907,7 +1190,7 @@ async fn never_commits_past_a_failed_block() {
         .lock()
         .unwrap()
         .iter()
-        .map(|commit| commit.block_number)
+        .map(|commit| commit.metadata.number)
         .collect::<Vec<_>>();
     assert_eq!(committed, [10]);
 }

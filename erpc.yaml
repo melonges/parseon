@@ -99,10 +99,6 @@ projects:
         endpoint: 'https://ethereum.public.blockpi.network/v1/rpc/public'
         evm:
           chainId: 1
-      - id: chain1-9
-        endpoint: 'https://eth-mainnet.rpcfast.com?api_key=xbhWBI1Wkguk8SNMu1bvvLurPGLXmgwYeC4S6g2H7WdwFigZSmPWVZRxrskEQwIf'
-        evm:
-          chainId: 1
       - id: chain1-10
         endpoint: 'https://ethereum-public.nodies.app'
         evm:
@@ -191,10 +187,6 @@ projects:
         endpoint: 'https://rpc.flashbots.net'
         evm:
           chainId: 1
-      - id: chain1-32
-        endpoint: 'https://eth-mainnet.nodereal.io/v1/1659dfb40aa24bbb8153a677b98064d7'
-        evm:
-          chainId: 1
       - id: chain1-33
         endpoint: 'https://eth.api.onfinality.io/public'
         evm:
@@ -255,10 +247,6 @@ projects:
         endpoint: 'https://0.48.club'
         evm:
           chainId: 56
-      - id: chain56-14
-        endpoint: 'https://bsc-mainnet.rpcfast.com?api_key=xbhWBI1Wkguk8SNMu1bvvLurPGLXmgwYeC4S6g2H7WdwFigZSmPWVZRxrskEQwIf'
-        evm:
-          chainId: 56
       - id: chain56-15
         endpoint: 'https://bsc-mainnet.gateway.tatum.io'
         evm:
@@ -289,10 +277,6 @@ projects:
           chainId: 56
       - id: chain56-22
         endpoint: 'https://bsc-dataseed4.bnbchain.org'
-        evm:
-          chainId: 56
-      - id: chain56-23
-        endpoint: 'https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3'
         evm:
           chainId: 56
       - id: chain56-24

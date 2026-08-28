@@ -133,6 +133,38 @@ pub enum DecodedValue {
     Bytes(Bytes),
 }
 
+/// Lifecycle state of a canonical block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Finality {
+    /// Block is on the current branch but not yet final.
+    Provisional,
+    /// Block has crossed the configured finality boundary.
+    Finalized,
+}
+
+impl Finality {
+    /// Stable storage and API spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Provisional => "provisional",
+            Self::Finalized => "finalized",
+        }
+    }
+}
+
+/// Canonical identity and timing metadata for a source block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockMetadata {
+    /// Block number.
+    pub number: BlockNumber,
+    /// Canonical block hash.
+    pub hash: B256,
+    /// Parent block hash.
+    pub parent_hash: B256,
+    /// Unix timestamp reported by the source.
+    pub timestamp: u64,
+}
+
 /// One transaction in a fetched block, with the data the indexer needs.
 #[derive(Debug, Clone)]
 pub struct BlockTransaction {
@@ -146,11 +178,14 @@ pub struct BlockTransaction {
     pub input: Bytes,
 }
 
-/// A fetched finalized block and its transactions.
+/// A fetched canonical block and its transactions.
 #[derive(Debug, Clone)]
 pub struct SourceBlock {
-    /// Block number.
+    /// Block number. Kept alongside `metadata` for cheap access in the hot path;
+    /// source adapters must keep the two values equal.
     pub number: BlockNumber,
+    /// Canonical identity and timing metadata.
+    pub metadata: BlockMetadata,
     /// Transactions in this block, in on-chain order.
     pub transactions: Vec<BlockTransaction>,
 }
@@ -169,6 +204,8 @@ pub struct ExecutionOutcome {
 pub struct DecodedCall {
     /// Monitor that produced this decoded call.
     pub monitor_id: MonitorId,
+    /// Canonical block hash.
+    pub block_hash: B256,
     /// Block the call was included in.
     pub block_number: BlockNumber,
     /// Transaction hash of the call.
@@ -186,6 +223,8 @@ pub struct DecodedCall {
 pub struct SourceLog {
     /// Block number the log was emitted in, if the source provides it.
     pub block_number: Option<BlockNumber>,
+    /// Block hash the log was emitted in, if the source provides it.
+    pub block_hash: Option<B256>,
     /// Transaction hash that emitted the log, if the source provides it.
     pub transaction_hash: Option<B256>,
     /// Log index within the block, if the source provides it.
@@ -207,6 +246,8 @@ pub struct SourceLog {
 pub struct DecodedEvent {
     /// Monitor that produced this decoded event.
     pub monitor_id: MonitorId,
+    /// Canonical block hash.
+    pub block_hash: B256,
     /// Block the event was emitted in.
     pub block_number: BlockNumber,
     /// Transaction hash that emitted the log.

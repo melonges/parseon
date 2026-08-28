@@ -3481,7 +3481,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-core"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "alloy",
  "anyhow",
@@ -3503,7 +3503,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-memory-cache"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "moka",
  "parseon-core",
@@ -3511,7 +3511,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-mongodb"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "alloy",
  "anyhow",
@@ -3528,7 +3528,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-postgres"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "alloy",
  "anyhow",
@@ -3544,7 +3544,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-rpc"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "alloy",
  "alloy-json-rpc",
@@ -3563,7 +3563,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-server"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3594,7 +3594,7 @@ dependencies = [
 
 [[package]]
 name = "parseon-webhook-sink"
-version = "0.8.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5428,6 +5428,7 @@ dependencies = [
  "bytes",
  "http",
  "http-body",
+ "http-body-util",
  "percent-encoding",
  "pin-project-lite",
  "tower-layer",

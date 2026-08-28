@@ -26,13 +26,13 @@ use crate::pipeline;
 use crate::ports::{
     BlockCache, BlockRange, BlockSource, InFlightGuard, LogQuery, LogTarget, Telemetry,
 };
-use crate::{BlockNumber, Chain, DecodedResult, Selector, SourceLog, Target};
+use crate::{Chain, DecodedResult, Selector, SourceLog, Target};
 
 /// One block's prepared results together with the monitor indices that cover
 /// it and the resolved monitor Arcs needed for the commit.
 pub(super) struct PreparedBlock {
-    /// Block number being committed.
-    pub(super) block_number: BlockNumber,
+    /// Canonical identity of the block being committed.
+    pub(super) metadata: crate::BlockMetadata,
     /// Indices of monitors in [`MonitorIndex`] whose cursors must advance to
     /// `block_number`.
     pub(super) monitor_indices: Vec<usize>,
@@ -46,6 +46,7 @@ pub(super) struct PreparedBlock {
 /// [`finish_prepared`]).
 pub(super) struct PreparedCalls {
     plan: scheduler::BlockPlan,
+    metadata: crate::BlockMetadata,
     results: Vec<DecodedResult>,
 }
 
@@ -105,7 +106,7 @@ pub(super) fn log_query(
 /// outcomes, and decodes the matching calls.
 ///
 /// Returns an empty `results` vector if no monitor in `plan.monitor_indices`
-/// targets a call (the block fetch is skipped in that case).
+/// targets a call; event-only plans fetch a header for canonical identity.
 pub(super) async fn prepare_calls(
     chain: Chain,
     plan: scheduler::BlockPlan,
@@ -121,7 +122,13 @@ pub(super) async fn prepare_calls(
             .is_some_and(|monitor| matches!(&monitor.target, Target::Call(_)))
     });
     if !has_calls {
-        return Ok(PreparedCalls { plan, results: Vec::new() });
+        let metadata = source.fetch_block_header(plan.block_number).await?;
+        anyhow::ensure!(
+            metadata.number == plan.block_number,
+            "block header does not match requested block {}",
+            plan.block_number
+        );
+        return Ok(PreparedCalls { plan, metadata, results: Vec::new() });
     }
     let block = match cache.get(chain, plan.block_number) {
         Some(block) => {
@@ -135,6 +142,11 @@ pub(super) async fn prepare_calls(
             block
         }
     };
+    anyhow::ensure!(
+        block.number == block.metadata.number && block.number == plan.block_number,
+        "block metadata does not match requested block {}",
+        plan.block_number
+    );
     let candidates = block
         .transactions
         .iter()
@@ -151,7 +163,7 @@ pub(super) async fn prepare_calls(
     let outcomes = if hashes.is_empty() {
         Vec::new()
     } else {
-        source.fetch_execution_outcomes(plan.block_number, &hashes).await?
+        source.fetch_execution_outcomes(&block.metadata, &hashes).await?
     };
     let results = indexer::decode_calls(
         &block,
@@ -163,7 +175,7 @@ pub(super) async fn prepare_calls(
     .into_iter()
     .map(DecodedResult::Call)
     .collect();
-    Ok(PreparedCalls { plan, results })
+    Ok(PreparedCalls { metadata: block.metadata, plan, results })
 }
 
 /// Concurrently prepares calls for every block in a window while fetching the
@@ -239,6 +251,13 @@ pub(super) fn finish_prepared(
     monitor_index: &MonitorIndex,
     logs: Vec<SourceLog>,
 ) -> anyhow::Result<PreparedBlock> {
+    for log in &logs {
+        anyhow::ensure!(
+            log.block_hash == Some(prepared.metadata.hash),
+            "log block hash does not match fetched block {}",
+            prepared.plan.block_number
+        );
+    }
     prepared.results.extend(
         indexer::decode_events(
             prepared.plan.block_number,
@@ -261,7 +280,7 @@ pub(super) fn finish_prepared(
         })
         .collect::<anyhow::Result<_>>()?;
     Ok(PreparedBlock {
-        block_number: prepared.plan.block_number,
+        metadata: prepared.metadata,
         monitor_indices: prepared.plan.monitor_indices,
         monitors,
         results: prepared.results,

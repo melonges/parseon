@@ -1,14 +1,16 @@
-//! Finalized EVM data access ports.
+//! Canonical EVM data access ports.
 //!
 //! [`BlockSource] is the read-side adapter contract implemented by
-//! `parseon-rpc`. The worker uses it to fetch finalized blocks, transaction
+//! `parseon-rpc`. The worker uses it to fetch canonical blocks, transaction
 //! execution outcomes, and exact-target event logs.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{BlockNumber, ChainId, ExecutionOutcome, SourceBlock, SourceLog, TxHash, Url};
+use crate::{
+    BlockMetadata, BlockNumber, ChainId, ExecutionOutcome, SourceBlock, SourceLog, TxHash, Url,
+};
 use alloy::primitives::{Address, B256};
 
 /// Factory that constructs a connected [`BlockSource`] for a given RPC URL.
@@ -43,7 +45,7 @@ impl BlockSourceRequestError {
     }
 }
 
-/// Finalized EVM data required by the indexing application.
+/// Canonical EVM data required by the indexing application.
 ///
 /// Implementations must return the exact requested block, complete full
 /// transaction data, and one execution outcome per requested transaction hash
@@ -53,17 +55,30 @@ impl BlockSourceRequestError {
 pub trait BlockSource: Send + Sync {
     /// Returns the endpoint's EIP-155 chain ID.
     async fn chain_id(&self) -> anyhow::Result<u64>;
+    /// Returns the current latest head block number. Sources that only expose
+    /// finalized data may use the default finalized value.
+    async fn latest_head(&self) -> anyhow::Result<BlockNumber> {
+        self.finalized_head().await
+    }
     /// Returns the current finalized head block number. Must succeed only if
     /// the endpoint supports the `finalized` block tag.
     async fn finalized_head(&self) -> anyhow::Result<BlockNumber>;
+    /// Fetches canonical metadata for a block without requiring full transactions.
+    async fn fetch_block_header(
+        &self,
+        _block_number: BlockNumber,
+    ) -> anyhow::Result<BlockMetadata> {
+        anyhow::bail!("block header fetching is not implemented")
+    }
     /// Fetches the full block at `block_number`, including every transaction's
     /// sender, recipient, and calldata.
     async fn fetch_block(&self, block_number: BlockNumber) -> anyhow::Result<SourceBlock>;
     /// Fetches execution outcomes for `transaction_hashes` in the same order
-    /// as the input slice. Used to skip reverted calls.
+    /// as the input slice. Each receipt must belong to `block`; used to skip
+    /// reverted calls.
     async fn fetch_execution_outcomes(
         &self,
-        block_number: BlockNumber,
+        block: &BlockMetadata,
         transaction_hashes: &[TxHash],
     ) -> anyhow::Result<Vec<ExecutionOutcome>>;
     /// Fetches logs for an exact set of emitter-address and event-signature
@@ -81,7 +96,7 @@ pub trait BlockSource: Send + Sync {
     }
 }
 
-/// An inclusive, non-empty range of finalized EVM block numbers.
+/// An inclusive, non-empty range of canonical EVM block numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockRange {
     start: BlockNumber,

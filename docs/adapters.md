@@ -1,6 +1,7 @@
 # Adapters
 
-Parseon selects exactly one storage adapter at compile time. PostgreSQL is the default; the memory block cache is not feature-gated and can be disabled by setting `BLOCK_CACHE_SIZE=0`.
+Parseon selects exactly one storage adapter at compile time. For production deployment,
+backup, restore and upgrade procedures see [`operations.md`](./operations.md). PostgreSQL is the default; the memory block cache is not feature-gated and can be disabled by setting `BLOCK_CACHE_SIZE=0`.
 
 ## Feature builds
 
@@ -26,7 +27,7 @@ docker build --build-arg PARSEON_FEATURES=mongodb-storage,webhook-sink -t parseo
 
 MongoDB storage uses `chains`, `monitors`, `results`, and `counters` collections. Results share one document collection. Addresses and hashes are strings, byte values are BSON binary, 256-bit integers are decimal strings, and API reads retain Parseon's canonical JSON encoding.
 
-Transactions require a replica set or sharded deployment. Parseon checks the deployment topology at startup and rejects standalone MongoDB before serving traffic. Monitor creation, atomic result/cursor commits, and chain/monitor cascade deletion use retryable transactions. Required unique identity and query-order indexes are created idempotently; there is no schema version or migration system. See the [MongoDB Rust transaction documentation](https://www.mongodb.com/docs/drivers/rust/current/crud/transactions/).
+Transactions require a replica set or sharded deployment. Parseon checks the deployment topology at startup and rejects standalone MongoDB before serving traffic. Monitor creation, atomic result/cursor commits, and chain/monitor cascade deletion use retryable transactions. Required unique identity and query-order indexes are created idempotently. Startup writes and validates a schema marker and fails closed on unsupported or legacy documents; upgrade by backup, reset, and reindex according to the [operations runbook](./operations.md). See the [MongoDB Rust transaction documentation](https://www.mongodb.com/docs/drivers/rust/current/crud/transactions/).
 
 Start the persistent single-node development replica set and run the ignored integration test with:
 
@@ -39,13 +40,15 @@ Use `STORAGE_URL=mongodb://localhost:27017/?replicaSet=rs0`. There is intentiona
 
 ## JSON-RPC block source
 
+Parseon indexes the canonical latest head provisionally and promotes blocks only after the configured confirmation/finalized boundary. RPC destinations are validated against private-network SSRF by default; set `ALLOW_PRIVATE_RPC_NETWORKS=true` only for local development.
+
 The Alloy adapter requests full transaction objects and rejects a block response when its number differs from the request or the endpoint returns hashes instead of full transactions. Call monitors request receipts only for transactions that match an indexed address and selector. Receipt outcomes must remain in the requested hash order; Parseon validates that invariant before decoding.
 
 For larger candidate sets, Parseon tries `eth_getBlockReceipts`, then JSON-RPC batches, then bounded individual receipt calls. An endpoint capability is cached as unsupported only when the RPC response identifies an incompatible method, parameters, or batch envelope. Authentication, transport, timeout, and rate-limit failures stop the poll without fanning out into more requests.
 
 Event monitors use inclusive `eth_getLogs` ranges across each contiguous worker window. Address and topic pairs remain exact: Parseon groups compatible pairs into independent filters and executes those groups within `RPC_REQUEST_CONCURRENCY`. When a provider reports a range or result-size limit, the adapter bisects the range and retries each half. A limit on a single block is terminal because splitting cannot make that query smaller. Successful results are sorted by block and log index before core decoding.
 
-`RPC_REQUEST_CONCURRENCY` applies to every physical request, including split log queries and receipt fallbacks. RPC transport details are omitted from runtime status and logs so registered write-only endpoint URLs and credentials are not exposed.
+`RPC_REQUEST_CONCURRENCY` applies to every physical request, including split log queries and receipt fallbacks. RPC transport details are omitted from runtime status and logs so registered write-only endpoint URLs and credentials are not exposed. HTTP redirects are disabled. Results are finalized by default; use the API's explicit finality selector to inspect provisional rows.
 
 ## eRPC gateway
 

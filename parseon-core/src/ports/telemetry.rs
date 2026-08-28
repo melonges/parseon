@@ -39,6 +39,10 @@ pub trait Telemetry: Send + Sync {
     );
     /// Sets the current lag (finalized head minus committed head) for `chain_id`.
     fn set_worker_lag(&self, chain_id: ChainId, lag: BlockNumber);
+    /// Marks the current lifecycle state of `chain_id` for dashboards and alerts.
+    fn set_worker_state(&self, chain_id: ChainId, state: &'static str);
+    /// Records the Unix timestamp of the last successful poll for `chain_id`.
+    fn set_worker_last_successful_poll(&self, chain_id: ChainId, timestamp: i64);
     /// Adjusts the in-flight count for `stage` on `chain_id` by `delta`
     /// (positive on entry, negative on exit).
     fn adjust_in_flight(&self, chain_id: ChainId, stage: &'static str, delta: i64);
@@ -64,6 +68,8 @@ impl Telemetry for NoopTelemetry {
     fn record_cache(&self, _: ChainId, _: bool) {}
     fn record_commit(&self, _: ChainId, _: u64, _: u64, _: &'static str, _: Duration) {}
     fn set_worker_lag(&self, _: ChainId, _: BlockNumber) {}
+    fn set_worker_state(&self, _: ChainId, _: &'static str) {}
+    fn set_worker_last_successful_poll(&self, _: ChainId, _: i64) {}
     fn adjust_in_flight(&self, _: ChainId, _: &'static str, _: i64) {}
     fn render(&self) -> anyhow::Result<String> {
         Ok(String::new())

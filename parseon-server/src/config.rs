@@ -8,6 +8,9 @@ use parseon_core::Url;
 #[derive(Debug, Clone, Parser)]
 #[command(name = "parseon", about = "Parseon — EVM indexer with runtime ABI decoding")]
 pub(crate) struct Config {
+    /// Bearer token protecting data and administrative API routes.
+    #[arg(long, env = "API_TOKEN")]
+    pub api_token: String,
     #[command(flatten)]
     pub storage: StorageConfig,
     #[command(flatten)]
@@ -40,6 +43,12 @@ pub(crate) struct ServerConfig {
     /// Log filter directive (e.g. `info,parseon=debug`)
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     pub rust_log: String,
+    /// Comma-separated browser origins; empty disables CORS.
+    #[arg(long, env = "CORS_ORIGINS", default_value = "")]
+    pub cors_origins: String,
+    /// Maximum JSON request body size.
+    #[arg(long, env = "MAX_BODY_BYTES", default_value = "1048576")]
+    pub max_body_bytes: usize,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -59,6 +68,12 @@ pub(crate) struct IndexingConfig {
     /// Maximum concurrent atomic storage commits across all chains
     #[arg(long, env = "STORAGE_WRITE_CONCURRENCY", default_value = "4")]
     pub storage_write_concurrency: NonZeroUsize,
+    /// Number of latest blocks retained before finality promotion.
+    #[arg(long, env = "CONFIRMATION_DEPTH", default_value = "64")]
+    pub confirmations: NonZeroU64,
+    /// Maximum canonical block history used for reorg recovery.
+    #[arg(long, env = "ROLLBACK_RETENTION", default_value = "256")]
+    pub rollback_retention: NonZeroU64,
 }
 
 #[cfg(feature = "webhook-sink")]
@@ -80,6 +95,9 @@ pub(crate) struct RpcConfig {
     /// Maximum JSON-RPC calls grouped into one receipt batch
     #[arg(long, env = "RPC_BATCH_SIZE", default_value = "20")]
     pub batch_size: NonZeroUsize,
+    /// Allow private/loopback RPC destinations for local development only.
+    #[arg(long, env = "ALLOW_PRIVATE_RPC_NETWORKS", default_value_t = false)]
+    pub allow_private_networks: bool,
 }
 
 fn parse_poll_interval(value: &str) -> Result<Duration, String> {
@@ -96,12 +114,23 @@ impl Config {
         drop(dotenvy::dotenv());
         Self::parse()
     }
+
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.api_token.is_empty(), "API_TOKEN must not be empty");
+        anyhow::ensure!(
+            self.indexing.rollback_retention >= self.indexing.confirmations,
+            "ROLLBACK_RETENTION must be at least CONFIRMATION_DEPTH"
+        );
+        anyhow::ensure!(self.server.max_body_bytes > 0, "MAX_BODY_BYTES must be positive");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Config, parse_poll_interval};
     use clap::Parser;
+    use std::num::NonZeroU64;
     use std::time::Duration;
 
     #[cfg(feature = "webhook-sink")]
@@ -127,7 +156,13 @@ mod tests {
 
     #[test]
     fn accepts_storage_url() {
-        let args = with_webhook(vec!["parseon", "--storage-url", "postgres://localhost/parseon"]);
+        let args = with_webhook(vec![
+            "parseon",
+            "--api-token",
+            "test-token",
+            "--storage-url",
+            "postgres://localhost/parseon",
+        ]);
         assert_eq!(
             Config::try_parse_from(args).unwrap().storage.storage_url.as_str(),
             "postgres://localhost/parseon"
@@ -138,6 +173,8 @@ mod tests {
     fn accepts_zero_block_cache_size() {
         let args = with_webhook(vec![
             "parseon",
+            "--api-token",
+            "test-token",
             "--storage-url",
             "postgres://localhost/parseon",
             "--block-cache-size",
@@ -147,9 +184,32 @@ mod tests {
     }
 
     #[test]
+    fn validates_production_safety_settings() {
+        let config = Config::try_parse_from(with_webhook(vec![
+            "parseon",
+            "--api-token",
+            "token",
+            "--storage-url",
+            "postgres://localhost/parseon",
+        ]))
+        .unwrap();
+        assert!(config.validate().is_ok());
+
+        let mut invalid = config.clone();
+        invalid.api_token.clear();
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = config;
+        invalid.indexing.rollback_retention = NonZeroU64::new(1).unwrap();
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
     fn rejects_removed_database_configuration_names() {
         let args = with_webhook(vec![
             "parseon",
+            "--api-token",
+            "test-token",
             "--storage-url",
             "postgres://localhost/parseon",
             "--database-url",
@@ -159,6 +219,8 @@ mod tests {
 
         let args = with_webhook(vec![
             "parseon",
+            "--api-token",
+            "test-token",
             "--storage-url",
             "postgres://localhost/parseon",
             "--db-write-concurrency",
