@@ -1,0 +1,42 @@
+{
+  "title": "Parseon",
+  "uid": "parseon",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Worker lag (blocks)",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "parseon_worker_lag_blocks", "legendFormat": "{{chain_id}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Worker state",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "parseon_worker_state", "legendFormat": "{{chain_id}} {{state}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Last successful poll",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "time() - parseon_worker_last_successful_poll_timestamp_seconds", "legendFormat": "{{chain_id}} age (s)" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "RPC error rate",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "sum by (chain_id) (rate(parseon_rpc_operations_total{outcome=\"error\"}[5m]))", "legendFormat": "{{chain_id}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+image:
+  repository: ghcr.io/ozcnii/parseon
+  tag: "1.0.0"
+  # Required at install time: sha256:<64 hex characters>.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Parseon has one process-wide worker supervisor; scaling is intentionally blocked.
+replicaCount: 1
+
+existingSecret: parseon-secrets
+secretKeys:
+  storageUrl: storage-url
+  apiToken: api-token
+
+service:
+  type: ClusterIP
+  port: 8080
+
+config:
+  rustLog: info
+  pollIntervalMs: "2000"
+  defaultBatchSize: "10"
+  blockCacheSize: "512"
+  blockConcurrency: "4"
+  rpcRequestConcurrency: "16"
+  storageWriteConcurrency: "4"
+  confirmationDepth: "64"
+  rollbackRetention: "256"
+  rpcBatchSize: "20"
+  corsOrigins: ""
+  maxBodyBytes: "1048576"
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 768Mi
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -9,22 +9,31 @@ use sqlx::{PgConnection, PgPool, QueryBuilder, Row, Transaction};
 use crate::{monitor_repo::StoredParam, pg_types};
 use parseon_core::abi::parse_abi_type;
 use parseon_core::commands::PageLimit;
-use parseon_core::{BlockNumber, DecodedValue, TxHash};
+use parseon_core::ports::{CanonicalBlock, SinkBatch, SinkResult};
+use parseon_core::{Address, B256, BlockNumber, DecodedValue, Finality, TxHash};
 type AppResult<T> = anyhow::Result<T>;
 const BIND_LIMIT: usize = u16::MAX as usize;
 
 const CALL_COLUMNS: &[(&str, &str)] = &[
-    ("tx_hash", "BYTEA NOT NULL PRIMARY KEY CHECK (octet_length(tx_hash) = 32)"),
+    ("tx_hash", "BYTEA NOT NULL CHECK (octet_length(tx_hash) = 32)"),
+    ("block_hash", "BYTEA NOT NULL CHECK (octet_length(block_hash) = 32)"),
     ("block_number", "BIGINT NOT NULL CHECK (block_number >= 0)"),
+    ("from_addr", "BYTEA NOT NULL CHECK (octet_length(from_addr) = 20)"),
+    ("to_addr", "BYTEA NOT NULL CHECK (octet_length(to_addr) = 20)"),
+    ("finality", "TEXT NOT NULL CHECK (finality IN ('provisional', 'finalized'))"),
+    ("PRIMARY KEY", "(tx_hash, block_hash)"),
 ];
 const EVENT_COLUMNS: &[(&str, &str)] = &[
     ("tx_hash", "BYTEA NOT NULL CHECK (octet_length(tx_hash) = 32)"),
+    ("block_hash", "BYTEA NOT NULL CHECK (octet_length(block_hash) = 32)"),
     ("log_index", "BIGINT NOT NULL CHECK (log_index >= 0)"),
     ("block_number", "BIGINT NOT NULL CHECK (block_number >= 0)"),
-    ("PRIMARY KEY", "(tx_hash, log_index)"),
+    ("finality", "TEXT NOT NULL CHECK (finality IN ('provisional', 'finalized'))"),
+    ("PRIMARY KEY", "(tx_hash, block_hash, log_index)"),
 ];
-const CALL_RESERVED: &[&str] = &["tx_hash", "block_number"];
-const EVENT_RESERVED: &[&str] = &["tx_hash", "log_index", "block_number"];
+const CALL_RESERVED: &[&str] =
+    &["tx_hash", "block_hash", "block_number", "from_addr", "to_addr", "finality"];
+const EVENT_RESERVED: &[&str] = &["tx_hash", "block_hash", "log_index", "block_number", "finality"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PgColumnType {
@@ -148,13 +157,19 @@ pub(crate) async fn drop_result_table(
 
 pub(crate) struct CallResultInput<'a> {
     pub tx_hash: TxHash,
+    pub block_hash: TxHash,
     pub block_number: BlockNumber,
+    pub from: parseon_core::Address,
+    pub to: parseon_core::Address,
+    pub finality: Finality,
     pub params: &'a [DecodedValue],
 }
 pub(crate) struct EventResultInput<'a> {
     pub tx_hash: TxHash,
+    pub block_hash: TxHash,
     pub log_index: u64,
     pub block_number: BlockNumber,
+    pub finality: Finality,
     pub params: &'a [DecodedValue],
 }
 
@@ -194,12 +209,12 @@ pub(crate) async fn insert_calls(
         inputs.iter().all(|input| params.len() == input.params.len()),
         "parameter count mismatch"
     );
-    let width = params.len() + 2;
+    let width = params.len() + 6;
     anyhow::ensure!(width <= BIND_LIMIT, "result row exceeds PostgreSQL bind limit");
     let table = Identifier::new(result_table_name(id)?)?;
     for chunk in inputs.chunks(BIND_LIMIT / width) {
         let mut qb = QueryBuilder::new("INSERT INTO ");
-        qb.push(table.clone()).push(" (tx_hash,block_number");
+        qb.push(table.clone()).push(" (tx_hash,block_hash,block_number,from_addr,to_addr,finality");
         push_param_columns(&mut qb, &params)?;
         qb.push(") VALUES ");
         for (index, input) in chunk.iter().enumerate() {
@@ -209,7 +224,15 @@ pub(crate) async fn insert_calls(
             qb.push("(")
                 .push_bind(input.tx_hash.as_slice())
                 .push(",")
-                .push_bind(pg_types::to_i64(input.block_number, "block number")?);
+                .push_bind(input.block_hash.as_slice())
+                .push(",")
+                .push_bind(pg_types::to_i64(input.block_number, "block number")?)
+                .push(",")
+                .push_bind(input.from.as_slice())
+                .push(",")
+                .push_bind(input.to.as_slice())
+                .push(",")
+                .push_bind(input.finality.as_str());
             push_values(&mut qb, input.params)?;
             qb.push(")");
         }
@@ -229,12 +252,12 @@ pub(crate) async fn insert_events(
         inputs.iter().all(|input| params.len() == input.params.len()),
         "parameter count mismatch"
     );
-    let width = params.len() + 3;
+    let width = params.len() + 5;
     anyhow::ensure!(width <= BIND_LIMIT, "result row exceeds PostgreSQL bind limit");
     let table = Identifier::new(result_table_name(id)?)?;
     for chunk in inputs.chunks(BIND_LIMIT / width) {
         let mut qb = QueryBuilder::new("INSERT INTO ");
-        qb.push(table.clone()).push(" (tx_hash,log_index,block_number");
+        qb.push(table.clone()).push(" (tx_hash,block_hash,log_index,block_number,finality");
         push_param_columns(&mut qb, &params)?;
         qb.push(") VALUES ");
         for (index, input) in chunk.iter().enumerate() {
@@ -244,9 +267,13 @@ pub(crate) async fn insert_events(
             qb.push("(")
                 .push_bind(input.tx_hash.as_slice())
                 .push(",")
+                .push_bind(input.block_hash.as_slice())
+                .push(",")
                 .push_bind(pg_types::to_i64(input.log_index, "log index")?)
                 .push(",")
-                .push_bind(pg_types::to_i64(input.block_number, "block number")?);
+                .push_bind(pg_types::to_i64(input.block_number, "block number")?)
+                .push(",")
+                .push_bind(input.finality.as_str());
             push_values(&mut qb, input.params)?;
             qb.push(")");
         }
@@ -259,18 +286,26 @@ pub(crate) async fn insert_events(
 pub(crate) struct SearchParams {
     pub limit: PageLimit,
     pub offset: u64,
+    pub finality: Option<Finality>,
 }
 #[derive(Debug)]
 pub(crate) struct CallResultRecord {
     pub tx_hash: TxHash,
+    pub block_hash: B256,
     pub block_number: BlockNumber,
+    pub from: Address,
+    pub to: Address,
+    pub finality: Finality,
     pub params: serde_json::Value,
 }
 #[derive(Debug)]
 pub(crate) struct EventResultRecord {
     pub tx_hash: TxHash,
+    pub block_hash: B256,
     pub log_index: u64,
     pub block_number: BlockNumber,
+    pub emitter: Address,
+    pub finality: Finality,
     pub params: serde_json::Value,
 }
 #[derive(Debug)]
@@ -312,6 +347,9 @@ pub(crate) async fn query_results(
     let params = postgres_params(kind, schema)?;
     let mut qb = QueryBuilder::new("SELECT * FROM ");
     qb.push(Identifier::new(result_table_name(id)?)?);
+    if let Some(finality) = search.finality {
+        qb.push(" WHERE finality = ").push_bind(finality.as_str());
+    }
     if kind == "call" {
         qb.push(" ORDER BY block_number DESC, tx_hash DESC");
     } else {
@@ -325,13 +363,25 @@ pub(crate) async fn query_results(
     rows.into_iter()
         .map(|row| {
             let decoded = read_params(&row, &params)?;
+            let finality = match row.try_get::<String, _>("finality")?.as_str() {
+                "provisional" => Finality::Provisional,
+                "finalized" => Finality::Finalized,
+                value => anyhow::bail!("invalid result finality {value}"),
+            };
             Ok(if kind == "call" {
                 ResultRecord::Call(CallResultRecord {
                     tx_hash: pg_types::b256(
                         &row.try_get::<Vec<u8>, _>("tx_hash")?,
                         "transaction hash",
                     )?,
+                    block_hash: pg_types::b256(
+                        &row.try_get::<Vec<u8>, _>("block_hash")?,
+                        "block hash",
+                    )?,
                     block_number: pg_types::from_i64(row.try_get("block_number")?, "block number")?,
+                    from: pg_types::address(&row.try_get::<Vec<u8>, _>("from_addr")?)?,
+                    to: pg_types::address(&row.try_get::<Vec<u8>, _>("to_addr")?)?,
+                    finality,
                     params: decoded,
                 })
             } else {
@@ -340,13 +390,103 @@ pub(crate) async fn query_results(
                         &row.try_get::<Vec<u8>, _>("tx_hash")?,
                         "transaction hash",
                     )?,
+                    block_hash: pg_types::b256(
+                        &row.try_get::<Vec<u8>, _>("block_hash")?,
+                        "block hash",
+                    )?,
                     log_index: pg_types::from_i64(row.try_get("log_index")?, "log index")?,
                     block_number: pg_types::from_i64(row.try_get("block_number")?, "block number")?,
+                    emitter: Address::ZERO,
+                    finality,
                     params: decoded,
                 })
             })
         })
         .collect()
+}
+
+pub(crate) async fn delete_results_after(
+    conn: &mut PgConnection,
+    id: i64,
+    block_number: BlockNumber,
+) -> AppResult<()> {
+    QueryBuilder::new("DELETE FROM ")
+        .push(Identifier::new(result_table_name(id)?)?)
+        .push(" WHERE block_number > ")
+        .push_bind(pg_types::to_i64(block_number, "block number")?)
+        .build()
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn promote_results(
+    conn: &mut PgConnection,
+    id: i64,
+    finalized_head: BlockNumber,
+) -> AppResult<()> {
+    QueryBuilder::new("UPDATE ")
+        .push(Identifier::new(result_table_name(id)?)?)
+        .push(" SET finality = 'finalized' WHERE finality = 'provisional' AND block_number <= ")
+        .push_bind(pg_types::to_i64(finalized_head, "finalized head")?)
+        .build()
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn sink_batch_for_block(
+    conn: &mut PgConnection,
+    id: i64,
+    kind: &str,
+    schema: &[StoredParam],
+    block: &CanonicalBlock,
+    emitter: Address,
+) -> AppResult<Option<SinkBatch>> {
+    let params = postgres_params(kind, schema)?;
+    let table = Identifier::new(result_table_name(id)?)?;
+    let mut qb = QueryBuilder::new("SELECT * FROM ");
+    qb.push(table)
+        .push(" WHERE block_hash = ")
+        .push_bind(block.metadata.hash.as_slice())
+        .push(" AND block_number = ")
+        .push_bind(pg_types::to_i64(block.metadata.number, "block number")?)
+        .push(" AND finality = 'finalized'");
+    let rows = qb.build().fetch_all(&mut *conn).await?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let results = rows
+        .into_iter()
+        .map(|row| {
+            let params = read_params(&row, &params)?;
+            let tx_hash =
+                pg_types::b256(&row.try_get::<Vec<u8>, _>("tx_hash")?, "transaction hash")?;
+            if kind == "call" {
+                Ok(SinkResult::Call {
+                    monitor_id: u64::try_from(id)?,
+                    tx_hash,
+                    from: pg_types::address(&row.try_get::<Vec<u8>, _>("from_addr")?)?,
+                    to: pg_types::address(&row.try_get::<Vec<u8>, _>("to_addr")?)?,
+                    params,
+                })
+            } else {
+                Ok(SinkResult::Event {
+                    monitor_id: u64::try_from(id)?,
+                    tx_hash,
+                    emitter,
+                    log_index: pg_types::from_i64(row.try_get("log_index")?, "log index")?,
+                    params,
+                })
+            }
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(Some(SinkBatch {
+        version: 1,
+        chain_id: block.chain.id,
+        block_number: block.metadata.number,
+        results,
+    }))
 }
 
 #[derive(Debug, Clone)]
@@ -394,7 +534,7 @@ mod tests {
         };
         let call = postgres_params("call", &[param("log_index"), param("from_addr")]).unwrap();
         assert_eq!(call[0].column, "log_index");
-        assert_eq!(call[1].column, "from_addr");
+        assert_eq!(call[1].column, "from_addr_param");
 
         let event = postgres_params("event", &[param("log_index"), param("topics_raw")]).unwrap();
         assert_eq!(event[0].column, "log_index_param");

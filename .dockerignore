@@ -5,6 +5,7 @@ target/
 .env
 .env.example
 .dockerignore
+.temp/
 Dockerfile
 docker-compose.yml
 erpc.yaml

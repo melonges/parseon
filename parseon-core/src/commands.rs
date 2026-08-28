@@ -6,7 +6,7 @@
 //! behavior — all validation lives in the services.
 
 use crate::filter::{FilterExpression, FilterSample};
-use crate::{Address, BlockNumber, ChainId, Url};
+use crate::{Address, BlockNumber, ChainId, Finality, Url};
 
 /// Command to register a new chain: its RPC URL and initial enabled state.
 #[derive(Debug, Clone)]
@@ -84,6 +84,9 @@ pub struct ResultQuery {
     pub limit: PageLimit,
     /// Number of results to skip before the first returned result.
     pub offset: u64,
+    /// Optional lifecycle filter. `None` returns both states for storage-level
+    /// callers; the HTTP API supplies finalized as its default.
+    pub finality: Option<Finality>,
 }
 
 #[cfg(test)]

@@ -13,7 +13,10 @@ use chrono::{DateTime, Utc};
 use crate::abi::AbiParam;
 use crate::filter::FilterDefinition;
 use crate::monitor::Monitor;
-use crate::{BlockNumber, Chain, DecodedResult, DecodedValue, MonitorId, Target, TxHash, Url};
+use crate::{
+    BlockMetadata, BlockNumber, Chain, DecodedResult, DecodedValue, Finality, MonitorId, Target,
+    TxHash, Url,
+};
 
 /// One block's atomic commit payload: decoded results and the monitors whose
 /// cursors must advance together.
@@ -22,16 +25,52 @@ use crate::{BlockNumber, Chain, DecodedResult, DecodedValue, MonitorId, Target, 
 /// and update every covering monitor's cursor in a single transaction so that
 /// crashes between writes cannot leave gaps or duplicates.
 #[derive(Debug, Clone)]
+pub struct CanonicalBlock {
+    /// Chain the block belongs to.
+    pub chain: Chain,
+    /// Canonical block identity and timing metadata.
+    pub metadata: BlockMetadata,
+    /// Current lifecycle state.
+    pub finality: Finality,
+}
+
+/// One block's atomic commit payload.
+#[derive(Debug, Clone)]
 pub struct BlockCommit {
     /// Chain the block belongs to.
     pub chain: Chain,
-    /// Block number being committed.
-    pub block_number: BlockNumber,
+    /// Canonical block identity and timing metadata.
+    pub metadata: BlockMetadata,
+    /// Lifecycle state at commit time.
+    pub finality: Finality,
     /// Monitors whose cursors must advance to this block. The worker passes
     /// only the monitors whose plan covered this block.
     pub monitors: Vec<Arc<Monitor>>,
     /// Decoded results for this block, in any order.
     pub results: Vec<DecodedResult>,
+}
+
+impl BlockCommit {
+    /// Rejects payloads that mix results from a different block or chain.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.monitors.iter().all(|monitor| monitor.chain == self.chain),
+            "cross-chain monitor set rejected for chain {}",
+            self.chain.id
+        );
+        for result in &self.results {
+            let (block_hash, block_number) = match result {
+                DecodedResult::Call(call) => (call.block_hash, call.block_number),
+                DecodedResult::Event(event) => (event.block_hash, event.block_number),
+            };
+            anyhow::ensure!(
+                block_hash == self.metadata.hash && block_number == self.metadata.number,
+                "result block identity does not match commit metadata at block {}",
+                self.metadata.number
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Per-chain indexing storage: monitor loading and atomic block commits.
@@ -41,9 +80,31 @@ pub trait IndexStorage: Send + Sync {
     /// `completed` state. The worker filters and indexes them per poll.
     async fn load_monitors(&self, chain: Chain) -> anyhow::Result<Vec<Monitor>>;
 
-    /// Atomically commits `commit`'s results and advances every covering
-    /// monitor's cursor to `commit.block_number`.
+    /// Returns the highest canonical block known for `chain`.
+    async fn canonical_tip(&self, chain: Chain) -> anyhow::Result<Option<CanonicalBlock>>;
+
+    /// Returns the canonical block at `block_number`, if retained.
+    async fn canonical_block(
+        &self,
+        chain: Chain,
+        block_number: BlockNumber,
+    ) -> anyhow::Result<Option<CanonicalBlock>>;
+
+    /// Atomically commits `commit`'s ledger row, results and monitor cursors.
     async fn commit_block(&self, commit: &BlockCommit) -> anyhow::Result<()>;
+
+    /// Atomically removes canonical blocks/results above `ancestor` and rewinds
+    /// all affected monitors. Implementations must reject rollback across a
+    /// promoted finalized boundary without mutating state.
+    async fn rollback_to(&self, chain: Chain, ancestor: BlockNumber) -> anyhow::Result<()>;
+
+    /// Promotes provisional blocks through `finalized_head` and returns
+    /// finalized-only sink batches reconstructed from persisted rows.
+    async fn promote_finalized(
+        &self,
+        chain: Chain,
+        finalized_head: BlockNumber,
+    ) -> anyhow::Result<Vec<crate::ports::SinkBatch>>;
 }
 
 /// A registered chain with its RPC URL and enabled state. The supervisor
@@ -185,8 +246,16 @@ pub enum ResultRecord {
     Call {
         /// Transaction hash.
         tx_hash: TxHash,
+        /// Canonical block hash.
+        block_hash: crate::B256,
         /// Block the call was included in.
         block_number: BlockNumber,
+        /// Transaction sender.
+        from: crate::Address,
+        /// Transaction recipient.
+        to: crate::Address,
+        /// Lifecycle state of the result.
+        finality: Finality,
         /// Canonical JSON encoding of the decoded parameters.
         params: serde_json::Value,
     },
@@ -194,10 +263,16 @@ pub enum ResultRecord {
     Event {
         /// Transaction hash that emitted the log.
         tx_hash: TxHash,
+        /// Canonical block hash.
+        block_hash: crate::B256,
         /// Log index within the block.
         log_index: u64,
         /// Block the event was emitted in.
         block_number: BlockNumber,
+        /// Emitter address.
+        emitter: crate::Address,
+        /// Lifecycle state of the result.
+        finality: Finality,
         /// Canonical JSON encoding of the decoded parameters.
         params: serde_json::Value,
     },

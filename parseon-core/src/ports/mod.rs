@@ -6,7 +6,7 @@
 //! - [`storage`]: repository and atomic-block-commit traits (`Storage`,
 //!   `IndexStorage`, `ChainRepository`, `MonitorRepository`,
 //!   `ResultRepository`) and the records they exchange.
-//! - [`source`]: finalized EVM data access (`BlockSource`,
+//! - [`source`]: canonical EVM data access (`BlockSource`,
 //!   `BlockSourceFactory`) plus the bounded log-query primitives
 //!   (`BlockRange`, `LogTarget`, `LogQuery`).
 //! - [`cache`]: short-lived block caching (`BlockCache`, `BlockCacheFactory`).
@@ -29,9 +29,9 @@ pub use source::{
     LogTarget,
 };
 pub use storage::{
-    BlockCommit, ChainRecord, ChainRepository, ChainUpdate, IndexStorage, MonitorKind,
-    MonitorRecord, MonitorRepository, NewChain, NewMonitor, RegisteredChain, ResultRecord,
-    ResultRepository, canonical_params,
+    BlockCommit, CanonicalBlock, ChainRecord, ChainRepository, ChainUpdate, IndexStorage,
+    MonitorKind, MonitorRecord, MonitorRepository, NewChain, NewMonitor, RegisteredChain,
+    ResultRecord, ResultRepository, canonical_params,
 };
 pub use telemetry::{NoopTelemetry, Telemetry};
 

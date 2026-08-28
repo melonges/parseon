@@ -1,0 +1,8 @@
+Create the external secret before installing Parseon:
+
+  kubectl create secret generic {{ .Values.existingSecret }} \
+    --from-literal={{ .Values.secretKeys.storageUrl }}="$STORAGE_URL" \
+    --from-literal={{ .Values.secretKeys.apiToken }}="$API_TOKEN"
+
+The chart intentionally runs one replica with Recreate strategy. Put the Service behind
+an ingress that terminates TLS and restricts access to the authenticated API routes.

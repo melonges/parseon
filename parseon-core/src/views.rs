@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use crate::abi::AbiParam;
 use crate::filter::FilterExpression;
 use crate::ports::{ChainRecord, MonitorKind, MonitorRecord, ResultRecord};
-use crate::{Address, B256, BlockNumber, ChainId, MonitorId, Selector, Target, TxHash};
+use crate::{Address, B256, BlockNumber, ChainId, Finality, MonitorId, Selector, Target, TxHash};
 
 /// API view of a registered chain. Omits the RPC URL, which is write-only.
 #[derive(Debug, Clone)]
@@ -109,8 +109,16 @@ pub enum MonitorResultView {
     Call {
         /// Transaction hash.
         tx_hash: TxHash,
+        /// Canonical block hash.
+        block_hash: B256,
         /// Block the call was included in.
         block_number: BlockNumber,
+        /// Transaction sender.
+        from: Address,
+        /// Transaction recipient.
+        to: Address,
+        /// Lifecycle state.
+        finality: Finality,
         /// Canonical JSON-encoded parameters.
         params: serde_json::Value,
     },
@@ -118,10 +126,16 @@ pub enum MonitorResultView {
     Event {
         /// Transaction hash that emitted the log.
         tx_hash: TxHash,
+        /// Canonical block hash.
+        block_hash: B256,
         /// Log index within the block.
         log_index: u64,
         /// Block the event was emitted in.
         block_number: BlockNumber,
+        /// Emitter address.
+        emitter: Address,
+        /// Lifecycle state.
+        finality: Finality,
         /// Canonical JSON-encoded parameters.
         params: serde_json::Value,
     },
@@ -130,12 +144,32 @@ pub enum MonitorResultView {
 impl From<ResultRecord> for MonitorResultView {
     fn from(record: ResultRecord) -> Self {
         match record {
-            ResultRecord::Call { tx_hash, block_number, params } => {
-                Self::Call { tx_hash, block_number, params }
-            }
-            ResultRecord::Event { tx_hash, log_index, block_number, params } => {
-                Self::Event { tx_hash, log_index, block_number, params }
-            }
+            ResultRecord::Call {
+                tx_hash,
+                block_hash,
+                block_number,
+                from,
+                to,
+                finality,
+                params,
+            } => Self::Call { tx_hash, block_hash, block_number, from, to, finality, params },
+            ResultRecord::Event {
+                tx_hash,
+                block_hash,
+                log_index,
+                block_number,
+                emitter,
+                finality,
+                params,
+            } => Self::Event {
+                tx_hash,
+                block_hash,
+                log_index,
+                block_number,
+                emitter,
+                finality,
+                params,
+            },
         }
     }
 }

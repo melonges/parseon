@@ -9,7 +9,8 @@ use parseon_core::abi::{AbiParam, CallDecoder, decode_calldata};
 use parseon_core::filter::{Filter, FilterContext, FilterDefinition, FilterExpression};
 use parseon_core::pipeline;
 use parseon_core::{
-    BlockTransaction, Bytes, CallTarget, DecodedValue, EventTarget, SourceBlock, Target,
+    BlockMetadata, BlockTransaction, Bytes, CallTarget, DecodedValue, EventTarget, SourceBlock,
+    Target,
 };
 
 async fn run_pipeline(concurrency: usize) {
@@ -173,6 +174,12 @@ fn benchmark(c: &mut Criterion) {
 
     let block = Arc::new(SourceBlock {
         number: 1,
+        metadata: BlockMetadata {
+            number: 1,
+            hash: B256::from([1; 32]),
+            parent_hash: B256::ZERO,
+            timestamp: 0,
+        },
         transactions: (0_u16..1_000)
             .map(|index| BlockTransaction {
                 hash: B256::with_last_byte(index as u8),

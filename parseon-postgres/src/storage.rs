@@ -6,14 +6,26 @@ use parseon_core::commands::ResultQuery;
 use parseon_core::filter::{Filter, FilterDefinition};
 use parseon_core::monitor::Monitor;
 use parseon_core::ports::{
-    BlockCommit, ChainRecord as CoreChainRecord, ChainRepository, ChainUpdate, IndexStorage,
-    MonitorRecord as CoreMonitorRecord, MonitorRepository, NewChain, NewMonitor, RegisteredChain,
-    ResultRecord as CoreResultRecord, ResultRepository,
+    BlockCommit, CanonicalBlock, ChainRecord as CoreChainRecord, ChainRepository, ChainUpdate,
+    IndexStorage, MonitorRecord as CoreMonitorRecord, MonitorRepository, NewChain, NewMonitor,
+    RegisteredChain, ResultRecord as CoreResultRecord, ResultRepository,
 };
-use parseon_core::{CallTarget, Chain, Cursor, DecodedResult, EventTarget, MonitorId, Target};
+use parseon_core::{
+    Address, CallTarget, Chain, Cursor, DecodedResult, EventTarget, Finality, MonitorId, Target,
+};
 
 use super::dyn_table::{CallResultInput, EventResultInput, ResultRecord, SearchParams};
 use super::{chain_repo, dyn_table, monitor_repo, pg_types};
+
+#[derive(Clone, sqlx::FromRow)]
+struct CanonicalBlockRow {
+    chain_id: i64,
+    block_number: i64,
+    block_hash: Vec<u8>,
+    parent_hash: Vec<u8>,
+    block_timestamp: i64,
+    finality: String,
+}
 
 #[derive(Clone)]
 pub struct PostgresStorage {
@@ -23,6 +35,24 @@ pub struct PostgresStorage {
 impl PostgresStorage {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    fn canonical(row: CanonicalBlockRow) -> anyhow::Result<CanonicalBlock> {
+        let finality = match row.finality.as_str() {
+            "provisional" => Finality::Provisional,
+            "finalized" => Finality::Finalized,
+            value => anyhow::bail!("invalid canonical block finality {value}"),
+        };
+        Ok(CanonicalBlock {
+            chain: Chain::new(pg_types::from_i64(row.chain_id, "chain id")?),
+            metadata: parseon_core::BlockMetadata {
+                number: pg_types::from_i64(row.block_number, "block number")?,
+                hash: pg_types::b256(&row.block_hash, "block hash")?,
+                parent_hash: pg_types::b256(&row.parent_hash, "parent hash")?,
+                timestamp: pg_types::from_i64(row.block_timestamp, "block timestamp")?,
+            },
+            finality,
+        })
     }
 
     fn target(row: &monitor_repo::MonitorRecord) -> anyhow::Result<Target> {
@@ -119,13 +149,76 @@ impl IndexStorage for PostgresStorage {
         monitor_repo::list(&self.pool, Some(chain.id)).await?.iter().map(Self::to_monitor).collect()
     }
 
+    async fn canonical_tip(&self, chain: Chain) -> anyhow::Result<Option<CanonicalBlock>> {
+        let row = sqlx::query_as::<_, CanonicalBlockRow>(
+            "SELECT * FROM canonical_blocks WHERE chain_id = $1 ORDER BY block_number DESC LIMIT 1",
+        )
+        .bind(pg_types::to_i64(chain.id, "chain id")?)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(Self::canonical).transpose()
+    }
+
+    async fn canonical_block(
+        &self,
+        chain: Chain,
+        block_number: u64,
+    ) -> anyhow::Result<Option<CanonicalBlock>> {
+        let row = sqlx::query_as::<_, CanonicalBlockRow>(
+            "SELECT * FROM canonical_blocks WHERE chain_id = $1 AND block_number = $2",
+        )
+        .bind(pg_types::to_i64(chain.id, "chain id")?)
+        .bind(pg_types::to_i64(block_number, "block number")?)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(Self::canonical).transpose()
+    }
+
     async fn commit_block(&self, commit: &BlockCommit) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            commit.monitors.iter().all(|monitor| monitor.chain == commit.chain),
-            "cross-chain monitor set rejected for chain {}",
-            commit.chain.id
-        );
+        commit.validate()?;
         let mut tx = self.pool.begin().await?;
+        let block_number = pg_types::to_i64(commit.metadata.number, "block number")?;
+        let chain_id = pg_types::to_i64(commit.chain.id, "chain id")?;
+        let mut effective_finality = commit.finality;
+        let inserted = sqlx::query(
+            r#"INSERT INTO canonical_blocks
+                 (chain_id, block_number, block_hash, parent_hash, block_timestamp, finality)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (chain_id, block_number) DO NOTHING"#,
+        )
+        .bind(chain_id)
+        .bind(block_number)
+        .bind(commit.metadata.hash.as_slice())
+        .bind(commit.metadata.parent_hash.as_slice())
+        .bind(pg_types::to_i64(commit.metadata.timestamp, "block timestamp")?)
+        .bind(commit.finality.as_str())
+        .execute(&mut *tx)
+        .await?;
+        if inserted.rows_affected() == 0 {
+            let existing = sqlx::query_as::<_, CanonicalBlockRow>(
+                "SELECT * FROM canonical_blocks WHERE chain_id = $1 AND block_number = $2 FOR UPDATE",
+            )
+            .bind(chain_id)
+            .bind(block_number)
+            .fetch_one(&mut *tx)
+            .await?;
+            anyhow::ensure!(
+                existing.block_hash == commit.metadata.hash.as_slice()
+                    && existing.parent_hash == commit.metadata.parent_hash.as_slice(),
+                "canonical block {} hash changed without rollback",
+                commit.metadata.number
+            );
+            if existing.finality == Finality::Finalized.as_str() {
+                effective_finality = Finality::Finalized;
+            } else if matches!(commit.finality, Finality::Finalized) {
+                sqlx::query("UPDATE canonical_blocks SET finality = 'finalized' WHERE chain_id = $1 AND block_number = $2")
+                    .bind(chain_id)
+                    .bind(block_number)
+                    .execute(&mut *tx)
+                    .await?;
+                effective_finality = Finality::Finalized;
+            }
+        }
         let mut monitor_ids = commit
             .monitors
             .iter()
@@ -134,8 +227,6 @@ impl IndexStorage for PostgresStorage {
         monitor_ids.sort_unstable();
         monitor_ids.dedup();
 
-        let block_number = pg_types::to_i64(commit.block_number, "block number")?;
-        let chain_id = pg_types::to_i64(commit.chain.id, "chain id")?;
         let rows = sqlx::query_as::<_, monitor_repo::MonitorRecord>(
             r#"WITH locked AS MATERIALIZED (
                  SELECT id FROM monitors
@@ -158,7 +249,7 @@ impl IndexStorage for PostgresStorage {
         anyhow::ensure!(
             rows.len() == monitor_ids.len(),
             "monitor set changed before block {} could be committed",
-            commit.block_number
+            commit.metadata.number
         );
         let rows = rows
             .into_iter()
@@ -175,7 +266,11 @@ impl IndexStorage for PostgresStorage {
                     anyhow::ensure!(row.kind == "call", "call result references event monitor");
                     calls.entry(call.monitor_id).or_insert_with(Vec::new).push(CallResultInput {
                         tx_hash: call.transaction_hash,
+                        block_hash: commit.metadata.hash,
                         block_number: call.block_number,
+                        from: call.from,
+                        to: call.to,
+                        finality: effective_finality,
                         params: &call.params,
                     });
                 }
@@ -187,8 +282,10 @@ impl IndexStorage for PostgresStorage {
                     events.entry(event.monitor_id).or_insert_with(Vec::new).push(
                         EventResultInput {
                             tx_hash: event.transaction_hash,
+                            block_hash: commit.metadata.hash,
                             log_index: event.log_index,
                             block_number: event.block_number,
+                            finality: effective_finality,
                             params: &event.params,
                         },
                     );
@@ -209,6 +306,115 @@ impl IndexStorage for PostgresStorage {
 
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn rollback_to(&self, chain: Chain, ancestor: u64) -> anyhow::Result<()> {
+        let chain_id = pg_types::to_i64(chain.id, "chain id")?;
+        let ancestor = pg_types::to_i64(ancestor, "ancestor block")?;
+        let mut tx = self.pool.begin().await?;
+        let finalized: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM canonical_blocks WHERE chain_id = $1 AND block_number > $2 AND finality = 'finalized')",
+        )
+        .bind(chain_id)
+        .bind(ancestor)
+        .fetch_one(&mut *tx)
+        .await?;
+        anyhow::ensure!(!finalized, "rollback crosses promoted finalized boundary");
+        let monitors = sqlx::query_as::<_, monitor_repo::MonitorRecord>(
+            "SELECT * FROM monitors WHERE chain_id = $1 FOR UPDATE",
+        )
+        .bind(chain_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for monitor in &monitors {
+            dyn_table::delete_results_after(&mut tx, monitor.id, ancestor as u64).await?;
+        }
+        sqlx::query(
+            r#"UPDATE monitors
+               SET cursor = CASE
+                   WHEN start_block > $2 THEN NULL
+                   WHEN cursor IS NULL OR cursor <= $2 THEN cursor
+                   ELSE $2
+               END,
+               completed = CASE
+                   WHEN end_block IS NULL THEN FALSE
+                   ELSE end_block <= $2
+               END,
+               updated_at = NOW()
+               WHERE chain_id = $1"#,
+        )
+        .bind(chain_id)
+        .bind(ancestor)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM canonical_blocks WHERE chain_id = $1 AND block_number > $2")
+            .bind(chain_id)
+            .bind(ancestor)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn promote_finalized(
+        &self,
+        chain: Chain,
+        finalized_head: u64,
+    ) -> anyhow::Result<Vec<parseon_core::ports::SinkBatch>> {
+        let chain_id = pg_types::to_i64(chain.id, "chain id")?;
+        let mut tx = self.pool.begin().await?;
+        let blocks = sqlx::query_as::<_, CanonicalBlockRow>(
+            "SELECT * FROM canonical_blocks WHERE chain_id = $1 AND finality = 'provisional' AND block_number <= $2 ORDER BY block_number",
+        )
+        .bind(chain_id)
+        .bind(pg_types::to_i64(finalized_head, "finalized head")?)
+        .fetch_all(&mut *tx)
+        .await?;
+        if blocks.is_empty() {
+            tx.commit().await?;
+            return Ok(Vec::new());
+        }
+        let monitors = sqlx::query_as::<_, monitor_repo::MonitorRecord>(
+            "SELECT * FROM monitors WHERE chain_id = $1 FOR SHARE",
+        )
+        .bind(chain_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE canonical_blocks SET finality = 'finalized' WHERE chain_id = $1 AND finality = 'provisional' AND block_number <= $2",
+        )
+        .bind(chain_id)
+        .bind(pg_types::to_i64(finalized_head, "finalized head")?)
+        .execute(&mut *tx)
+        .await?;
+        for monitor in &monitors {
+            dyn_table::promote_results(&mut tx, monitor.id, finalized_head).await?;
+        }
+        let mut batches = Vec::new();
+        for block in blocks {
+            let metadata = Self::canonical(block.clone())?;
+            for monitor in &monitors {
+                let target = Self::target(monitor)?;
+                let emitter = match target {
+                    Target::Event(event) => event.address,
+                    Target::Call(_) => Address::ZERO,
+                };
+                if let Some(batch) = dyn_table::sink_batch_for_block(
+                    &mut tx,
+                    monitor.id,
+                    &monitor.kind,
+                    &monitor.param_schema.0,
+                    &metadata,
+                    emitter,
+                )
+                .await?
+                {
+                    batches.push(batch);
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok(batches)
     }
 }
 
@@ -306,25 +512,40 @@ impl ResultRepository for PostgresStorage {
                 indexed: param.indexed,
             })
             .collect::<Vec<_>>();
+        let event_emitter = match &monitor.target {
+            Target::Event(target) => target.address,
+            Target::Call(_) => Address::ZERO,
+        };
         Ok(dyn_table::query_results(
             &self.pool,
             pg_types::to_monitor_id(monitor.id)?,
             kind,
             &schema,
-            &SearchParams { limit: query.limit, offset: query.offset },
+            &SearchParams { limit: query.limit, offset: query.offset, finality: query.finality },
         )
         .await?
         .into_iter()
         .map(|record| match record {
             ResultRecord::Call(record) => CoreResultRecord::Call {
                 tx_hash: record.tx_hash,
+                block_hash: record.block_hash,
                 block_number: record.block_number,
+                from: record.from,
+                to: record.to,
+                finality: record.finality,
                 params: record.params,
             },
             ResultRecord::Event(record) => CoreResultRecord::Event {
                 tx_hash: record.tx_hash,
+                block_hash: record.block_hash,
                 log_index: record.log_index,
                 block_number: record.block_number,
+                emitter: if record.emitter == Address::ZERO {
+                    event_emitter
+                } else {
+                    record.emitter
+                },
+                finality: record.finality,
                 params: record.params,
             },
         })
@@ -336,14 +557,13 @@ impl ResultRepository for PostgresStorage {
 mod tests {
     use std::sync::Arc;
 
-    use alloy::primitives::Address;
+    use alloy::primitives::{Address, B256};
+    use parseon_core::BlockMetadata;
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
     use parseon_core::filter::Filter;
     use parseon_core::monitor::Monitor;
-    use parseon_core::ports::Storage;
-
     fn monitor(chain_id: u64) -> Monitor {
         Monitor {
             id: MonitorId::new(1).unwrap(),
@@ -364,13 +584,17 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_cross_chain_commits_before_database_access() {
-        let pool = PgPoolOptions::new()
-            .connect_lazy("postgres://postgres:postgres@localhost/parseon")
-            .unwrap();
+        let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/parseon").unwrap();
         let storage = PostgresStorage::new(pool);
         let commit = BlockCommit {
             chain: Chain::new(1),
-            block_number: 10,
+            metadata: BlockMetadata {
+                number: 10,
+                hash: B256::repeat_byte(1),
+                parent_hash: B256::ZERO,
+                timestamp: 0,
+            },
+            finality: Finality::Provisional,
             monitors: vec![Arc::new(monitor(2))],
             results: Vec::new(),
         };

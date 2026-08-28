@@ -1,0 +1,7 @@
+apiVersion: v2
+name: parseon
+description: Production self-hosted Parseon EVM indexer
+home: https://github.com/ozcnii/parseon-main
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

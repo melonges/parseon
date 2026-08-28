@@ -11,7 +11,8 @@
 use super::prepare::PreparedBlock;
 use super::{BlockNumber, Chain, PollContext};
 use crate::DecodedResult;
-use crate::ports::{BlockCommit, InFlightGuard, SinkBatch};
+use crate::Finality;
+use crate::ports::{BlockCommit, InFlightGuard};
 
 /// Outcome of a commit attempt.
 pub(super) enum CommitOutcome {
@@ -28,11 +29,12 @@ pub(super) enum CommitOutcome {
 ///
 /// `progress[i]` is the in-memory cursor for monitor `i` in the
 /// [`super::indexer::MonitorIndex`]. On success, every index in
-/// `prepared.monitor_indices` is set to `Some(prepared.block_number)`.
+/// `prepared.monitor_indices` is set to the prepared block number.
 pub(super) async fn commit_prepared(
     chain: Chain,
     context: PollContext<'_>,
     prepared: PreparedBlock,
+    finality: Finality,
     progress: &mut [Option<BlockNumber>],
 ) -> anyhow::Result<CommitOutcome> {
     let calls =
@@ -41,7 +43,8 @@ pub(super) async fn commit_prepared(
     let events = prepared.results.len() as u64 - calls;
     let commit = BlockCommit {
         chain,
-        block_number: prepared.block_number,
+        metadata: prepared.metadata,
+        finality,
         monitors: prepared.monitors,
         results: prepared.results,
     };
@@ -58,24 +61,11 @@ pub(super) async fn commit_prepared(
     match result {
         Ok(()) => {
             context.telemetry.record_commit(chain.id, calls, events, "success", started.elapsed());
-            if context.sink.enabled() {
-                match SinkBatch::new(chain, commit.block_number, &commit.monitors, &commit.results)
-                {
-                    Ok(Some(batch)) => context.sink.submit(batch),
-                    Ok(None) => {}
-                    Err(error) => tracing::warn!(
-                        chain_id = chain.id,
-                        block_number = commit.block_number,
-                        %error,
-                        "failed to encode committed sink batch"
-                    ),
-                }
-            }
             for monitor_index in prepared.monitor_indices {
                 let cursor = progress
                     .get_mut(monitor_index)
                     .ok_or_else(|| anyhow::anyhow!("block plan references unknown monitor"))?;
-                *cursor = Some(prepared.block_number);
+                *cursor = Some(prepared.metadata.number);
             }
             Ok(CommitOutcome::Committed(commit.results.len()))
         }

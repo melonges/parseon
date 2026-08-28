@@ -7,11 +7,12 @@
 //! connected: clones share the inner transport, so one `set_url` call covers
 //! every request issued afterwards.
 
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use alloy::transports::http::Http;
-use alloy::transports::http::reqwest::Client;
+use alloy::transports::http::reqwest::{Client, redirect};
 use alloy::transports::{TransportError, TransportFut};
 use alloy_json_rpc::{RequestPacket, ResponsePacket};
 use parking_lot::RwLock;
@@ -37,9 +38,36 @@ impl RotatingHttp {
 
     /// Rotates the endpoint URL. In-flight requests finish against the old
     /// URL; subsequent requests use the new one.
-    pub(crate) fn set_url(&self, url: Url) {
-        self.inner.write().set_url(url);
+    pub(crate) fn set_url(&self, url: Url, allow_private: bool) -> anyhow::Result<()> {
+        let client = client_for_url(&url, allow_private)?;
+        *self.inner.write() = Http::with_client(client, url);
+        Ok(())
     }
+}
+
+pub(crate) fn client_for_url(url: &Url, allow_private: bool) -> anyhow::Result<Client> {
+    let host = url.host_str().ok_or_else(|| anyhow::anyhow!("RPC URL must contain a host"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("RPC URL must contain a port"))?;
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| anyhow::anyhow!("RPC host resolution failed: {error}"))?
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!addresses.is_empty(), "RPC host has no addresses");
+    if !allow_private {
+        for address in &addresses {
+            anyhow::ensure!(
+                !super::provider::is_private_address(address.ip()),
+                "private RPC network is disabled"
+            );
+        }
+    }
+    Ok(Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(redirect::Policy::none())
+        .resolve_to_addrs(host, &addresses)
+        .build()?)
 }
 
 impl Service<RequestPacket> for RotatingHttp {
@@ -70,7 +98,7 @@ mod tests {
             RotatingHttp::new(Client::new(), Url::parse("http://localhost:8545").unwrap());
         let boxed_clone = transport.clone();
 
-        transport.set_url(Url::parse("http://localhost:9545").unwrap());
+        transport.set_url(Url::parse("http://localhost:9545").unwrap(), true).unwrap();
 
         // The provider's boxed clone observes the rotation.
         assert_eq!(boxed_clone.inner.read().url(), "http://localhost:9545/");

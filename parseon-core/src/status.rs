@@ -24,6 +24,9 @@ pub enum WorkerState {
     Running,
     /// Source validation or the worker's latest poll failed.
     Degraded,
+    /// Reorg recovery crossed an already promoted finalized boundary and the
+    /// worker is halted until operator recovery.
+    Blocked,
     /// The chain is disabled and has no worker.
     Disabled,
 }
@@ -35,8 +38,14 @@ pub struct ChainStatusSnapshot {
     pub chain_id: ChainId,
     /// Whether the chain runs a worker.
     pub enabled: bool,
+    /// Latest head observed by the worker, if any.
+    pub latest_head: Option<BlockNumber>,
+    /// Highest canonical block persisted by the worker, if any.
+    pub canonical_head: Option<BlockNumber>,
     /// Latest finalized head observed by the worker, if any.
     pub finalized_head: Option<BlockNumber>,
+    /// Highest block eligible for finalized promotion.
+    pub promotion_height: Option<BlockNumber>,
     /// Current worker lifecycle state.
     pub worker_state: WorkerState,
     /// When the worker's last poll succeeded, if ever.
@@ -62,7 +71,10 @@ impl ChainStatus {
         Self::new(ChainStatusSnapshot {
             chain_id,
             enabled: true,
+            latest_head: None,
+            canonical_head: None,
             finalized_head,
+            promotion_height: None,
             worker_state: WorkerState::Starting,
             last_successful_poll_at: None,
             last_error: None,
@@ -76,7 +88,10 @@ impl ChainStatus {
         Self::new(ChainStatusSnapshot {
             chain_id,
             enabled: true,
+            latest_head: Some(finalized_head),
+            canonical_head: Some(finalized_head),
             finalized_head: Some(finalized_head),
+            promotion_height: Some(finalized_head),
             worker_state: WorkerState::Running,
             last_successful_poll_at: Some(Utc::now()),
             last_error: None,
@@ -89,7 +104,10 @@ impl ChainStatus {
         Self::new(ChainStatusSnapshot {
             chain_id,
             enabled: false,
+            latest_head: None,
+            canonical_head: None,
             finalized_head: None,
+            promotion_height: None,
             worker_state: WorkerState::Disabled,
             last_successful_poll_at: None,
             last_error: None,
@@ -103,7 +121,10 @@ impl ChainStatus {
         Self::new(ChainStatusSnapshot {
             chain_id,
             enabled: true,
+            latest_head: None,
+            canonical_head: None,
             finalized_head: None,
+            promotion_height: None,
             worker_state: WorkerState::Degraded,
             last_successful_poll_at: None,
             last_error: Some(message.into()),
@@ -117,11 +138,30 @@ impl ChainStatus {
     /// Atomically records a successful poll at `finalized_head`, clearing any
     /// prior error and transitioning to [`WorkerState::Running`].
     pub fn record_success(&self, finalized_head: BlockNumber) {
+        self.record_success_heads(
+            finalized_head,
+            finalized_head,
+            finalized_head,
+            Some(finalized_head),
+        );
+    }
+
+    /// Records latest, canonical and finality heads after a successful poll.
+    pub fn record_success_heads(
+        &self,
+        latest_head: BlockNumber,
+        finalized_head: BlockNumber,
+        promotion_height: BlockNumber,
+        canonical_head: Option<BlockNumber>,
+    ) {
         let prev = self.inner.load();
         let next = ChainStatusSnapshot {
             chain_id: prev.chain_id,
             enabled: prev.enabled,
+            latest_head: Some(latest_head),
+            canonical_head,
             finalized_head: Some(finalized_head),
+            promotion_height: Some(promotion_height),
             worker_state: WorkerState::Running,
             last_successful_poll_at: Some(Utc::now()),
             last_error: None,
@@ -139,12 +179,50 @@ impl ChainStatus {
         let next = ChainStatusSnapshot {
             chain_id: prev.chain_id,
             enabled: prev.enabled,
+            latest_head: prev.latest_head,
+            canonical_head: prev.canonical_head,
             finalized_head: prev.finalized_head,
+            promotion_height: prev.promotion_height,
             worker_state: WorkerState::Degraded,
             last_successful_poll_at: prev.last_successful_poll_at,
             last_error: Some(message.clone()),
         };
         self.inner.store(Arc::new(next));
+        message
+    }
+
+    /// Records that the worker task exited without an intentional cancellation.
+    /// This keeps readiness failed instead of leaving a stale `running` snapshot.
+    pub fn record_task_exit(&self) {
+        let prev = self.inner.load();
+        self.inner.store(Arc::new(ChainStatusSnapshot {
+            chain_id: prev.chain_id,
+            enabled: prev.enabled,
+            latest_head: prev.latest_head,
+            canonical_head: prev.canonical_head,
+            finalized_head: prev.finalized_head,
+            promotion_height: prev.promotion_height,
+            worker_state: WorkerState::Degraded,
+            last_successful_poll_at: prev.last_successful_poll_at,
+            last_error: Some("worker task exited unexpectedly".to_string()),
+        }));
+    }
+
+    /// Records a fail-closed recovery state that requires operator action.
+    pub fn record_blocked(&self, error: &anyhow::Error) -> String {
+        let message = safe_error_message(error);
+        let prev = self.inner.load();
+        self.inner.store(Arc::new(ChainStatusSnapshot {
+            chain_id: prev.chain_id,
+            enabled: prev.enabled,
+            latest_head: prev.latest_head,
+            canonical_head: prev.canonical_head,
+            finalized_head: prev.finalized_head,
+            promotion_height: prev.promotion_height,
+            worker_state: WorkerState::Blocked,
+            last_successful_poll_at: prev.last_successful_poll_at,
+            last_error: Some(message.clone()),
+        }));
         message
     }
 
@@ -240,5 +318,14 @@ mod tests {
 
         assert_eq!(status.record_error(&error), "block source request failed");
         assert_eq!(status.snapshot().last_error.as_deref(), Some("block source request failed"));
+    }
+
+    #[test]
+    fn records_unexpected_task_exit() {
+        let status = ChainStatus::starting(1, None);
+        status.record_task_exit();
+        let snapshot = status.snapshot();
+        assert_eq!(snapshot.worker_state, WorkerState::Degraded);
+        assert_eq!(snapshot.last_error.as_deref(), Some("worker task exited unexpectedly"));
     }
 }

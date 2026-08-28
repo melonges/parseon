@@ -46,7 +46,7 @@ mod worker;
 pub mod model;
 
 pub use model::{
-    Address, B256, BlockNumber, BlockTransaction, Bytes, CallTarget, Chain, ChainId, Cursor,
-    DecodedCall, DecodedEvent, DecodedResult, DecodedValue, EventTarget, ExecutionOutcome,
-    InvalidMonitorId, MonitorId, Selector, SourceBlock, SourceLog, Target, TxHash, Url,
+    Address, B256, BlockMetadata, BlockNumber, BlockTransaction, Bytes, CallTarget, Chain, ChainId,
+    Cursor, DecodedCall, DecodedEvent, DecodedResult, DecodedValue, EventTarget, ExecutionOutcome,
+    Finality, InvalidMonitorId, MonitorId, Selector, SourceBlock, SourceLog, Target, TxHash, Url,
 };

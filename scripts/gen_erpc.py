@@ -22,6 +22,7 @@ components/RPCList/index.js.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import socket
@@ -30,19 +31,55 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import parse_qsl, urlsplit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-SRC_DEFAULT = Path("/tmp/opencode/rpcs.json")
-DST_DEFAULT = Path("/home/melonges/Desktop/parseon/erpc.yaml")
+SRC_DEFAULT = Path("rpcs.json")
+DST_DEFAULT = Path("erpc.yaml")
+CREDENTIAL_QUERY_KEYS = {"api_key", "apikey", "access_token", "token", "secret", "password"}
 ALIAS_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 DEFAULT_HEADERS = {"content-type": "application/json", "user-agent": "parseon-gen-erpc/1.0"}
-# eth_getBlockByNumber(["latest", false]) — same payload chainlist.org uses.
+# The probe also checks eth_chainId so an endpoint cannot be assigned to the wrong network.
+CHAIN_ID_BODY = json.dumps(
+    {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}
+).encode()
 RPC_BODY = json.dumps(
     {"jsonrpc": "2.0", "method": "eth_getBlockByNumber", "params": ["latest", False], "id": 1}
 ).encode()
 # One shared SSL context so we don't re-init per request.
 _SSL_CTX = ssl.create_default_context()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(
+    _NoRedirect(), urllib.request.HTTPSHandler(context=_SSL_CTX)
+)
+
+
+def endpoint_safety(url: str) -> str | None:
+    """Return a rejection reason for URLs that do not resolve publicly."""
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"}:
+        return "scheme"
+    if not parsed.hostname:
+        return "host"
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        addresses = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+    except (OSError, ValueError):
+        return "dns"
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if ip.version == 6 and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if not ip.is_global:
+            return "private-address"
+    return None
 
 
 def http_rpcs(entry: dict) -> list[str]:
@@ -54,8 +91,15 @@ def http_rpcs(entry: dict) -> list[str]:
         url = (r.get("url") or "").strip().replace("\u200b", "")
         if not (url.startswith("http://") or url.startswith("https://")):
             continue
-        # Skip placeholder URLs with API_KEY template variables (chainlist does too).
+        # Never copy credentials from chainlist or a local source into generated config.
+        # Operators must inject private upstream URLs through their deployment secret.
+        parsed = urlsplit(url)
+        query_keys = {key.lower() for key, _ in parse_qsl(parsed.query, keep_blank_values=True)}
+        if parsed.username or parsed.password or query_keys & CREDENTIAL_QUERY_KEYS:
+            continue
         if "API_KEY" in url or "${" in url:
+            continue
+        if endpoint_safety(url) is not None:
             continue
         if url in seen:
             continue
@@ -74,19 +118,14 @@ def yaml_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-def probe(url: str, timeout: float) -> tuple[int | None, int | None, str]:
-    """POST eth_getBlockByNumber(["latest", false]) to `url`.
-
-    Returns (height, latency_ms, reason). height/latency are None on failure.
-    reason is "ok" on success or a short failure tag.
-    """
-    req = urllib.request.Request(url, data=RPC_BODY, headers=DEFAULT_HEADERS, method="POST")
+def _post(url: str, body: bytes, timeout: float) -> tuple[bytes | None, int | None, str | None]:
+    req = urllib.request.Request(url, data=body, headers=DEFAULT_HEADERS, method="POST")
     t0 = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             if resp.status != 200:
                 return None, None, f"http {resp.status}"
-            raw = resp.read(65536)
+            return resp.read(65536), int((time.monotonic() - t0) * 1000), None
     except urllib.error.HTTPError as e:
         return None, None, f"http {e.code}"
     except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ssl.SSLError) as e:
@@ -94,8 +133,26 @@ def probe(url: str, timeout: float) -> tuple[int | None, int | None, str]:
     except Exception as e:
         return None, None, f"other:{type(e).__name__}"
 
-    latency_ms = int((time.monotonic() - t0) * 1000)
 
+def probe(url: str, chain_id: int, timeout: float) -> tuple[int | None, int | None, str]:
+    """Check endpoint chain identity and latest block height."""
+    safety = endpoint_safety(url)
+    if safety is not None:
+        return None, None, f"unsafe:{safety}"
+    raw, _, failure = _post(url, CHAIN_ID_BODY, timeout)
+    if failure is not None or raw is None:
+        return None, None, failure or "empty-response"
+    try:
+        chain_doc = json.loads(raw)
+        actual_chain_id = int(chain_doc["result"], 16)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None, None, "bad-chain-id"
+    if actual_chain_id != chain_id:
+        return None, None, f"wrong-chain:{actual_chain_id}"
+
+    raw, latency_ms, failure = _post(url, RPC_BODY, timeout)
+    if failure is not None or raw is None:
+        return None, None, failure or "empty-response"
     try:
         doc = json.loads(raw)
     except json.JSONDecodeError:
@@ -133,7 +190,7 @@ def probe_all(
         c["chainId"]: [] for c in chains
     }
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        fut_to_task = {pool.submit(probe, url, timeout): (cid, url) for cid, url in tasks}
+        fut_to_task = {pool.submit(probe, url, cid, timeout): (cid, url) for cid, url in tasks}
         for fut in as_completed(fut_to_task):
             cid, url = fut_to_task[fut]
             try:
@@ -280,6 +337,7 @@ def main() -> int:
     lines.append("# Top N mainnet EVM chains by TVL with at least one HTTP/HTTPS RPC.")
     lines.append("# Endpoints probed with eth_getBlockByNumber and ranked by chainlist.org's")
     lines.append("# height-then-latency algorithm; failures dropped.")
+    lines.append("# Credential-bearing URLs are intentionally excluded; inject private endpoints at deploy time.")
     lines.append(f"# Regenerate with: python3 scripts/gen_erpc.py --top {args.top} [--no-probe] [--filter-stale] [--src rpcs.json] [--dst erpc.yaml]")
     lines.append("")
     lines.append("logLevel: warn")

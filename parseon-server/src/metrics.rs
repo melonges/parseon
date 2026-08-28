@@ -40,6 +40,12 @@ struct CacheLabels {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct WorkerStateLabels {
+    chain_id: String,
+    state: &'static str,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct RpcLabels {
     chain_id: String,
     operation: &'static str,
@@ -62,6 +68,8 @@ struct Inner {
     results_committed: Family<ResultLabels, Counter>,
     storage_commit_duration: Family<OutcomeLabels, Histogram>,
     worker_lag: Family<ChainLabels, Gauge>,
+    worker_state: Family<WorkerStateLabels, Gauge>,
+    worker_last_successful_poll: Family<ChainLabels, Gauge>,
     in_flight: Family<StageLabels, Gauge>,
     cache_access: Family<CacheLabels, Counter>,
 }
@@ -83,6 +91,8 @@ impl Default for Metrics {
         let results_committed = Family::default();
         let storage_commit_duration = Family::new_with_constructor(histogram as fn() -> Histogram);
         let worker_lag = Family::default();
+        let worker_state = Family::default();
+        let worker_last_successful_poll = Family::default();
         let in_flight = Family::default();
         let cache_access = Family::default();
 
@@ -118,6 +128,16 @@ impl Default for Metrics {
             worker_lag.clone(),
         );
         registry.register(
+            "parseon_worker_state",
+            "Current worker lifecycle state (one for the active state).",
+            worker_state.clone(),
+        );
+        registry.register(
+            "parseon_worker_last_successful_poll_timestamp_seconds",
+            "Unix timestamp of the last successful worker poll.",
+            worker_last_successful_poll.clone(),
+        );
+        registry.register(
             "parseon_in_flight",
             "Work currently in flight by bounded pipeline stage.",
             in_flight.clone(),
@@ -137,6 +157,8 @@ impl Default for Metrics {
                 results_committed,
                 storage_commit_duration,
                 worker_lag,
+                worker_state,
+                worker_last_successful_poll,
                 in_flight,
                 cache_access,
             }),
@@ -221,6 +243,25 @@ impl Telemetry for Metrics {
             .set(i64::try_from(lag).unwrap_or(i64::MAX));
     }
 
+    fn set_worker_state(&self, chain_id: u64, state: &'static str) {
+        for candidate in ["starting", "running", "degraded", "blocked", "disabled"] {
+            self.inner
+                .worker_state
+                .get_or_create(&WorkerStateLabels {
+                    chain_id: chain_id.to_string(),
+                    state: candidate,
+                })
+                .set(i64::from(candidate == state));
+        }
+    }
+
+    fn set_worker_last_successful_poll(&self, chain_id: u64, timestamp: i64) {
+        self.inner
+            .worker_last_successful_poll
+            .get_or_create(&Self::chain_labels(chain_id))
+            .set(timestamp);
+    }
+
     fn adjust_in_flight(&self, chain_id: u64, stage: &'static str, delta: i64) {
         let gauge = self
             .inner
@@ -251,6 +292,8 @@ mod tests {
         metrics.record_cache(8453, true);
         metrics.record_commit(8453, 2, 1, "success", Duration::from_millis(1));
         metrics.set_worker_lag(8453, 7);
+        metrics.set_worker_state(8453, "running");
+        metrics.set_worker_last_successful_poll(8453, 123);
         metrics.adjust_in_flight(8453, "storage", 1);
 
         let output = metrics.render().unwrap();
@@ -259,6 +302,9 @@ mod tests {
         assert!(output.contains("strategy=\"batch\""));
         assert!(output.contains("parseon_storage_commit_duration_seconds"));
         assert!(output.contains("stage=\"storage\""));
+        assert!(output.contains("parseon_worker_state"));
+        assert!(output.contains("state=\"running\""));
+        assert!(output.contains("parseon_worker_last_successful_poll_timestamp_seconds"));
         assert!(!output.contains("rpc_url"));
     }
 }

@@ -1,9 +1,10 @@
-//! Per-chain worker runtime: polls finalized blocks, decodes calls and events,
-//! and commits results atomically.
+//! Per-chain worker runtime: polls canonical blocks, decodes calls and events,
+//! and commits results atomically with provisional/finalized lifecycle.
 //!
 //! The worker is the heart of the indexing pipeline. One worker runs per
 //! enabled chain, polling the block source at `poll_interval` and processing
-//! up to `batch_size` blocks per poll. Within a poll, blocks are prepared
+//! up to `batch_size` blocks per poll. Canonical tips are checked before new
+//! work so bounded reorgs can rollback and replay safely. Within a poll, blocks are prepared
 //! concurrently (capped by `block_concurrency`) and committed in block-number
 //! order so cursors never advance past a gap.
 //!
@@ -24,6 +25,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use futures_util::StreamExt;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -31,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 use super::indexer;
 use super::scheduler;
 use super::status::ChainStatus;
-use super::{BlockNumber, Chain, Cursor};
+use super::{BlockNumber, Chain, Cursor, Finality};
 use crate::ports::{BlockCache, BlockSource, IndexStorage, Sink, Storage, Telemetry};
 
 /// Per-worker static configuration, set at supervisor startup.
@@ -45,6 +47,10 @@ pub(crate) struct WorkerConfig {
     pub(crate) block_concurrency: NonZeroUsize,
     /// Delay between successful polls.
     pub(crate) poll_interval: Duration,
+    /// Number of latest blocks required before promotion.
+    pub(crate) confirmations: NonZeroU64,
+    /// Maximum number of canonical blocks retained for ancestor search.
+    pub(crate) rollback_retention: NonZeroU64,
 }
 
 /// Per-worker dependencies cloned from the supervisor.
@@ -89,8 +95,14 @@ pub(crate) struct PollContext<'a> {
 /// Aggregate result of one successful poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PollResult {
+    /// Latest head observed at the start of the poll.
+    pub(crate) latest_head: BlockNumber,
     /// Finalized head observed at the start of the poll.
     pub(crate) finalized_head: BlockNumber,
+    /// Highest block safe to expose as finalized.
+    pub(crate) promotion_height: BlockNumber,
+    /// Highest canonical block retained after this poll.
+    pub(crate) canonical_head: Option<BlockNumber>,
     /// Number of decoded results committed during this poll.
     pub(crate) decoded: usize,
 }
@@ -110,6 +122,8 @@ pub(crate) enum PollOutcome {
 pub(crate) struct SourceStatus {
     /// EIP-155 chain ID reported by the endpoint.
     pub(crate) chain_id: u64,
+    /// Current latest head block number.
+    pub(crate) latest_head: BlockNumber,
     /// Current finalized head block number.
     pub(crate) finalized_head: BlockNumber,
 }
@@ -124,7 +138,8 @@ pub(crate) async fn probe_source(source: &dyn BlockSource) -> anyhow::Result<Sou
     let finalized_head = source.finalized_head().await.map_err(|error| {
         anyhow::anyhow!("RPC does not support the required finalized block tag: {error:#}")
     })?;
-    Ok(SourceStatus { chain_id, finalized_head })
+    let latest_head = source.latest_head().await?;
+    Ok(SourceStatus { chain_id, latest_head, finalized_head })
 }
 
 /// Runs the worker until `cancel` is cancelled.
@@ -138,6 +153,7 @@ pub(crate) async fn run(
     status: ChainStatus,
     cancel: CancellationToken,
 ) {
+    dependencies.telemetry.set_worker_state(config.chain.id, "starting");
     tracing::info!(chain_id = config.chain.id, "worker started");
     loop {
         if cancel.is_cancelled() {
@@ -157,11 +173,32 @@ pub(crate) async fn run(
         )
         .await
         {
-            Ok(PollOutcome::Completed(poll)) => status.record_success(poll.finalized_head),
+            Ok(PollOutcome::Completed(poll)) => {
+                status.record_success_heads(
+                    poll.latest_head,
+                    poll.finalized_head,
+                    poll.promotion_height,
+                    poll.canonical_head,
+                );
+                dependencies.telemetry.set_worker_state(config.chain.id, "running");
+                dependencies
+                    .telemetry
+                    .set_worker_last_successful_poll(config.chain.id, Utc::now().timestamp());
+            }
             Ok(PollOutcome::Cancelled) => break,
             Err(error) => {
-                let message = status.record_error(&error);
+                let blocked = is_blocking_reorg_error(&error);
+                let message = if blocked {
+                    dependencies.telemetry.set_worker_state(config.chain.id, "blocked");
+                    status.record_blocked(&error)
+                } else {
+                    dependencies.telemetry.set_worker_state(config.chain.id, "degraded");
+                    status.record_error(&error)
+                };
                 tracing::warn!(chain_id = config.chain.id, error = %message, "worker tick failed");
+                if blocked {
+                    break;
+                }
             }
         }
         tokio::select! {
@@ -182,11 +219,24 @@ pub(crate) async fn run_once(
     context: PollContext<'_>,
 ) -> anyhow::Result<PollOutcome> {
     let PollContext { storage, source, cache, telemetry, cancel, .. } = context;
+    let latest_head = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(PollOutcome::Cancelled),
+        latest_head = source.latest_head() => latest_head?,
+    };
     let finalized_head = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Ok(PollOutcome::Cancelled),
         finalized_head = source.finalized_head() => finalized_head?,
     };
+    anyhow::ensure!(
+        finalized_head <= latest_head,
+        "source finalized head {finalized_head} exceeds latest head {latest_head}"
+    );
+    let promotion_height = promotion_height(latest_head, finalized_head, config.confirmations);
+    if reconcile_canonical_tip(config, context, latest_head).await? {
+        return Ok(PollOutcome::Cancelled);
+    }
     let monitors = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Ok(PollOutcome::Cancelled),
@@ -199,10 +249,34 @@ pub(crate) async fn run_once(
             return Ok(PollOutcome::Cancelled);
         }
         telemetry.set_worker_lag(config.chain.id, 0);
-        return Ok(PollOutcome::Completed(PollResult { finalized_head, decoded: 0 }));
+        let batches = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(PollOutcome::Cancelled),
+            batches = storage.promote_finalized(config.chain, promotion_height) => batches?,
+        };
+        for batch in batches {
+            if cancel.is_cancelled() {
+                return Ok(PollOutcome::Cancelled);
+            }
+            if !context.sink.enabled() {
+                break;
+            }
+            context.sink.submit(batch);
+        }
+        return Ok(PollOutcome::Completed(PollResult {
+            latest_head,
+            finalized_head,
+            promotion_height,
+            canonical_head: tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(PollOutcome::Cancelled),
+                tip = storage.canonical_tip(config.chain) => tip?.map(|block| block.metadata.number),
+            },
+            decoded: 0,
+        }));
     }
 
-    let plans = scheduler::plan_blocks(active, finalized_head, config.batch_size);
+    let plans = scheduler::plan_blocks(active, latest_head, config.batch_size);
     let mut decoded = 0;
     let mut progress = active.iter().map(|monitor| monitor.cursor.0).collect::<Vec<_>>();
 
@@ -220,8 +294,16 @@ pub(crate) async fn run_once(
                 ) => prepared?,
             };
             for prepared in prepared {
-                match commit::commit_prepared(config.chain, context, prepared?, &mut progress)
-                    .await?
+                let prepared = prepared?;
+                let finality = Finality::Provisional;
+                match commit::commit_prepared(
+                    config.chain,
+                    context,
+                    prepared,
+                    finality,
+                    &mut progress,
+                )
+                .await?
                 {
                     commit::CommitOutcome::Committed(count) => decoded += count,
                     commit::CommitOutcome::Cancelled => return Ok(PollOutcome::Cancelled),
@@ -254,8 +336,15 @@ pub(crate) async fn run_once(
                 let Some(prepared) = next else { break };
                 let prepared =
                     prepare::finish_prepared(prepared?, monitor_index.as_ref(), Vec::new())?;
-                match commit::commit_prepared(config.chain, context, prepared, &mut progress)
-                    .await?
+                let finality = Finality::Provisional;
+                match commit::commit_prepared(
+                    config.chain,
+                    context,
+                    prepared,
+                    finality,
+                    &mut progress,
+                )
+                .await?
                 {
                     commit::CommitOutcome::Committed(count) => decoded += count,
                     commit::CommitOutcome::Cancelled => return Ok(PollOutcome::Cancelled),
@@ -276,7 +365,7 @@ pub(crate) async fn run_once(
         .iter()
         .zip(&progress)
         .map(|(monitor, cursor)| {
-            let target = monitor.end_block.unwrap_or(finalized_head).min(finalized_head);
+            let target = monitor.end_block.unwrap_or(latest_head).min(latest_head);
             match *cursor {
                 Some(cursor) => target.saturating_sub(cursor),
                 None if monitor.start_block <= target => {
@@ -287,6 +376,108 @@ pub(crate) async fn run_once(
         })
         .max()
         .unwrap_or(0);
+    let batches = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(PollOutcome::Cancelled),
+        batches = storage.promote_finalized(config.chain, promotion_height) => batches?,
+    };
+    for batch in batches {
+        if cancel.is_cancelled() {
+            return Ok(PollOutcome::Cancelled);
+        }
+        if context.sink.enabled() {
+            context.sink.submit(batch);
+        }
+    }
     telemetry.set_worker_lag(config.chain.id, lag);
-    Ok(PollOutcome::Completed(PollResult { finalized_head, decoded }))
+    let canonical_head = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(PollOutcome::Cancelled),
+        tip = storage.canonical_tip(config.chain) => tip?.map(|block| block.metadata.number),
+    };
+    Ok(PollOutcome::Completed(PollResult {
+        latest_head,
+        finalized_head,
+        promotion_height,
+        canonical_head,
+        decoded,
+    }))
+}
+
+fn is_blocking_reorg_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("promoted finalized boundary")
+        || message.contains("canonical ancestor not found within rollback retention")
+}
+
+fn promotion_height(
+    latest_head: BlockNumber,
+    finalized_head: BlockNumber,
+    confirmations: NonZeroU64,
+) -> BlockNumber {
+    finalized_head.min(latest_head.saturating_sub(confirmations.get()))
+}
+
+async fn reconcile_canonical_tip(
+    config: &WorkerConfig,
+    context: PollContext<'_>,
+    latest_head: BlockNumber,
+) -> anyhow::Result<bool> {
+    if context.cancel.is_cancelled() {
+        return Ok(true);
+    }
+    let tip = tokio::select! {
+        biased;
+        _ = context.cancel.cancelled() => return Ok(true),
+        tip = context.storage.canonical_tip(config.chain) => tip?,
+    };
+    let Some(tip) = tip else {
+        return Ok(false);
+    };
+    if latest_head < tip.metadata.number {
+        return Ok(false);
+    }
+    let mut number = tip.metadata.number;
+    let retention = config.rollback_retention.get();
+    for distance in 0..=retention {
+        let source = tokio::select! {
+            biased;
+            _ = context.cancel.cancelled() => return Ok(true),
+            source = context.source.fetch_block_header(number) => source?,
+        };
+        let stored = tokio::select! {
+            biased;
+            _ = context.cancel.cancelled() => return Ok(true),
+            stored = context.storage.canonical_block(config.chain, number) => stored?,
+        };
+        if stored.is_some_and(|stored| {
+            stored.metadata.hash == source.hash && stored.metadata.parent_hash == source.parent_hash
+        }) {
+            if number < tip.metadata.number {
+                let rollback = tokio::select! {
+                    biased;
+                    _ = context.cancel.cancelled() => return Ok(true),
+                    rollback = context.storage.rollback_to(config.chain, number) => rollback,
+                };
+                if let Err(error) = rollback {
+                    if error.to_string().contains("promoted finalized boundary") {
+                        anyhow::bail!(
+                            "reorg recovery crossed promoted finalized boundary: {error}"
+                        );
+                    }
+                    return Err(error);
+                }
+                if context.cancel.is_cancelled() {
+                    return Ok(true);
+                }
+                context.cache.evict_after(config.chain, number);
+            }
+            return Ok(false);
+        }
+        if distance == retention || number == 0 {
+            break;
+        }
+        number -= 1;
+    }
+    anyhow::bail!("canonical ancestor not found within rollback retention")
 }

@@ -201,7 +201,13 @@ impl From<FilterPreview> for FilterPreviewResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct Health {
     pub status: &'static str,
-    pub monitors: usize,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct Readiness {
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -216,7 +222,13 @@ pub(crate) struct ChainStatusRow {
     pub enabled: bool,
     pub worker_state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_head: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_head: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub finalized_head: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promotion_height: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_successful_poll_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
@@ -231,9 +243,13 @@ impl From<ChainStatusSnapshot> for ChainStatusRow {
                 WorkerState::Starting => "starting",
                 WorkerState::Running => "running",
                 WorkerState::Degraded => "degraded",
+                WorkerState::Blocked => "blocked",
                 WorkerState::Disabled => "disabled",
             },
+            latest_head: snapshot.latest_head,
+            canonical_head: snapshot.canonical_head,
             finalized_head: snapshot.finalized_head,
+            promotion_height: snapshot.promotion_height,
             last_successful_poll_at: snapshot.last_successful_poll_at,
             last_error: snapshot.last_error,
         }
@@ -250,16 +266,25 @@ pub(crate) struct ResultsQuery {
     /// Maximum number of results (default 50, clamped to 200).
     #[serde(default = "default_limit")]
     pub limit: u64,
-    /// Pagination offset (default 0).
+    /// Pagination offset (default 0, max 1,000,000).
     #[serde(default)]
     pub offset: u64,
+    /// Lifecycle filter; finalized is the safe default.
+    pub finality: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct CallMonitorResult {
     #[schema(value_type = String, pattern = "^0x[0-9a-f]{64}$")]
     pub tx_hash: TxHash,
+    #[schema(value_type = String, pattern = "^0x[0-9a-f]{64}$")]
+    pub block_hash: B256,
     pub block_number: u64,
+    #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{40}$")]
+    pub from: Address,
+    #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{40}$")]
+    pub to: Address,
+    pub finality: String,
     #[schema(value_type = Object)]
     pub params: serde_json::Value,
 }
@@ -268,8 +293,13 @@ pub(crate) struct CallMonitorResult {
 pub(crate) struct EventMonitorResult {
     #[schema(value_type = String, pattern = "^0x[0-9a-f]{64}$")]
     pub tx_hash: TxHash,
+    #[schema(value_type = String, pattern = "^0x[0-9a-f]{64}$")]
+    pub block_hash: B256,
     pub log_index: u64,
     pub block_number: u64,
+    #[schema(value_type = String, pattern = "^0x[0-9a-fA-F]{40}$")]
+    pub emitter: Address,
+    pub finality: String,
     #[schema(value_type = Object)]
     pub params: serde_json::Value,
 }
@@ -284,12 +314,40 @@ pub(crate) enum MonitorResult {
 impl From<MonitorResultView> for MonitorResult {
     fn from(record: MonitorResultView) -> Self {
         match record {
-            MonitorResultView::Call { tx_hash, block_number, params } => {
-                Self::Call(CallMonitorResult { tx_hash, block_number, params })
-            }
-            MonitorResultView::Event { tx_hash, log_index, block_number, params } => {
-                Self::Event(EventMonitorResult { tx_hash, log_index, block_number, params })
-            }
+            MonitorResultView::Call {
+                tx_hash,
+                block_hash,
+                block_number,
+                from,
+                to,
+                finality,
+                params,
+            } => Self::Call(CallMonitorResult {
+                tx_hash,
+                block_hash,
+                block_number,
+                from,
+                to,
+                finality: finality.as_str().into(),
+                params,
+            }),
+            MonitorResultView::Event {
+                tx_hash,
+                block_hash,
+                log_index,
+                block_number,
+                emitter,
+                finality,
+                params,
+            } => Self::Event(EventMonitorResult {
+                tx_hash,
+                block_hash,
+                log_index,
+                block_number,
+                emitter,
+                finality: finality.as_str().into(),
+                params,
+            }),
         }
     }
 }
@@ -309,7 +367,7 @@ mod tests {
     #[test]
     fn chain_rpc_url_is_write_only() {
         let create: CreateChain = serde_json::from_value(serde_json::json!({
-            "rpc_url": "https://user:secret@example.invalid"
+            "rpc_url": "https://example.invalid"
         }))
         .unwrap();
         assert!(create.enabled);
@@ -324,7 +382,6 @@ mod tests {
             ChainRow { chain_id: 1, enabled: true, created_at: Utc::now(), updated_at: Utc::now() };
         let value = serde_json::to_value(row).unwrap();
         assert!(value.get("rpc_url").is_none());
-        assert!(!value.to_string().contains("secret"));
     }
 
     #[test]
@@ -383,9 +440,14 @@ mod tests {
     #[test]
     fn serializes_minimal_results() {
         let call_hash = TxHash::repeat_byte(0x11);
+        let call_block_hash = B256::repeat_byte(0x33);
         let call = MonitorResult::from(MonitorResultView::Call {
             tx_hash: call_hash,
+            block_hash: call_block_hash,
             block_number: 10,
+            from: Address::repeat_byte(1),
+            to: Address::repeat_byte(2),
+            finality: parseon_core::Finality::Finalized,
             params: serde_json::json!({"value": "42"}),
         });
         assert_eq!(
@@ -393,16 +455,24 @@ mod tests {
             serde_json::json!({
                 "kind": "call",
                 "tx_hash": call_hash.to_string(),
+                "block_hash": call_block_hash.to_string(),
                 "block_number": 10,
+                "from": Address::repeat_byte(1).to_string(),
+                "to": Address::repeat_byte(2).to_string(),
+                "finality": "finalized",
                 "params": {"value": "42"}
             })
         );
 
         let event_hash = TxHash::repeat_byte(0x22);
+        let event_block_hash = B256::repeat_byte(0x44);
         let event = MonitorResult::from(MonitorResultView::Event {
             tx_hash: event_hash,
+            block_hash: event_block_hash,
             log_index: 3,
             block_number: 11,
+            emitter: Address::repeat_byte(3),
+            finality: parseon_core::Finality::Provisional,
             params: serde_json::json!({"owner": "0x1"}),
         });
         assert_eq!(
@@ -410,8 +480,11 @@ mod tests {
             serde_json::json!({
                 "kind": "event",
                 "tx_hash": event_hash.to_string(),
+                "block_hash": event_block_hash.to_string(),
                 "log_index": 3,
                 "block_number": 11,
+                "emitter": Address::repeat_byte(3).to_string(),
+                "finality": "provisional",
                 "params": {"owner": "0x1"}
             })
         );

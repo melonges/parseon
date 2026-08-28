@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-parseon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-parseon}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    # No host port: PostgreSQL is reachable only by Parseon on the backend network.
+
+  parseon:
+    image: ${PARSEON_IMAGE:?set PARSEON_IMAGE to an immutable Parseon image}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      STORAGE_URL: ${STORAGE_URL:?set STORAGE_URL}
+      API_TOKEN: ${API_TOKEN:?set API_TOKEN}
+      HTTP_LISTEN: 0.0.0.0:8080
+      RUST_LOG: ${RUST_LOG:-info}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-2000}
+      DEFAULT_BATCH_SIZE: ${DEFAULT_BATCH_SIZE:-10}
+      BLOCK_CACHE_SIZE: ${BLOCK_CACHE_SIZE:-512}
+      BLOCK_CONCURRENCY: ${BLOCK_CONCURRENCY:-4}
+      RPC_REQUEST_CONCURRENCY: ${RPC_REQUEST_CONCURRENCY:-16}
+      STORAGE_WRITE_CONCURRENCY: ${STORAGE_WRITE_CONCURRENCY:-4}
+      CONFIRMATION_DEPTH: ${CONFIRMATION_DEPTH:-64}
+      ROLLBACK_RETENTION: ${ROLLBACK_RETENTION:-256}
+      RPC_BATCH_SIZE: ${RPC_BATCH_SIZE:-20}
+      ALLOW_PRIVATE_RPC_NETWORKS: "false"
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
+    expose:
+      - "8080"
+    networks:
+      - backend
+      - egress
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${PARSEON_MEMORY_LIMIT:-768m}
+    cpus: ${PARSEON_CPUS:-2}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+
+volumes:
+  pgdata:
+
+networks:
+  backend:
+    internal: true
+  egress:
